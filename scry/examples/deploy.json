@@ -1,0 +1,7 @@
+{
+    "target": "app.example.com",
+    "environment": "dev",
+    "notify": {
+        "slack_url": "https://hooks.slack.com/myhook"
+    }
+}

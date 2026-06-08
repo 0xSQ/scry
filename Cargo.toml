@@ -1,0 +1,3 @@
+[workspace]
+members = ["scry", "scry_derive"]
+resolver = "2"

@@ -1,0 +1,39 @@
+[package]
+name = "scry"
+version = "0.1.0"
+edition = "2021"
+description = "A Rust library for typed configuration trees and config-driven CLI tools."
+repository = "https://github.com/0xSQ/scry"
+license = "MIT OR Apache-2.0"
+readme = "../README.md"
+
+[features]
+default = ["format-json", "format-json5"]
+format-json = ["dep:serde_json"]
+format-json5 = ["dep:json5", "format-json"]
+format-toml = ["dep:toml"]
+format-yaml = ["dep:serde_yaml"]
+
+[dev-dependencies]
+anyhow = "1"
+indoc = "2"
+tempfile = "3"
+
+[dependencies]
+clap = { version = "4", features = ["string"] }
+glob = "0.3"
+globset = "0.4"
+colored = "3"
+dirs = "6"
+fs-err = "3"
+heck = "0.5"
+indexmap = "2"
+json5 = { version = "0.4", optional = true }
+regex = "1"
+rhai = "1"
+scry_derive = { path = "../scry_derive" }
+serde = "1"
+serde_json = { version = "1", features = ["preserve_order"], optional = true }
+serde_yaml = { version = "0.9", optional = true }
+thiserror = "2"
+toml = { version = "0.8", features = ["preserve_order"], optional = true }

@@ -1,0 +1,17 @@
+[package]
+name = "scry_derive"
+version = "0.1.0"
+edition = "2021"
+description = "Derive macros for the scry configuration library."
+repository = "https://github.com/0xSQ/scry"
+license = "MIT OR Apache-2.0"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"
+proc-macro-crate = "3"
+heck = "0.5"
