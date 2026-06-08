@@ -321,7 +321,7 @@ Exposed flags and `--set` can be used together, each argument is simply applied 
 
 ## Rhai
 
-Static config files are great. Declarative, easy to read, just the data, no convoluted logic from your overly clever coworker. But as your config file grows, replicated values and boilerplate tend to creep in and you find yourself copying the same value into multiple places every time you tinker with something. No big deal, you think, but then one day you forget to copy that one parameter to that one other place you should have and your hours-long ML training run is strangely corrupted and it takes you forever to find out what has gone wrong. (Not that such a thing would ever happen here.) And that's the day you think: maybe DRY for config files isn't entirely out of place either. And adding one or two variables you can reuse here and there isn't the end of the world.
+Static config files are great. Declarative, easy to read, just the data, no convoluted logic from your overly clever coworker. But as your config file grows, replicated values and boilerplate tend to creep in and you find yourself copying the same value into multiple places every time you tinker with something. No big deal, you think, but then one day you forget to copy that one parameter to that one other place you should have and your hours-long ML training run is strangely corrupted and it takes you forever to find out what has gone wrong. (Not that such a thing would ever happen to this author.) And that's the day you think: maybe DRY for config files isn't entirely out of place either. And adding one or two variables you can reuse here and there isn't the end of the world.
 
 And this is why Scry supports [Rhai](https://rhai.rs) scripts as an alternative.
 
