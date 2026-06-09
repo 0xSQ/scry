@@ -146,7 +146,7 @@ impl Node {
     fn walk(&self, path: &KeyPath) -> Result<Option<&Node>, NodeError> {
         let mut node = self;
 
-        for (i, seg) in path.iter().enumerate() {
+        for seg in path.iter() {
             match (seg, &node.kind) {
                 (Segment::Key(key), Kind::Map(map)) => match map.get(key) {
                     Some(child) => node = child,
@@ -168,11 +168,8 @@ impl Node {
                         leaf.mark_visited();
                         return Ok(None);
                     }
-                    // Trying to descend into a non-null leaf is an error
-                    let traversed = KeyPath {
-                        segs: path.segs[..i].to_vec(),
-                    };
-                    return Err(NodeError::descend_into_leaf(&traversed, leaf.value.type_name()));
+                    // Trying to descend into a non-null leaf is an error.
+                    return Err(NodeError::descend_into_leaf(&node.path, leaf.value.type_name()));
                 }
             }
         }
@@ -829,7 +826,18 @@ mod tests {
         #[test]
         fn descend_into_leaf_errors() {
             let node = node_from_json(TEST_JSON);
-            assert!(node.req_node("server.port.value").is_err());
+            let err = node.req_node("server.port.value").unwrap_err();
+
+            assert_eq!(err.to_string(), "'server.port' has type i64, cannot descend into it");
+        }
+
+        #[test]
+        fn descend_into_child_leaf_preserves_full_path() {
+            let node = node_from_json(TEST_JSON);
+            let port = node.req_node("server.port").unwrap();
+            let err = port.req_node("value").unwrap_err();
+
+            assert_eq!(err.to_string(), "'server.port' has type i64, cannot descend into it");
         }
     }
 
