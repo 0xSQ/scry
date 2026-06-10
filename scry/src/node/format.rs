@@ -92,7 +92,7 @@
 
 use crate::key_path::KeyPath;
 use crate::node::{Kind, Node, NodeError, Value};
-use crate::rhai::display_to_boxed;
+use crate::rhai::ScriptError;
 use indexmap::IndexMap;
 use rhai::Dynamic;
 use std::fmt;
@@ -657,9 +657,9 @@ impl ConfigFormatParser for RhaiParser {
 
     fn parse_str(&self, source: &str) -> Result<Node, NodeError> {
         let engine = rhai::Engine::new();
-        let dynamic = engine
-            .eval::<Dynamic>(source)
-            .map_err(|e| NodeError::parse_format_boxed("Rhai", display_to_boxed(*e)))?;
+        let dynamic = engine.eval::<Dynamic>(source).map_err(|e| {
+            NodeError::parse_format_boxed("Rhai", Box::new(ScriptError::from_str_eval(source, &e)))
+        })?;
         from_rhai_dynamic(dynamic)
     }
 
