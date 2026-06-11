@@ -12,6 +12,7 @@ mod error;
 mod expose_map;
 mod override_args;
 mod query_args;
+mod redirect;
 
 use std::collections::HashSet;
 
@@ -31,6 +32,7 @@ pub use error::SetupError;
 pub use expose_map::{ExposeEntry, ExposeKind, ExposeMap, Long};
 pub use override_args::OverrideArgs;
 pub use query_args::{handle_get_request, GetFormat, GetRequest, QueryArgs};
+pub use redirect::{require_command_config, resolve_command_config, RedirectError, RedirectSpec};
 
 // ---------------------------------------------------------------------------------------------- //
 

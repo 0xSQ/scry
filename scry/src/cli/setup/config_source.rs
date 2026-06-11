@@ -131,7 +131,10 @@ pub struct ConfigPathPolicy {
 }
 
 /// Function type for auto-discovering config file paths.
-pub type DiscoverFn = dyn Fn(&str) -> Result<PathBuf, BoxedError>;
+///
+/// Returns `Ok(None)` when nothing was found and resolution should fall through to the
+/// missing-config policy; errors abort resolution.
+pub type DiscoverFn = dyn Fn(&str) -> Result<Option<PathBuf>, BoxedError>;
 
 /// Node loader function type.
 pub type NodeLoaderFn = dyn Fn(&Path) -> Result<Node, BoxedError>;
@@ -190,12 +193,13 @@ impl ConfigSource {
 
     /// Sets a discovery function for finding config when no explicit path is provided.
     ///
-    /// The closure receives the command name and returns the discovered path.
-    /// The error type can be any type that converts into a boxed error, including
-    /// `anyhow::Error`, `std::io::Error`, or any `E: std::error::Error`.
+    /// The closure receives the command name and returns the discovered path, or `Ok(None)` to
+    /// fall through to the missing-config policy (error by default, or an empty node with
+    /// [`or_empty`](Self::or_empty)). The error type can be any type that converts into a boxed
+    /// error, including `anyhow::Error`, `std::io::Error`, or any `E: std::error::Error`.
     pub fn discover<F, E>(mut self, f: F) -> Self
     where
-        F: Fn(&str) -> Result<PathBuf, E> + 'static,
+        F: Fn(&str) -> Result<Option<PathBuf>, E> + 'static,
         E: Into<BoxedError> + 'static,
     {
         self.discover = Some(Box::new(move |cmd| f(cmd).map_err(|e| e.into())));
@@ -341,14 +345,18 @@ impl ConfigSource {
             return Ok(ResolvedConfigInput::Path(path));
         }
 
-        // Try discovery.
+        // Try discovery. A `None` result falls through to the missing-config policy.
         if let Some(discover) = &self.discover {
-            return discover(cmd_name).map(ResolvedConfigInput::Path).map_err(|source| {
-                SetupError::ConfigNotFound {
-                    cmd_name: cmd_name.to_string(),
-                    source,
+            match discover(cmd_name) {
+                Ok(Some(path)) => return Ok(ResolvedConfigInput::Path(path)),
+                Ok(None) => {}
+                Err(source) => {
+                    return Err(SetupError::ConfigNotFound {
+                        cmd_name: cmd_name.to_string(),
+                        source,
+                    });
                 }
-            });
+            }
         }
 
         match self.path_policy.missing {

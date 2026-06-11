@@ -291,7 +291,7 @@ mod config_path_resolution {
                 ConfigSource::new()
                     .positional("CONFIG", "Path to config file", Required::No)
                     .discover(|_cmd| {
-                        Ok::<_, std::convert::Infallible>(PathBuf::from("discovered.json"))
+                        Ok::<_, std::convert::Infallible>(Some(PathBuf::from("discovered.json")))
                     })
                     .loader(simple_config_loader())
             })
@@ -314,7 +314,7 @@ mod config_path_resolution {
             .config_source(|_| {
                 ConfigSource::new()
                     .positional("CONFIG", "Path to config file", Required::No)
-                    .discover(|_cmd| Err::<PathBuf, _>(anyhow::anyhow!("discovery failed")))
+                    .discover(|_cmd| Err::<Option<PathBuf>, _>(anyhow::anyhow!("discovery failed")))
                     .loader(simple_config_loader())
             })
             .into_bundle(|_cfg: SimpleConfig| {});
@@ -375,6 +375,51 @@ mod config_path_resolution {
     }
 
     #[test]
+    fn empty_discovery_falls_through_to_empty_node_policy() {
+        let handler_called = Arc::new(AtomicBool::new(false));
+        let handler_called_clone = handler_called.clone();
+
+        let bundle = Setup::new("test")
+            .override_args(OverrideArgs::standard())
+            .query_args(QueryArgs::new())
+            .config_source(|_| {
+                ConfigSource::new()
+                    .positional("CONFIG", "Path to config file", Required::No)
+                    .discover(|_cmd| Ok::<_, std::convert::Infallible>(None))
+                    .or_empty()
+            })
+            .into_bundle(move |cfg: SimpleConfig| {
+                assert_eq!(cfg.value, "from_cli");
+                handler_called_clone.store(true, Ordering::SeqCst);
+            });
+
+        let result = bundle.run_from(["test", "--set", "value", "from_cli"]);
+        assert!(result.is_ok());
+        assert!(handler_called.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn empty_discovery_without_empty_node_policy_is_error() {
+        let bundle = Setup::new("test")
+            .override_args(OverrideArgs::new())
+            .query_args(QueryArgs::new())
+            .config_source(|_| {
+                ConfigSource::new()
+                    .positional("CONFIG", "Path to config file", Required::No)
+                    .discover(|_cmd| Ok::<_, std::convert::Infallible>(None))
+                    .loader(simple_config_loader())
+            })
+            .into_bundle(|_cfg: SimpleConfig| {});
+
+        let result = bundle.run_from(["test"]);
+        assert!(result.is_err());
+        assert!(
+            matches!(result.unwrap_err(), SetupError::NoConfigFile { .. }),
+            "Expected SetupError::NoConfigFile"
+        );
+    }
+
+    #[test]
     fn discovery_takes_precedence_over_empty_node_policy() {
         let handler_called = Arc::new(AtomicBool::new(false));
         let handler_called_clone = handler_called.clone();
@@ -387,7 +432,7 @@ mod config_path_resolution {
                     .positional("CONFIG", "Path to config file", Required::No)
                     .missing_policy(MissingConfigPolicy::EmptyNode)
                     .discover(|_cmd| {
-                        Ok::<_, std::convert::Infallible>(PathBuf::from("discovered.json"))
+                        Ok::<_, std::convert::Infallible>(Some(PathBuf::from("discovered.json")))
                     })
                     .loader(simple_config_loader())
             })
