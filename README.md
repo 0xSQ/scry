@@ -211,15 +211,18 @@ $ deploy --desc notify
 
 These options print the config and exit rather than running the command. Useful for a final check on what you're actually about to execute before it's too late. They come in a few flavors.
 
-`--get` outputs in a simple tree format:
+`--get` outputs in a tree format:
 
 ```
 $ deploy deploy.json --get
 ▸ target "app.example.com"
 ▸ environment "dev"
+▸ retries 5 [3]
 ▾ notify
-   ▸ slack_url "https://hooks.slack.com/myhook"
+┊  ▸ slack_url "https://hooks.slack.com/myhook"
 ```
+
+(Here `deploy.json` sets `retries` to `5` while its default is `3`, so the line is tagged ` [3]`.)
 
 `--get-flat` outputs everything as `key = value` lines, giving the full key paths:
 
@@ -227,16 +230,18 @@ $ deploy deploy.json --get
 $ deploy deploy.json --get-flat
 target = "app.example.com"
 environment = "dev"
+retries = 5
 notify.slack_url = "https://hooks.slack.com/myhook"
 ```
 
-`--get-as` outputs in a specific writer format (`json`, `rhai`, or custom registered formats). TOML and YAML writers are optionally available via the `format-toml` and `format-yaml` features.
+`--get-as` outputs in a specific writer format (`json`, `rhai`, or custom registered formats), exporting the input config without annotations. TOML and YAML writers are optionally available via the `format-toml` and `format-yaml` features.
 
 ```
 $ deploy deploy.json --get-as json
 {
   "target": "app.example.com",
   "environment": "dev",
+  "retries": 5,
   "notify": {
     "slack_url": "https://hooks.slack.com/myhook"
   }

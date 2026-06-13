@@ -46,13 +46,23 @@ pub fn derive_describe_impl(input: &DeriveInput) -> syn::Result<TokenStream> {
     }
 }
 
-/// Generates both `FromNode` and `Describe` implementations.
+/// Generates `DefaultNode` implementation for default baselines.
+pub fn derive_default_node_impl(input: &DeriveInput) -> syn::Result<TokenStream> {
+    match parse::parse_input(input)? {
+        DeriveTarget::Struct(info) => generate_struct_default_node(&info),
+        DeriveTarget::Enum(info) => generate_enum_default_node(&info),
+    }
+}
+
+/// Generates `FromNode`, `Describe`, `ToNode`, and `DefaultNode` implementations.
 ///
-/// Produces `FromNode` for parsing and `Describe` for documentation.
-/// This is the recommended derive for config types.
+/// This is the recommended derive for config types: parsing, documentation, node
+/// serialization, and default baselines in one bundle.
 pub fn derive_config_impl(input: &DeriveInput) -> syn::Result<TokenStream> {
     let from_node = derive_from_node_impl(input)?;
     let desc = derive_describe_impl(input)?;
+    let to_node = derive_to_node_impl(input)?;
+    let default_node = derive_default_node_impl(input)?;
     let string_enum = match parse::parse_input(input)? {
         DeriveTarget::Enum(info) if info.attrs.from_str => generate_enum_string_enum(&info)?,
         _ => quote! {},
@@ -60,6 +70,8 @@ pub fn derive_config_impl(input: &DeriveInput) -> syn::Result<TokenStream> {
     Ok(quote! {
         #from_node
         #desc
+        #to_node
+        #default_node
         #string_enum
     })
 }
@@ -975,6 +987,146 @@ fn generate_enum_describe(info: &EnumInfo) -> syn::Result<TokenStream> {
         impl #scry::Describe for #enum_name {
             fn describe() -> #scry::Desc {
                 #scry::Desc::enumeration(vec![#(#variant_descs),*])
+            }
+        }
+    })
+}
+
+// ---------------------------------------------------------------------------------------------- //
+// DefaultNode Generation (generates default baselines)
+
+fn generate_struct_default_node(info: &StructInfo) -> syn::Result<TokenStream> {
+    let scry = scry_crate_path();
+    let struct_name = &info.ident;
+
+    match &info.fields {
+        StructFields::Named(fields) => {
+            let field_entries: Vec<TokenStream> =
+                fields.iter().map(|f| generate_field_baseline(f, &scry)).collect();
+
+            Ok(quote! {
+                impl #scry::DefaultNode for #struct_name {
+                    fn default_node() -> Result<Option<#scry::Node>, #scry::NodeError> {
+                        let mut map = #scry::_private::IndexMap::new();
+                        #(#field_entries)*
+                        if map.is_empty() {
+                            Ok(None)
+                        } else {
+                            Ok(Some(#scry::Node {
+                                path: #scry::KeyPath::new(),
+                                kind: #scry::node::Kind::Map(map),
+                            }))
+                        }
+                    }
+                }
+            })
+        }
+        StructFields::Tuple(types) => {
+            if types.len() == 1 {
+                // Newtype: the baseline is the inner type's baseline.
+                let ty = &types[0];
+                Ok(quote! {
+                    impl #scry::DefaultNode for #struct_name {
+                        fn default_node() -> Result<Option<#scry::Node>, #scry::NodeError> {
+                            use #scry::DefaultNodeFallback;
+                            #scry::make_default_node_probe::<#ty>().default_node()
+                        }
+                    }
+                })
+            } else {
+                // Multi-field tuple: positional fields cannot carry scry attributes, so no
+                // defaults can exist. A partial positional baseline would be ambiguous anyway.
+                Ok(quote! {
+                    impl #scry::DefaultNode for #struct_name {
+                        fn default_node() -> Result<Option<#scry::Node>, #scry::NodeError> {
+                            Ok(None)
+                        }
+                    }
+                })
+            }
+        }
+    }
+}
+
+/// Generates the baseline map entry for a single named-struct field.
+///
+/// Mirrors the `FromNode` defaulting rules and the `ToNode` serialization rules so the
+/// baseline shows exactly the value that parsing an omitted field would produce, in exactly
+/// the node form `ToNode` serialization produces.
+fn generate_field_baseline(field: &FieldInfo, scry: &TokenStream) -> TokenStream {
+    let key = field.attrs.rename.clone().unwrap_or_else(|| field.ident.to_string());
+    let ty = &field.ty;
+
+    // Compute the default value expression, if the field has one.
+    let default_value = if let Some(ref expr) = field.attrs.default_value {
+        Some(quote! { #expr })
+    } else if field.attrs.default {
+        Some(quote! { ::core::default::Default::default() })
+    } else {
+        None
+    };
+
+    let Some(default_value) = default_value else {
+        // No default attribute: recurse structurally via the probe so nested config types
+        // contribute their own field defaults. For Option fields the probe targets the inner
+        // type - the field itself defaults to "unset", but its inner defaults still apply
+        // whenever the user supplies the value.
+        let probe_ty = if is_option_type(ty) {
+            unwrap_inner_type(ty).unwrap_or(ty)
+        } else {
+            ty
+        };
+        return quote! {
+            {
+                use #scry::DefaultNodeFallback;
+                if let Some(child) = #scry::make_default_node_probe::<#probe_ty>().default_node()? {
+                    #scry::baseline_insert_structural(&mut map, #key, child);
+                }
+            }
+        };
+    };
+
+    // Serialize the evaluated default the same way derived ToNode serializes the field.
+    if let Some(ref func_path) = field.attrs.to_node_with {
+        if is_option_type(ty) {
+            quote! {
+                {
+                    let value: #ty = #default_value;
+                    if let Some(ref inner) = value {
+                        #scry::baseline_insert(&mut map, #key, #func_path(inner)?);
+                    }
+                }
+            }
+        } else {
+            quote! {
+                {
+                    let value: #ty = #default_value;
+                    #scry::baseline_insert(&mut map, #key, #func_path(&value)?);
+                }
+            }
+        }
+    } else {
+        quote! {
+            {
+                let value: #ty = #default_value;
+                #scry::baseline_insert(&mut map, #key, #scry::ToNode::to_node(&value)?);
+            }
+        }
+    }
+}
+
+fn generate_enum_default_node(info: &EnumInfo) -> syn::Result<TokenStream> {
+    let scry = scry_crate_path();
+    let enum_name = &info.ident;
+
+    // An enum carries no standalone default baseline. A `#[default]` variant only matters when a
+    // *field* opts into defaulting with `#[scry(default)]`, in which case the containing struct's
+    // field baseline evaluates `Default::default()` and serializes it. A required enum field has
+    // no default to shadow, so the enum itself must not synthesize one.
+    Ok(quote! {
+        impl #scry::DefaultNode for #enum_name {
+            fn default_node() -> Result<Option<#scry::Node>, #scry::NodeError> {
+                Ok(None)
             }
         }
     })

@@ -16,12 +16,13 @@
 //! missing path (`must_exist` applies).
 
 use crate::desc::{self, Desc};
+use crate::key_path::KeyPath;
 use crate::kit::OneOrMany;
 use crate::node::{Node, NodeError};
-use crate::traits::{Describe, FromNode};
+use crate::traits::{Describe, FromNode, ToNode};
 use crate::util::{PathError, PathExt};
 use globset::{GlobBuilder, GlobMatcher, GlobSet, GlobSetBuilder};
-use indexmap::IndexSet;
+use indexmap::{IndexMap, IndexSet};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -596,6 +597,181 @@ impl Describe for TextPatternSpec {
     fn describe() -> Desc {
         Desc::plain("text pattern")
     }
+}
+
+// ---------------------------------------------------------------------------------------------- //
+// Serialization
+//
+// Serializes back to the most compact input form that parses to the same value: string
+// shorthands where auto-detection would reproduce the spec exactly, explicit maps otherwise.
+
+impl ToNode for Files {
+    fn to_node(&self) -> Result<Node, NodeError> {
+        // A single source serializes as itself (string or map shorthand); multiple
+        // sources serialize as the array shorthand.
+        if self.sources.len() == 1 {
+            return self.sources[0].to_node();
+        }
+        let children = self.sources.iter().map(|s| s.to_node()).collect::<Result<Vec<_>, _>>()?;
+        Ok(Node::new_vec(KeyPath::new(), children))
+    }
+}
+
+impl ToNode for SourceSpec {
+    fn to_node(&self) -> Result<Node, NodeError> {
+        // String shorthand when there is only a from block that itself is a plain string.
+        if self.where_.is_none() {
+            if let Some(from) = &self.from {
+                let from_node = from.to_node()?;
+                if from_node.kind.is_leaf() {
+                    return Ok(from_node);
+                }
+            }
+        }
+
+        let mut map = IndexMap::new();
+        if let Some(from) = &self.from {
+            map.insert("from".to_string(), from.to_node()?);
+        }
+        if let Some(where_) = &self.where_ {
+            map.insert("where".to_string(), where_.to_node()?);
+        }
+        Ok(Node::new_map(KeyPath::new(), map))
+    }
+}
+
+impl ToNode for FromSpec {
+    fn to_node(&self) -> Result<Node, NodeError> {
+        if self.prune.is_empty() {
+            // Single-root string shorthand.
+            if self.root.len() == 1 {
+                let root_node = self.root[0].to_node()?;
+                if root_node.kind.is_leaf() {
+                    return Ok(root_node);
+                }
+            }
+            // Root-list array shorthand (only valid when every entry is a string).
+            let leaves =
+                self.root.iter().map(|pp| pp.to_node()).collect::<Result<Vec<_>, NodeError>>()?;
+            if !leaves.is_empty() && leaves.iter().all(|n| n.kind.is_leaf()) {
+                return Ok(Node::new_vec(KeyPath::new(), leaves));
+            }
+        }
+
+        let mut map = IndexMap::new();
+        map.insert("root".to_string(), one_or_many_to_node(&self.root)?);
+        if !self.prune.is_empty() {
+            map.insert("prune".to_string(), one_or_many_to_node(&self.prune)?);
+        }
+        Ok(Node::new_map(KeyPath::new(), map))
+    }
+}
+
+impl ToNode for PathPatternSpec {
+    fn to_node(&self) -> Result<Node, NodeError> {
+        // String shorthand when auto-detection reproduces this spec exactly.
+        if auto_detect_path_pattern(self.path.clone()) == *self {
+            return self.path.to_node();
+        }
+
+        let mut map = IndexMap::new();
+        map.insert("path".to_string(), self.path.to_node()?);
+        map.insert("syntax".to_string(), self.syntax.to_node()?);
+        map.insert("must_exist".to_string(), self.must_exist.to_node()?);
+        map.insert("recursive".to_string(), self.recursive.to_node()?);
+        Ok(Node::new_map(KeyPath::new(), map))
+    }
+}
+
+impl ToNode for PatternSyntax {
+    fn to_node(&self) -> Result<Node, NodeError> {
+        match self {
+            PatternSyntax::Exact => "exact".to_node(),
+            PatternSyntax::Wildcard => "wildcard".to_node(),
+        }
+    }
+}
+
+impl ToNode for WhereSpec {
+    fn to_node(&self) -> Result<Node, NodeError> {
+        let mut map = IndexMap::new();
+        if self.case != CaseMode::default() {
+            map.insert("case".to_string(), self.case.to_node()?);
+        }
+        if let Some(path) = &self.path {
+            map.insert("path".to_string(), path.to_node()?);
+        }
+        if let Some(name) = &self.name {
+            map.insert("name".to_string(), name.to_node()?);
+        }
+        if let Some(stem) = &self.stem {
+            map.insert("stem".to_string(), stem.to_node()?);
+        }
+        if let Some(ext) = &self.ext {
+            map.insert("ext".to_string(), ext.to_node()?);
+        }
+        Ok(Node::new_map(KeyPath::new(), map))
+    }
+}
+
+impl ToNode for CaseMode {
+    fn to_node(&self) -> Result<Node, NodeError> {
+        match self {
+            CaseMode::Insensitive => "insensitive".to_node(),
+            CaseMode::Sensitive => "sensitive".to_node(),
+        }
+    }
+}
+
+impl ToNode for AttrRuleSpec {
+    fn to_node(&self) -> Result<Node, NodeError> {
+        if self.exclude.is_empty() {
+            // Single-pattern string shorthand.
+            if self.include.len() == 1 {
+                let pattern_node = self.include[0].to_node()?;
+                if pattern_node.kind.is_leaf() {
+                    return Ok(pattern_node);
+                }
+            }
+            // Include-only array shorthand.
+            let children = self
+                .include
+                .iter()
+                .map(|tp| tp.to_node())
+                .collect::<Result<Vec<_>, NodeError>>()?;
+            return Ok(Node::new_vec(KeyPath::new(), children));
+        }
+
+        let mut map = IndexMap::new();
+        if !self.include.is_empty() {
+            map.insert("include".to_string(), one_or_many_to_node(&self.include)?);
+        }
+        map.insert("exclude".to_string(), one_or_many_to_node(&self.exclude)?);
+        Ok(Node::new_map(KeyPath::new(), map))
+    }
+}
+
+impl ToNode for TextPatternSpec {
+    fn to_node(&self) -> Result<Node, NodeError> {
+        // String shorthand when auto-detection reproduces this spec exactly.
+        if auto_detect_text_pattern(self.pattern.clone()) == *self {
+            return self.pattern.to_node();
+        }
+
+        let mut map = IndexMap::new();
+        map.insert("pattern".to_string(), self.pattern.to_node()?);
+        map.insert("syntax".to_string(), self.syntax.to_node()?);
+        Ok(Node::new_map(KeyPath::new(), map))
+    }
+}
+
+/// Serializes a OneOrMany as a single node when it has one element, an array otherwise.
+fn one_or_many_to_node<T: ToNode>(items: &OneOrMany<T>) -> Result<Node, NodeError> {
+    if items.len() == 1 {
+        return items[0].to_node();
+    }
+    let children = items.iter().map(|i| i.to_node()).collect::<Result<Vec<_>, _>>()?;
+    Ok(Node::new_vec(KeyPath::new(), children))
 }
 
 // ---------------------------------------------------------------------------------------------- //
@@ -1702,6 +1878,56 @@ mod tests {
 
         let wildcard = TextPatternSpec::auto_detect("README*".to_string());
         assert_eq!(wildcard.syntax, PatternSyntax::Wildcard);
+    }
+
+    // ------------------------------------------------------------------------------------------ //
+    // Serialization Round-Trip Tests
+
+    /// Asserts that parsing, serializing, and reparsing a Files spec is lossless.
+    fn assert_files_round_trip(source: &str) {
+        let node = Node::parse_str(source, Format::Rhai).unwrap();
+        let files: Files = node.as_type().unwrap();
+        let serialized = files.to_node().unwrap();
+        let reparsed: Files = serialized.as_type().unwrap();
+        assert_eq!(
+            format!("{:?}", files),
+            format!("{:?}", reparsed),
+            "round trip changed the spec for input: {source}"
+        );
+    }
+
+    #[test]
+    fn round_trip_string_shorthand() {
+        assert_files_round_trip(r#""src/**/*.rs""#);
+        assert_files_round_trip(r#""some/file.txt""#);
+    }
+
+    #[test]
+    fn round_trip_array_of_sources() {
+        assert_files_round_trip(r#"["src/**/*.rs", "docs"]"#);
+    }
+
+    #[test]
+    fn round_trip_from_where_map() {
+        assert_files_round_trip(
+            r#"#{ from: #{ root: "src", prune: ["target", "*.bak"] },
+                where: #{ ext: ["rs", "toml"], name: #{ exclude: "lib.rs" }, "case": "sensitive" } }"#,
+        );
+    }
+
+    #[test]
+    fn round_trip_explicit_pattern_maps() {
+        assert_files_round_trip(
+            r#"#{ from: #{ root: #{ path: "src/*", syntax: "wildcard", must_exist: true, recursive: false } } }"#,
+        );
+    }
+
+    #[test]
+    fn round_trip_empty_files() {
+        let files = Files::default();
+        let serialized = files.to_node().unwrap();
+        let reparsed: Files = serialized.as_type().unwrap();
+        assert!(reparsed.sources.is_empty());
     }
 
     // ------------------------------------------------------------------------------------------ //

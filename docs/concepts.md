@@ -135,20 +135,21 @@ struct LooseConfig {
 }
 ```
 
-## The Three Core Traits
+## The Core Traits
 
-Scry defines three traits for working with configuration types:
+Scry defines four traits for working with configuration types:
 
-| Trait / Derive Macro | Purpose                             |
-| -------------------- | ----------------------------------- |
-| `FromNode`           | Parse a `Node` into a Rust type     |
-| `ToNode`             | Serialize a Rust type to a `Node`   |
-| `Describe`           | Generate type descriptions for docs |
+| Trait / Derive Macro | Purpose                                        |
+| -------------------- | ---------------------------------------------- |
+| `FromNode`           | Parse a `Node` into a Rust type                |
+| `ToNode`             | Serialize a Rust type to a `Node`              |
+| `Describe`           | Generate type descriptions for docs            |
+| `DefaultNode`        | Generate the partial tree of default values    |
 
-The `#[derive(Config)]` macro is a shorthand for deriving the most common combination of
-`FromNode` and `Describe` together. You can also derive them individually when you only need
-some functionality. On enums, `Config` can also generate Rust string conversion when requested
-with `#[scry(from_str)]`.
+The `#[derive(Config)]` macro derives all four together; this is what the `Setup` CLI builder
+expects, powering parsing, `--desc`, and `--get`'s default-override annotations. You can also
+derive them individually when you only need some functionality. On enums, `Config` can also
+generate Rust string conversion when requested with `#[scry(from_str)]`.
 
 Each trait has a corresponding `*_with` field attribute for customizing individual fields without implementing the full trait.
 

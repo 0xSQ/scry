@@ -1,11 +1,14 @@
 //! Visual tree format serialization.
 //!
 //! Provides [`TreeWriter`] for serializing Node trees to a human-readable
-//! visual tree format with customizable markers and colors.
+//! visual tree format with customizable markers and colors. Entries can be
+//! decorated per-path through a [`TreeAnnotator`], which `--get` uses to append
+//! a default-override suffix (e.g. ` [false]`) to leaves that shadow a default.
 
 pub use colored::Color;
 use colored::Colorize;
 
+use crate::key_path::KeyPath;
 use crate::node::{Kind, Node, Value};
 
 use super::format_value;
@@ -52,23 +55,36 @@ impl TreeWriter {
 
     /// Writes a Node tree to tree format.
     pub fn write(&mut self, node: &Node) {
+        self.write_annotated(node, &|_, _| TreeAnnotation::default());
+    }
+
+    /// Writes a Node tree to tree format, decorating entries through the annotator.
+    ///
+    /// The annotator receives each entry's absolute key path (rooted at `node.path`)
+    /// and the entry's node, and returns dimming and suffix decorations.
+    pub fn write_annotated(&mut self, node: &Node, annotate: &TreeAnnotator) {
+        let root_path = node.path.clone();
         match &node.kind {
             Kind::Leaf(leaf) => {
-                // Single leaf at root - just output the value
+                // Single leaf at root - output the value plus any annotation
+                let ann = annotate(&root_path, node);
                 self.output.push_str(&self.colorize_value(&leaf.value));
+                self.push_suffix(&ann);
             }
             Kind::Vec(vec) => {
                 // Root is a vec - output each element
                 for (i, child) in vec.iter().enumerate() {
                     let is_last = i == vec.len() - 1;
-                    self.write_entry(child, EntryKind::VecElement(i), is_last);
+                    let path = root_path.push_index(i);
+                    self.write_entry(child, EntryKind::VecElement(i), is_last, &path, annotate);
                 }
             }
             Kind::Map(map) => {
                 // Root is a map - output each entry
                 for (i, (key, child)) in map.iter().enumerate() {
                     let is_last = i == map.len() - 1;
-                    self.write_entry(child, EntryKind::MapEntry(key), is_last);
+                    let path = root_path.push_key(key);
+                    self.write_entry(child, EntryKind::MapEntry(key), is_last, &path, annotate);
                 }
             }
         }
@@ -109,10 +125,29 @@ impl TreeWriter {
         }
     }
 
+    /// Appends an annotation suffix, dimmed when color is enabled.
+    fn push_suffix(&mut self, ann: &TreeAnnotation) {
+        if let Some(suffix) = &ann.suffix {
+            if self.config.color {
+                self.output.push_str(&suffix.dimmed().to_string());
+            } else {
+                self.output.push_str(suffix);
+            }
+        }
+    }
+
     /// Writes a single entry (map entry or vec element).
-    fn write_entry(&mut self, node: &Node, entry_kind: EntryKind, is_last: bool) {
+    fn write_entry(
+        &mut self,
+        node: &Node,
+        entry_kind: EntryKind,
+        is_last: bool,
+        path: &KeyPath,
+        annotate: &TreeAnnotator,
+    ) {
         // Build the prefix from ancestor last-sibling state
         let prefix = self.build_prefix();
+        let ann = annotate(path, node);
 
         match &node.kind {
             Kind::Leaf(leaf) => {
@@ -135,6 +170,7 @@ impl TreeWriter {
                         self.output.push_str(&self.colorize_value(&leaf.value));
                     }
                 }
+                self.push_suffix(&ann);
             }
             Kind::Map(map) => {
                 if !self.output.is_empty() {
@@ -151,11 +187,19 @@ impl TreeWriter {
                         self.output.push_str(&self.dim(&format!("[{}]", idx)));
                     }
                 }
+                self.push_suffix(&ann);
                 // Recurse into children
                 self.is_last_at_depth.push(is_last);
                 for (i, (child_key, child)) in map.iter().enumerate() {
                     let child_is_last = i == map.len() - 1;
-                    self.write_entry(child, EntryKind::MapEntry(child_key), child_is_last);
+                    let child_path = path.push_key(child_key);
+                    self.write_entry(
+                        child,
+                        EntryKind::MapEntry(child_key),
+                        child_is_last,
+                        &child_path,
+                        annotate,
+                    );
                 }
                 self.is_last_at_depth.pop();
             }
@@ -174,11 +218,19 @@ impl TreeWriter {
                         self.output.push_str(&self.dim(&format!("[{}]", idx)));
                     }
                 }
+                self.push_suffix(&ann);
                 // Recurse into children
                 self.is_last_at_depth.push(is_last);
                 for (i, child) in vec.iter().enumerate() {
                     let child_is_last = i == vec.len() - 1;
-                    self.write_entry(child, EntryKind::VecElement(i), child_is_last);
+                    let child_path = path.push_index(i);
+                    self.write_entry(
+                        child,
+                        EntryKind::VecElement(i),
+                        child_is_last,
+                        &child_path,
+                        annotate,
+                    );
                 }
                 self.is_last_at_depth.pop();
             }
@@ -212,6 +264,19 @@ impl Default for TreeWriter {
         Self::new()
     }
 }
+
+// ---------------------------------------------------------------------------------------------- //
+// Annotations
+
+/// Per-entry decorations applied during annotated tree writing.
+#[derive(Debug, Clone, Default)]
+pub struct TreeAnnotation {
+    /// Text appended after the entry (e.g. ` [false]`), dimmed when color is enabled.
+    pub suffix: Option<String>,
+}
+
+/// Callback supplying a [`TreeAnnotation`] for each rendered entry.
+pub type TreeAnnotator<'a> = dyn Fn(&KeyPath, &Node) -> TreeAnnotation + 'a;
 
 // ---------------------------------------------------------------------------------------------- //
 // TreeConfig

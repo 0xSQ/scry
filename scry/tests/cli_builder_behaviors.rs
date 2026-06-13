@@ -599,6 +599,62 @@ mod query_and_override_args {
     }
 
     #[test]
+    fn get_flat_renders_without_full_parse() {
+        // The config is missing the required `database`, so it won't parse - but --get-flat
+        // renders the raw input subtree and should still succeed.
+        let bundle = Setup::new("test")
+            .override_args(OverrideArgs::new())
+            .query_args(QueryArgs::new().get_flat("get-flat", None))
+            .config_source(|c| {
+                c.positional("CONFIG", "Path to config file", Required::Yes)
+                    .loader(json_loader(r#"{"name": "myapp"}"#))
+            })
+            .into_bundle(|_cfg: NestedConfig| -> Result<(), std::io::Error> {
+                panic!("handler should not be called with --get-flat");
+            });
+
+        let result = bundle.run_from(["test", "config.json", "--get-flat", "name"]);
+        assert!(result.is_ok(), "got: {result:?}");
+    }
+
+    #[test]
+    fn get_as_renders_without_full_parse() {
+        // Same incomplete config; --get-as renders the input subtree without a typed parse.
+        let bundle = Setup::new("test")
+            .override_args(OverrideArgs::new())
+            .query_args(QueryArgs::new().get_as("get-as", None))
+            .config_source(|c| {
+                c.positional("CONFIG", "Path to config file", Required::Yes)
+                    .loader(json_loader(r#"{"name": "myapp"}"#))
+            })
+            .into_bundle(|_cfg: NestedConfig| -> Result<(), std::io::Error> {
+                panic!("handler should not be called with --get-as");
+            });
+
+        let result = bundle.run_from(["test", "config.json", "--get-as", "json", "name"]);
+        assert!(result.is_ok(), "got: {result:?}");
+    }
+
+    #[test]
+    fn tree_get_requires_successful_parse() {
+        // Tree --get annotates against the typed config, so an unparseable config (missing the
+        // required `database`) must fail rather than render.
+        let bundle = Setup::new("test")
+            .override_args(OverrideArgs::new())
+            .query_args(QueryArgs::new().get("get", None))
+            .config_source(|c| {
+                c.positional("CONFIG", "Path to config file", Required::Yes)
+                    .loader(json_loader(r#"{"name": "myapp"}"#))
+            })
+            .into_bundle(|_cfg: NestedConfig| -> Result<(), std::io::Error> {
+                panic!("handler should not be called");
+            });
+
+        let result = bundle.run_from(["test", "config.json", "--get"]);
+        assert!(matches!(result, Err(SetupError::EvaluateInputConfig { .. })), "got: {result:?}");
+    }
+
+    #[test]
     fn set_modifies_config() {
         let handler_called = Arc::new(AtomicBool::new(false));
         let handler_called_clone = handler_called.clone();

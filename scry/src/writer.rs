@@ -11,7 +11,7 @@ mod tree;
 
 pub use flat::{FlatConfig, FlatWriter};
 pub use rhai::{RhaiWriter, RhaiWriterConfig, StdoutRhaiWriter, ToRhai};
-pub use tree::{Color, TreeConfig, TreeWriter};
+pub use tree::{Color, TreeAnnotation, TreeAnnotator, TreeConfig, TreeWriter};
 
 use crate::key_path::quote_string;
 use crate::node::Value;

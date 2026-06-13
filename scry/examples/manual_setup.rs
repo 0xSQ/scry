@@ -86,13 +86,20 @@ fn main() -> anyhow::Result<()> {
     // Apply all "override" operations (set, remove, exposed options and flags).
     override_args.apply::<Deploy>(&mut node, &expose_map, &matches)?;
 
-    if let Some(output) = query_args.check_get::<Deploy>(&node, &matches)? {
+    // Raw get formats (--get-flat, --get-as) render the input tree verbatim, so handle them
+    // before parsing - they work even if the config is incomplete.
+    if let Some(output) = query_args.check_get_raw::<Deploy>(&node, &matches)? {
         println!("{}", output);
         return Ok(());
     }
 
-    // Finally, convert the node into our target type.
+    // Convert the node into our target type. Tree --get annotates against this parsed config
+    // and its default baseline, so it runs after a successful parse.
     let config: Deploy = node.as_type()?;
+    if let Some(output) = query_args.check_get_annotated(&node, &config, &matches)? {
+        println!("{}", output);
+        return Ok(());
+    }
 
     // Do the thing!
     if config.dry_run {

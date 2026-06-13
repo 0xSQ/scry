@@ -24,6 +24,29 @@ pub enum Value {
 }
 
 impl Value {
+    /// Compares two values variant-wise.
+    ///
+    /// Values of different variants are never equal, even when numerically equivalent.
+    /// Floats use IEEE `==` (so `NaN` never equals itself).
+    pub fn same_value(&self, other: &Value) -> bool {
+        match (self, other) {
+            (Value::Null, Value::Null) => true,
+            (Value::Bool(a), Value::Bool(b)) => a == b,
+            (Value::String(a), Value::String(b)) => a == b,
+            (Value::I8(a), Value::I8(b)) => a == b,
+            (Value::I16(a), Value::I16(b)) => a == b,
+            (Value::I32(a), Value::I32(b)) => a == b,
+            (Value::I64(a), Value::I64(b)) => a == b,
+            (Value::U8(a), Value::U8(b)) => a == b,
+            (Value::U16(a), Value::U16(b)) => a == b,
+            (Value::U32(a), Value::U32(b)) => a == b,
+            (Value::U64(a), Value::U64(b)) => a == b,
+            (Value::F32(a), Value::F32(b)) => a == b,
+            (Value::F64(a), Value::F64(b)) => a == b,
+            _ => false,
+        }
+    }
+
     /// Returns the type name of this value for error messages.
     pub fn type_name(&self) -> &'static str {
         match self {

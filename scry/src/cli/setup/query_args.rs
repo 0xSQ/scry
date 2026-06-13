@@ -1,13 +1,18 @@
 //! Query arguments specification (--desc, --get, --get-flat, --get-as).
 //!
 //! These arguments provide read-only operations that output information and exit early.
+//! The `--get` family renders the user-supplied input tree. Tree output additionally annotates
+//! leaves whose value overrides a default (see [`render_with_default_annotations`]); flat and
+//! format output render the input subtree as-is.
 
 use clap::{Arg, ArgMatches, Command};
 
 use super::error::SetupError;
+use super::get_annotations::render_with_default_annotations;
 use crate::desc::DescPathError;
 use crate::node::Format;
-use crate::{Describe, FromNode, KeyPath, Node};
+use crate::writer::TreeConfig;
+use crate::{DefaultNode, Describe, KeyPath, Node, ToNode};
 
 // ---------------------------------------------------------------------------------------------- //
 
@@ -214,26 +219,68 @@ impl QueryArgs {
         cmd
     }
 
-    /// Checks for --get, --get-flat, or --get-as arguments and returns formatted output.
-    pub fn check_get<T>(
+    /// Handles parse-free `--get-flat` and `--get-as` requests against the raw input tree.
+    ///
+    /// These formats render the selected input subtree verbatim, so they need neither a typed
+    /// parse nor `ToNode`/`DefaultNode` - they work even on a config that fails to evaluate.
+    /// Returns `Ok(None)` for a tree `--get` request (deferred to [`check_get_annotated`] after
+    /// parsing) or when no get request is present.
+    pub fn check_get_raw<T>(
         &self,
-        node: &Node,
+        input_node: &Node,
         matches: &ArgMatches,
     ) -> Result<Option<String>, SetupError>
     where
         T: Describe,
     {
+        let Some((path, format)) = self.requested_get(matches)? else {
+            return Ok(None); // no get request found
+        };
+        if matches!(format, GetFormat::Tree) {
+            return Ok(None); // deferred to the annotated path, after parsing
+        }
+        Ok(Some(format_raw_at_path::<T>(input_node, &path, format)?))
+    }
+
+    /// Handles the tree `--get` request, annotating leaves that override a default.
+    ///
+    /// Tree output draws the typed values and default baseline from the parsed `config`, so it
+    /// only runs after a successful parse. Returns `Ok(None)` for `--get-flat` / `--get-as`
+    /// (handled by [`check_get_raw`]) or when no get request is present.
+    pub fn check_get_annotated<T>(
+        &self,
+        input_node: &Node,
+        config: &T,
+        matches: &ArgMatches,
+    ) -> Result<Option<String>, SetupError>
+    where
+        T: Describe + ToNode + DefaultNode,
+    {
+        let Some((path, format)) = self.requested_get(matches)? else {
+            return Ok(None); // no get request found
+        };
+        if !matches!(format, GetFormat::Tree) {
+            return Ok(None); // handled before parsing by check_get_raw
+        }
+        Ok(Some(format_tree_at_path::<T>(input_node, config, &path)?))
+    }
+
+    /// Extracts the requested get operation (path and format) from the matches, if any.
+    fn requested_get(
+        &self,
+        matches: &ArgMatches,
+    ) -> Result<Option<(String, GetFormat)>, SetupError> {
         // Handle 'get'
         if let Some(arg) = &self.get {
             if let Some(path) = matches.get_one::<String>(&arg.long) {
-                return Ok(Some(format_node_at_path::<T>(node, path, GetFormat::Tree)?));
+                return Ok(Some((path.clone(), GetFormat::Tree)));
             }
         }
 
         // Handle 'get-flat'
         if let Some(arg) = &self.get_flat {
             if let Some(path) = matches.get_one::<String>(&arg.long) {
-                return Ok(Some(format_node_at_path::<T>(node, path, GetFormat::Flat)?));
+                return Ok(Some((path.clone(), GetFormat::Flat)));
             }
         }
 
@@ -257,15 +304,11 @@ impl QueryArgs {
                 } else {
                     "".to_string()
                 };
-                return Ok(Some(format_node_at_path::<T>(
-                    node,
-                    &path,
-                    GetFormat::Format(format_id),
-                )?));
+                return Ok(Some((path, GetFormat::Format(format_id))));
             }
         }
 
-        Ok(None) // no get request found
+        Ok(None)
     }
 
     /// Checks for --desc argument and returns formatted output.
@@ -297,14 +340,6 @@ impl QueryArgs {
 
 // ---------------------------------------------------------------------------------------------- //
 
-/// Request for --get operation.
-pub struct GetRequest {
-    /// The key path to retrieve.
-    pub path: String,
-    /// The output format.
-    pub format: GetFormat,
-}
-
 /// Output format for --get operations.
 #[derive(Clone)]
 pub enum GetFormat {
@@ -316,52 +351,72 @@ pub enum GetFormat {
     Format(Format),
 }
 
-/// Handles a get request by printing the formatted output.
-pub fn handle_get_request<T>(node: &Node, request: &GetRequest) -> Result<(), SetupError>
-where
-    T: FromNode + Describe,
-{
-    let output = format_node_at_path::<T>(node, &request.path, request.format.clone())?;
-    println!("{output}");
-    Ok(())
-}
-
 // ---------------------------------------------------------------------------------------------- //
 // Output Formatting
 
-/// Formats a node or subtree for --get output.
-pub fn format_node_at_path<T>(
-    node: &Node,
+/// Selects an input subtree and renders it raw, for `--get-flat` / `--get-as`.
+///
+/// Renders the input verbatim with no annotations and no typed parse. Panics if called with
+/// [`GetFormat::Tree`]; tree output goes through [`format_tree_at_path`].
+pub fn format_raw_at_path<T>(
+    input_node: &Node,
     path: &str,
     format: GetFormat,
 ) -> Result<String, SetupError>
 where
     T: Describe,
 {
-    // Attempt to get a node at this path.
-    let opt_node = if path.is_empty() {
-        Some(node)
-    } else {
-        let key_path: KeyPath = path.parse().map_err(|e| SetupError::KeyPath { source: e })?;
-        node.opt_node(key_path)?
-    };
-
-    let Some(target) = opt_node else {
-        // Path not in tree. Check desc for a helpful hint, then return an appropriate error.
-        let mut message = format!("cannot get '{path}': path does not exist");
-        let desc = T::describe();
-        if let Err(DescPathError::UnknownPath(upe)) = desc.validate_path(path) {
-            message.push_str(&format!("\n\n{upe}"));
-        }
-        return Err(SetupError::GetNotFound { message });
-    };
+    let (_, target) = select_path::<T>(input_node, path)?;
 
     match format {
-        GetFormat::Tree => Ok(target.to_tree_string()),
         GetFormat::Flat => Ok(target.to_flat_string()),
         GetFormat::Format(format_id) => {
             let registry = crate::node::default_format_writer_registry();
             Ok(target.to_format_string(format_id, &registry)?)
+        }
+        GetFormat::Tree => unreachable!("tree output is handled by format_tree_at_path"),
+    }
+}
+
+/// Selects an input subtree and renders it as a tree, annotating overridden defaults.
+pub fn format_tree_at_path<T>(
+    input_node: &Node,
+    config: &T,
+    path: &str,
+) -> Result<String, SetupError>
+where
+    T: Describe + ToNode + DefaultNode,
+{
+    let (base, target) = select_path::<T>(input_node, path)?;
+    // Render from a root whose path is the absolute base, so the annotator's path lookups into
+    // the typed-config and baseline trees resolve correctly.
+    let mut root = target.clone();
+    root.path = base;
+    Ok(render_with_default_annotations(&root, config, &TreeConfig::default())?)
+}
+
+/// Resolves a key path against the input tree, returning the absolute path and the subtree.
+///
+/// An empty path selects the whole tree. A missing path yields a [`SetupError::GetNotFound`]
+/// carrying the `--desc` hint for known schema paths.
+fn select_path<'a, T: Describe>(
+    node: &'a Node,
+    path: &str,
+) -> Result<(KeyPath, &'a Node), SetupError> {
+    if path.is_empty() {
+        return Ok((KeyPath::new(), node));
+    }
+
+    let key_path: KeyPath = path.parse().map_err(|e| SetupError::KeyPath { source: e })?;
+    match node.opt_node(key_path.clone())? {
+        Some(target) => Ok((key_path, target)),
+        None => {
+            let mut message = format!("cannot get '{path}': path does not exist");
+            let desc = T::describe();
+            if let Err(DescPathError::UnknownPath(upe)) = desc.validate_path(path) {
+                message.push_str(&format!("\n\n{upe}"));
+            }
+            Err(SetupError::GetNotFound { message })
         }
     }
 }

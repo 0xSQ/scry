@@ -92,6 +92,16 @@ impl KeyPath {
         new_path.segs.extend_from_slice(&other.segs);
         new_path
     }
+
+    /// Returns the parent path, or None if this path refers to the root.
+    pub fn parent(&self) -> Option<Self> {
+        if self.segs.is_empty() {
+            return None;
+        }
+        Some(Self {
+            segs: self.segs[..self.segs.len() - 1].to_vec(),
+        })
+    }
 }
 
 impl fmt::Display for KeyPath {

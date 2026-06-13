@@ -282,6 +282,34 @@ impl Node {
         }
     }
 
+    /// Returns true if this node is a leaf holding `Value::Null`.
+    pub fn is_null_leaf(&self) -> bool {
+        matches!(&self.kind, Kind::Leaf(leaf) if matches!(leaf.value, Value::Null))
+    }
+
+    // ------------------------------------------------------------------------------------------ //
+    // Comparison
+
+    /// Compares two nodes structurally by value.
+    ///
+    /// Ignores node paths and leaf visited state. Leaf values compare variant-wise (a `U64(1)`
+    /// is not equal to an `F64(1.0)`); this is reliable when both sides were produced by the
+    /// same `ToNode` implementations, which yield matching variants by construction. Maps
+    /// compare by key set regardless of entry order.
+    pub fn same_value(&self, other: &Node) -> bool {
+        match (&self.kind, &other.kind) {
+            (Kind::Leaf(a), Kind::Leaf(b)) => a.value.same_value(&b.value),
+            (Kind::Vec(a), Kind::Vec(b)) => {
+                a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.same_value(y))
+            }
+            (Kind::Map(a), Kind::Map(b)) => {
+                a.len() == b.len()
+                    && a.iter().all(|(key, x)| b.get(key).is_some_and(|y| x.same_value(y)))
+            }
+            _ => false,
+        }
+    }
+
     /// Reads the leaf value and marks it as visited.
     ///
     /// The `target_type` parameter is used in error messages when the node is not a leaf.
@@ -478,7 +506,7 @@ impl Node {
     }
 
     /// Recursively updates paths in children after the node is moved.
-    fn fix_paths(&mut self) {
+    pub(crate) fn fix_paths(&mut self) {
         match &mut self.kind {
             Kind::Leaf(_) => {}
             Kind::Vec(vec) => {

@@ -10,6 +10,7 @@
 mod config_source;
 mod error;
 mod expose_map;
+mod get_annotations;
 mod override_args;
 mod query_args;
 mod redirect;
@@ -21,7 +22,7 @@ use clap::{Arg, ArgMatches, Command};
 use super::bundle::Bundle;
 use crate::desc::Desc;
 use crate::node::Node;
-use crate::{Describe, FromNode};
+use crate::{DefaultNode, Describe, FromNode, ToNode};
 
 pub use config_source::{
     find_config, find_config_default, find_config_with_registry, home_config_dir,
@@ -30,8 +31,9 @@ pub use config_source::{
 };
 pub use error::SetupError;
 pub use expose_map::{ExposeEntry, ExposeKind, ExposeMap, Long};
+pub use get_annotations::render_with_default_annotations;
 pub use override_args::OverrideArgs;
-pub use query_args::{handle_get_request, GetFormat, GetRequest, QueryArgs};
+pub use query_args::{format_raw_at_path, format_tree_at_path, GetFormat, QueryArgs};
 pub use redirect::{require_command_config, resolve_command_config, RedirectError, RedirectSpec};
 
 // ---------------------------------------------------------------------------------------------- //
@@ -180,7 +182,7 @@ impl Setup {
         func: impl FnOnce(T) -> R + 'static,
     ) -> Bundle<Option<R>, SetupError>
     where
-        T: FromNode + Describe + 'static,
+        T: FromNode + Describe + ToNode + DefaultNode + 'static,
         R: 'static,
     {
         let cmd = self.build_command(&T::describe());
@@ -200,7 +202,7 @@ impl Setup {
         func: impl FnOnce(T, &ArgMatches) -> R + 'static,
     ) -> Bundle<Option<R>, SetupError>
     where
-        T: FromNode + Describe + 'static,
+        T: FromNode + Describe + ToNode + DefaultNode + 'static,
         R: 'static,
     {
         let cmd = self.build_command(&T::describe());
@@ -249,7 +251,7 @@ impl Setup {
     ///
     /// Returns `Ok(None)` if a query command (--desc, --get) was handled.
     /// Returns `Ok(Some(input))` if the input is ready for the user's function.
-    fn prepare_input<T: FromNode + Describe>(
+    fn prepare_input<T: FromNode + Describe + ToNode + DefaultNode>(
         &self,
         matches: &ArgMatches,
     ) -> Result<Option<T>, SetupError> {
@@ -276,15 +278,25 @@ impl Setup {
         // Apply overrides.
         self.override_args.apply::<T>(&mut node, &self.expose_map, matches)?;
 
-        // Handle --get variants.
-        if let Some(output) = self.query_args.check_get::<T>(&node, matches)? {
+        // Raw get formats (--get-flat, --get-as) render the input subtree verbatim and need no
+        // typed parse, so handle them before evaluating T - they work even on a config that
+        // fails to parse.
+        if let Some(output) = self.query_args.check_get_raw::<T>(&node, matches)? {
             println!("{}", output);
             return Ok(None);
         }
 
+        // Evaluate the typed config. Tree --get annotates against the parsed value and its
+        // default baseline, both of which only exist after a successful parse.
         let input: T = T::from_node(&node).map_err(|e| SetupError::EvaluateInputConfig {
             source: Box::new(e),
         })?;
+
+        // Handle tree --get against the input tree, annotated with overridden defaults.
+        if let Some(output) = self.query_args.check_get_annotated(&node, &input, matches)? {
+            println!("{}", output);
+            return Ok(None);
+        }
 
         Ok(Some(input))
     }

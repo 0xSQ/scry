@@ -60,14 +60,19 @@ pub use desc::{Desc, DescPathError};
 pub use key_path::{KeyPath, KeyPathError};
 pub use node::{Node, NodeError};
 pub use string_enum::StringEnumError;
-pub use traits::{Describe, FromNode, ToNode};
+pub use traits::{DefaultNode, Describe, FromNode, ToNode};
 
 // Re-export derive macros.
-pub use scry_derive::{Config, Describe, FromNode, StringEnum, ToNode};
+pub use scry_derive::{Config, DefaultNode, Describe, FromNode, StringEnum, ToNode};
 
 // Re-export probe machinery for derive macro (hidden from docs).
 #[doc(hidden)]
 pub use desc::{make_desc_probe, DescFallback};
+#[doc(hidden)]
+pub use traits::{
+    baseline_insert, baseline_insert_structural, make_default_node_probe, DefaultNodeFallback,
+    DefaultNodeProbe,
+};
 
 // Re-export third-party types needed by derive macro expansions (hidden from docs).
 #[doc(hidden)]

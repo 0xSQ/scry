@@ -50,11 +50,23 @@ pub fn derive_describe(input: TokenStream) -> TokenStream {
     }
 }
 
-/// Derives both `FromNode` and `Describe` for config types.
+/// Derives `DefaultNode` for generating default baselines.
+#[proc_macro_derive(DefaultNode, attributes(scry, default))]
+pub fn derive_default_node(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+
+    match generate::derive_default_node_impl(&input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+/// Derives `FromNode`, `Describe`, `ToNode`, and `DefaultNode` for config types.
 ///
-/// This is the recommended derive for config types that need both parsing
-/// and description support for `--desc` CLI.
-#[proc_macro_derive(Config, attributes(scry))]
+/// This is the recommended derive for config types. It produces everything the
+/// `Setup` CLI builder needs: parsing, description support for `--desc`, node
+/// serialization, and the default baselines that `--get` uses to annotate overrides.
+#[proc_macro_derive(Config, attributes(scry, default))]
 pub fn derive_config(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 
