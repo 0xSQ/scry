@@ -68,7 +68,7 @@ fn main() -> Result<(), SetupError> {
     Setup::standard("deploy")
         .expose(|e| {
             e.option("environment").short('e').long("env");
-            e.flag("dry_run").short('n');
+            e.flag("dry_run", true).short('n');
         })
         .into_bundle(deploy)
         .run()?;

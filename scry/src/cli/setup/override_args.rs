@@ -9,7 +9,7 @@ use super::expose_map::{ExposeKind, ExposeMap};
 use crate::desc::DescPathError;
 use crate::node::Value;
 use crate::node::{Node, RemoveOutcome};
-use crate::{Describe, KeyPath, ToNode};
+use crate::{Describe, KeyPath};
 
 // ---------------------------------------------------------------------------------------------- //
 
@@ -209,15 +209,15 @@ impl OverrideArgs {
         for entry in &expose_map.entries {
             let arg_name = entry.arg_name();
 
-            match entry.kind {
-                ExposeKind::Flag => {
+            match &entry.kind {
+                ExposeKind::Flag { value } => {
                     if matches.get_flag(&arg_name) {
                         if let Some(idx) = matches.indices_of(&arg_name).and_then(Iterator::last) {
                             ops.push((
                                 idx,
                                 Op::Set {
                                     path: entry.path.clone(),
-                                    value: true.to_node()?,
+                                    value: value.clone(),
                                 },
                             ));
                         }

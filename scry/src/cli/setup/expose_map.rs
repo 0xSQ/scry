@@ -6,7 +6,8 @@ use clap::{Arg, ArgAction, Command};
 use heck::{ToKebabCase, ToShoutySnakeCase};
 
 use crate::desc::{EntryRef, VariantDesc, VariantRepr};
-use crate::Desc;
+use crate::node::Node;
+use crate::{Desc, ToNode};
 
 // ---------------------------------------------------------------------------------------------- //
 
@@ -42,10 +43,10 @@ pub struct ExposeEntry {
 }
 
 /// The kind of CLI argument an exposed config field maps to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub enum ExposeKind {
-    /// A boolean flag (e.g., `--verbose`).
-    Flag,
+    /// A presence-only flag that assigns a fixed value when present.
+    Flag { value: Node },
     /// A value-taking option (e.g., `--port 8080`).
     Option,
     /// A repeatable list option where each occurrence appends one element.
@@ -88,13 +89,24 @@ impl ExposeMap {
         self.entries.last_mut().unwrap()
     }
 
-    /// Exposes a config field as a boolean CLI flag.
+    /// Exposes a fixed assignment as a presence-only CLI flag.
     ///
-    /// The long name is derived from the field path (snake_case to kebab-case).
-    pub fn flag(&mut self, path: impl Into<String>) -> &mut ExposeEntry {
+    /// The flag is syntactic sugar for a fixed `--set PATH VALUE` operation: it assigns `value`
+    /// when the flag is present and leaves the loaded config unchanged when absent. The value is
+    /// usually boolean `true`, but any [`ToNode`] value works. The long name is derived from the
+    /// field path (snake_case to kebab-case).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixed value cannot be converted to a [`Node`].
+    pub fn flag(&mut self, path: impl Into<String>, value: impl ToNode) -> &mut ExposeEntry {
+        let path = path.into();
+        let value = value.to_node().unwrap_or_else(|error| {
+            panic!("failed to configure value for exposed flag '{path}': {error}")
+        });
         self.entries.push(ExposeEntry {
-            path: path.into(),
-            kind: ExposeKind::Flag,
+            path,
+            kind: ExposeKind::Flag { value },
             long: Long::Auto,
             short: None,
             help: None,
@@ -144,7 +156,7 @@ impl ExposeMap {
             let mut arg = Arg::new(arg_name.clone());
 
             // Configure the argument based on its kind.
-            match entry.kind {
+            match &entry.kind {
                 ExposeKind::Positional => {
                     let display = entry
                         .value_name
@@ -157,7 +169,7 @@ impl ExposeMap {
                         arg = arg.long(arg_name);
                     }
                     match kind {
-                        ExposeKind::Flag => {
+                        ExposeKind::Flag { .. } => {
                             arg = arg.action(ArgAction::SetTrue);
                         }
                         ExposeKind::Option => {
@@ -174,11 +186,13 @@ impl ExposeMap {
                 }
             }
 
-            if let Some(variants) = enum_variants_for_entry(desc, &entry.path) {
-                let possible_values: Vec<PossibleValue> =
-                    variants.iter().map(possible_value_from_variant).collect();
-                arg = arg.value_parser(possible_values);
-                arg = arg.ignore_case(true);
+            if !matches!(&entry.kind, ExposeKind::Flag { .. }) {
+                if let Some(variants) = enum_variants_for_entry(desc, &entry.path) {
+                    let possible_values: Vec<PossibleValue> =
+                        variants.iter().map(possible_value_from_variant).collect();
+                    arg = arg.value_parser(possible_values);
+                    arg = arg.ignore_case(true);
+                }
             }
 
             // Use explicit help text, or fall back to config description.

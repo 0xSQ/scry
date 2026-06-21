@@ -765,7 +765,7 @@ mod expose_args {
     }
 
     #[test]
-    fn expose_flag_sets_true() {
+    fn expose_true_flag_sets_true() {
         let handler_called = Arc::new(AtomicBool::new(false));
         let handler_called_clone = handler_called.clone();
 
@@ -773,7 +773,7 @@ mod expose_args {
             .override_args(OverrideArgs::new())
             .query_args(QueryArgs::new())
             .expose(|e: &mut ExposeMap| {
-                e.flag("verbose");
+                e.flag("verbose", true);
             })
             .config_source(|c| {
                 c.positional("CONFIG", "Path to config file", Required::Yes)
@@ -787,6 +787,103 @@ mod expose_args {
         let result = bundle.run_from(["test", "config.json", "--verbose"]);
         assert!(result.is_ok());
         assert!(handler_called.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn absent_flag_leaves_config_unchanged() {
+        let bundle = Setup::new("test")
+            .override_args(OverrideArgs::new())
+            .query_args(QueryArgs::new())
+            .expose(|e: &mut ExposeMap| {
+                e.flag("verbose", true);
+            })
+            .config_source(|c| {
+                c.positional("CONFIG", "Path to config file", Required::Yes)
+                    .loader(nested_config_loader())
+            })
+            .into_bundle(|cfg: NestedConfig| assert!(!cfg.verbose));
+
+        let result = bundle.run_from(["test", "config.json"]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn false_flag_disables_true_config_value() {
+        let bundle = Setup::new("test")
+            .override_args(OverrideArgs::new())
+            .query_args(QueryArgs::new())
+            .expose(|e: &mut ExposeMap| {
+                e.flag("verbose", false).long("quiet").short('Q');
+            })
+            .config_source(|c| {
+                c.positional("CONFIG", "Path to config file", Required::Yes)
+                    .loader(json_loader(
+                        r#"{"name":"myapp","database":{"host":"localhost","port":5432},"verbose":true}"#,
+                    ))
+            })
+            .into_bundle(|cfg: NestedConfig| assert!(!cfg.verbose));
+
+        let result = bundle.run_from(["test", "config.json", "-Q"]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn flag_accepts_enum_name_without_consuming_a_value() {
+        let bundle = Setup::new("test")
+            .override_args(OverrideArgs::new())
+            .query_args(QueryArgs::new())
+            .expose(|e: &mut ExposeMap| {
+                e.flag("order", "col_major").long("column-major");
+            })
+            .into_bundle(|cfg: EnumExposeConfig| {
+                assert_eq!(cfg.order, ProcessOrder::ColMajor);
+            });
+
+        let result = bundle.run_from(["test", "--column-major"]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn flag_accepts_numeric_and_structured_values() {
+        #[derive(Debug, Config)]
+        struct FlagConfig {
+            /// Flag numeric value.
+            port: u16,
+            /// Flag structured value.
+            items: Vec<String>,
+        }
+
+        let bundle = Setup::new("test")
+            .override_args(OverrideArgs::new())
+            .query_args(QueryArgs::new())
+            .expose(|e: &mut ExposeMap| {
+                e.flag("port", 8080_u16).long("default-port");
+                e.flag("items", vec!["a", "b"]).long("starter-items");
+            })
+            .into_bundle(|cfg: FlagConfig| {
+                assert_eq!(cfg.port, 8080);
+                assert_eq!(cfg.items, vec!["a", "b"]);
+            });
+
+        let result = bundle.run_from(["test", "--default-port", "--starter-items"]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn flag_help_has_no_value_placeholder() {
+        let bundle = Setup::new("test")
+            .override_args(OverrideArgs::new())
+            .query_args(QueryArgs::new())
+            .expose(|e: &mut ExposeMap| {
+                e.flag("verbose", false).long("quiet").short('Q').help("Disables verbose output.");
+            })
+            .into_bundle(|_cfg: NestedConfig| {});
+
+        let mut command = bundle.command().clone();
+        let help = command.render_long_help().to_string();
+
+        assert!(help.contains("-Q, --quiet"), "was:\n{help}");
+        assert!(!help.contains("--quiet <"), "was:\n{help}");
     }
 
     #[test]
@@ -823,7 +920,7 @@ mod expose_args {
             .override_args(OverrideArgs::new())
             .query_args(QueryArgs::new())
             .expose(|e: &mut ExposeMap| {
-                e.flag("verbose").short('v');
+                e.flag("verbose", true).short('v');
             })
             .config_source(|c| {
                 c.positional("CONFIG", "Path to config file", Required::Yes)
@@ -1141,7 +1238,7 @@ mod collision_detection {
             .override_args(OverrideArgs::new())
             .query_args(QueryArgs::new().desc("desc", Some('d')))
             .expose(|e: &mut ExposeMap| {
-                e.flag("verbose").short('d'); // Same short as --desc
+                e.flag("verbose", true).short('d'); // Same short as --desc
             })
             .config_source(|c| {
                 c.positional("CONFIG", "Path to config file", Required::Yes)
@@ -1192,7 +1289,7 @@ mod collision_detection {
             .override_args(OverrideArgs::new())
             .query_args(QueryArgs::new())
             .expose(|e: &mut ExposeMap| {
-                e.flag("verbose"); // Creates arg with ID "verbose" and long "verbose"
+                e.flag("verbose", true); // Creates arg with ID "verbose" and long "verbose"
             })
             .arg(Arg::new("verbose").long("debug")) // ID is "verbose", long is "debug"
             .config_source(|c| {
@@ -1384,6 +1481,56 @@ mod argv_ordering {
         ]);
         assert!(result.is_ok());
         assert!(handler_called.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn flag_then_set_last_wins() {
+        let bundle = Setup::new("test")
+            .override_args(OverrideArgs::new().set("set", None))
+            .query_args(QueryArgs::new())
+            .expose(|e: &mut ExposeMap| {
+                e.flag("value", "from-flag").long("flag-value");
+            })
+            .config_source(|c| {
+                c.positional("CONFIG", "Path to config file", Required::Yes)
+                    .loader(order_config_loader())
+            })
+            .into_bundle(|cfg: OrderTestConfig| assert_eq!(cfg.value, "from-set"));
+
+        let result = bundle.run_from([
+            "test",
+            "config.json",
+            "--flag-value",
+            "--set",
+            "value",
+            "from-set",
+        ]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn set_then_flag_last_wins() {
+        let bundle = Setup::new("test")
+            .override_args(OverrideArgs::new().set("set", None))
+            .query_args(QueryArgs::new())
+            .expose(|e: &mut ExposeMap| {
+                e.flag("value", "from-flag").long("flag-value");
+            })
+            .config_source(|c| {
+                c.positional("CONFIG", "Path to config file", Required::Yes)
+                    .loader(order_config_loader())
+            })
+            .into_bundle(|cfg: OrderTestConfig| assert_eq!(cfg.value, "from-flag"));
+
+        let result = bundle.run_from([
+            "test",
+            "config.json",
+            "--set",
+            "value",
+            "from-set",
+            "--flag-value",
+        ]);
+        assert!(result.is_ok());
     }
 
     #[test]

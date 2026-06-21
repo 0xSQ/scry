@@ -281,9 +281,11 @@ Available fields:
 
 The same validation happens for config files themselves - unknown keys are caught during parsing, not silently ignored.
 
-### Exposing Fields as CLI Options
+### Exposing Config Values as CLI Arguments
 
-Frequently used values can be promoted to a proper CLI option/flag of your choosing via the `expose` method:
+Frequently used values can be promoted to proper CLI arguments via the `expose` method. Value-taking
+arguments use `option`, while `flag` creates a presence-only argument that applies a predeclared
+`--set PATH VALUE` operation:
 
 ```rust
 use scry::cli::setup::{Setup, SetupError};
@@ -292,7 +294,7 @@ fn main() -> Result<(), SetupError> {
     Setup::standard("deploy")
         .expose(|e| {
             e.option("environment").short('e').long("env");
-            e.flag("dry_run").short('n');
+            e.flag("dry_run", true).short('n');
         })
         .into_bundle(deploy)
         .run()?;
@@ -317,7 +319,13 @@ Now users can write:
 $ deploy deploy.json -n -e production
 ```
 
-Exposed flags and `--set` can be used together, each argument is simply applied in the order given on the command line.
+Flags can assign any value supported by `ToNode`, not only boolean `true`. For example,
+`e.flag("notify.on_failure_only", false).long("always-notify")` creates `--always-notify` as a
+zero-argument shorthand for `--set notify.on_failure_only false`. If the flag is absent, the loaded
+config remains unchanged.
+
+Flags and `--set` can be used together. Each operation is applied in command-line order, so the
+later argument wins when both target the same path.
 
 ## Rhai
 

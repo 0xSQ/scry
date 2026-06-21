@@ -54,7 +54,7 @@ fn main() -> anyhow::Result<()> {
     let query_args = QueryArgs::standard();
     let mut expose_map = ExposeMap::new();
     expose_map.option("environment").short('e').long("env");
-    expose_map.flag("dry_run").short('n');
+    expose_map.flag("dry_run", true).short('n');
 
     // Check for argument collisions.
     check_collisions(Some(&config_source), &override_args, &query_args, &expose_map, &[])?;
@@ -83,7 +83,7 @@ fn main() -> anyhow::Result<()> {
         ResolvedConfigInput::Empty => Node::default(),
     };
 
-    // Apply all "override" operations (set, remove, exposed options and flags).
+    // Apply all override operations (set, remove, exposed options, and flags).
     override_args.apply::<Deploy>(&mut node, &expose_map, &matches)?;
 
     if let Some(output) = query_args.check_get::<Deploy>(&node, &matches)? {
