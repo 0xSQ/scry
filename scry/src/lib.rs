@@ -55,6 +55,9 @@ pub mod writer;
 
 // ---------------------------------------------------------------------------------------------- //
 
+// Re-export clap because CLI bundle extension points use clap types.
+pub use clap;
+
 // Re-export core types at the root for convenience.
 pub use desc::{Desc, DescPathError};
 pub use key_path::{KeyPath, KeyPathError};
