@@ -72,6 +72,15 @@ impl Node {
         }
     }
 
+    /// Creates an empty map node at the root path.
+    ///
+    /// Deserializing this yields a config type built entirely from its declared defaults: every key
+    /// is absent, so each derived field falls back to its `#[scry(default = ...)]`. See
+    /// [`crate::from_defaults`].
+    pub fn empty_map() -> Self {
+        Self::new_map(KeyPath::new(), IndexMap::new())
+    }
+
     // ------------------------------------------------------------------------------------------ //
     // Parsing
 

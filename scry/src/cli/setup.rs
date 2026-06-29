@@ -268,9 +268,9 @@ impl Setup {
                         source: e,
                     })?
                 }
-                ResolvedConfigInput::Empty => Node::default(),
+                ResolvedConfigInput::Empty => Node::empty_map(),
             },
-            None => Node::default(),
+            None => Node::empty_map(),
         };
 
         // Apply overrides.

@@ -68,6 +68,24 @@ pub use traits::{Describe, FromNode, ToNode};
 // Re-export derive macros.
 pub use scry_derive::{Config, Describe, FromNode, StringEnum, ToNode};
 
+// ---------------------------------------------------------------------------------------------- //
+
+/// Builds a config type entirely from its declared defaults, as if parsing an empty config.
+///
+/// Every field falls back to its `#[scry(default = ...)]`, or to `None` for `Option<T>`. A required
+/// field with no default returns a [`NodeError`] at that field's path: this is fallible by design,
+/// so a type that cannot be built from defaults alone says so rather than fabricating a value.
+///
+/// This keeps the `#[scry(default = ...)]` annotations as the single source of truth - no
+/// hand-written constructor that restates the defaults.
+///
+/// ```ignore
+/// let config: MyConfig = scry::from_defaults()?;
+/// ```
+pub fn from_defaults<T: FromNode>() -> Result<T, NodeError> {
+    T::from_node(&Node::empty_map())
+}
+
 // Re-export probe machinery for derive macro (hidden from docs).
 #[doc(hidden)]
 pub use desc::{make_desc_probe, DescFallback};
