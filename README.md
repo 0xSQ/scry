@@ -33,6 +33,8 @@ There are two steps:
 
 And the `scry::Config` derive generates the code needed for the second step automatically.
 
+The derive also buys you a free constructor: `scry::from_defaults::<T>()` builds a value entirely from its `#[scry(default = ...)]` annotations, as if parsing an empty config - so the annotations stay the single source of truth, with no hand-written `Default` impl restating the values. It is fallible by design: for `Deploy` above it returns an error naming `target`, because that field has no default and fabricating one would be worse.
+
 ## But Why?
 
 If you are familiar with [serde](https://serde.rs), you probably recognize this pattern. In `serde`, you parse your JSON into an intermediate tree of `serde_json::Value` objects and then convert that into your struct, although you would typically do it all in one step. So why not just use `serde`? If all you want is to serialize your files into your structs, you probably should. Scry's focus is on applications where you want to do more than just directly translate your data. Where you want to inspect or override your configuration before converting it into your application's types. And where you don't want to do this with language-specific intermediate representations like `serde_json::Value`, or `toml::Value`.
@@ -139,6 +141,8 @@ fn main() -> Result<(), SetupError> {
 ```
 
 `Setup` comes with sensible defaults that can be overridden. By default, it takes the config file path as a positional argument and uses `Node::parse_file` to load it.
+
+(Scry re-exports clap as `scry::clap`, since the builder's extension points traffic in clap types like `Arg` and `Command`. Your crate gets the exact clap version Scry was built against, with no second dependency to keep in sync.)
 
 The `into_bundle` method combines your setup with a target *payload* function and returns a `Bundle` - an object that pairs the generated clap command with its dispatch logic. Calling `run()` parses arguments and dispatches to the target function. Running it shows:
 
@@ -326,6 +330,41 @@ config remains unchanged.
 
 Flags and `--set` can be used together. Each operation is applied in command-line order, so the
 later argument wins when both target the same path.
+
+### Config Discovery and Redirect Files
+
+Typing the config path on every invocation gets old for a tool you use daily. `ConfigSource` is the piece of `Setup` that decides where the config comes from; besides the positional and `--config`-style arguments, it takes a `discover` hook that is consulted when the user passes no path:
+
+```rust
+use scry::cli::setup::{require_command_config, ConfigSource, Setup};
+
+Setup::standard("deploy").config_source(|_| {
+    ConfigSource::new()
+        .option("config", None, "Path to config file")
+        .discover(|_| require_command_config("myapp", &["deploy"]).map(Some))
+})
+```
+
+`require_command_config` implements the standard resolution: it looks for `deploy.*` in the app's config directory (`~/.config/myapp/`), and failing that, consults the app's **redirect file** - a single `myapp.*` file in that directory that points discovery somewhere else. In its simplest form the redirect file is one string, the directory where your configs actually live:
+
+```rhai
+// ~/.config/myapp/myapp.rhai - the entire file:
+"~/dev/myapp-configs"
+```
+
+so the config directory holds one tiny pointer instead of a growing pile of per-command trampoline files. The full form handles exceptions per command:
+
+```rhai
+#{
+    dir: "~/dev/myapp-configs",
+    commands: #{
+        convert: "~/dev/experiments/convert-alt.rhai",
+        backup: "~/dev/myapp-configs/backup.rhai",   // group: all `backup` subcommands
+    },
+}
+```
+
+Resolution order: a per-command file in the config directory always wins; then the most specific `commands` entry (an entry pointing at a missing file is an error, not a fallthrough); then `<command>.*` inside `dir`. Relative paths resolve against the redirect file's directory, and `~/` against home. When the whole chain comes up empty, the error narrates every step it tried; `resolve_command_config` is the non-erroring sibling that returns an `Option` instead.
 
 ## Rhai
 
