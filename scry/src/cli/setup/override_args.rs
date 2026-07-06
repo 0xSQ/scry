@@ -3,9 +3,10 @@
 //! These arguments modify config values before the final config is processed.
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
+use indexmap::IndexMap;
 
 use super::error::SetupError;
-use super::expose_map::{ExposeKind, ExposeMap};
+use super::expose_map::{ExposeEntry, ExposeKind, ExposeMap};
 use crate::desc::DescPathError;
 use crate::node::Value;
 use crate::node::{Node, RemoveOutcome};
@@ -217,7 +218,7 @@ impl OverrideArgs {
                                 idx,
                                 Op::Set {
                                     path: entry.path.clone(),
-                                    value: value.clone(),
+                                    value: wrap_variant(entry, value.clone()),
                                 },
                             ));
                         }
@@ -231,7 +232,7 @@ impl OverrideArgs {
                                 idx,
                                 Op::Set {
                                     path: entry.path.clone(),
-                                    value: value_node,
+                                    value: wrap_variant(entry, value_node),
                                 },
                             ));
                         }
@@ -303,4 +304,20 @@ impl OverrideArgs {
 /// Converts a CLI string argument into a leaf Node.
 fn node_from_arg_str(value_str: &str) -> Node {
     Node::new_leaf(KeyPath::new(), Value::String(value_str.to_string()))
+}
+
+/// Wraps an entry's computed value into its declared variant map, or returns it unchanged.
+///
+/// The wrapped form (`#{ key: value }`) is Scry's standard enum serialization, and the op that
+/// carries it targets the enum field itself, so `set_node` replaces the previous node wholesale -
+/// selecting one arm can never graft a second key into an arm the config already holds.
+fn wrap_variant(entry: &ExposeEntry, value: Node) -> Node {
+    match &entry.variant {
+        Some(key) => {
+            let mut map = IndexMap::new();
+            map.insert(key.clone(), value);
+            Node::new_map(KeyPath::new(), map)
+        }
+        None => value,
+    }
 }

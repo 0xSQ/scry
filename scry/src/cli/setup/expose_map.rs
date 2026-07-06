@@ -31,7 +31,11 @@ pub struct ExposeEntry {
     pub path: String,
     /// The kind of CLI argument this field is exposed as.
     pub kind: ExposeKind,
-    /// Long option behavior. Defaults to deriving from the path (kebab-case).
+    /// Enum variant key to wrap the value in (`#{ key: value }`) before assignment.
+    /// `None` assigns the value at the path directly.
+    pub variant: Option<String>,
+    /// Long option behavior. Defaults to deriving from the variant key when set, else from the
+    /// path (kebab-case).
     pub long: Long,
     /// Short option character.
     pub short: Option<char>,
@@ -60,7 +64,8 @@ pub enum ExposeKind {
 pub enum Long {
     /// No long option (short flag only).
     None,
-    /// Derives the long name from the config path via kebab-case conversion.
+    /// Derives the long name via kebab-case conversion, from the variant key when the entry has
+    /// one, else from the config path.
     Auto,
     /// Uses a custom long option name.
     Custom(String),
@@ -81,6 +86,7 @@ impl ExposeMap {
         self.entries.push(ExposeEntry {
             path: path.into(),
             kind: ExposeKind::Option,
+            variant: None,
             long: Long::Auto,
             short: None,
             help: None,
@@ -107,6 +113,7 @@ impl ExposeMap {
         self.entries.push(ExposeEntry {
             path,
             kind: ExposeKind::Flag { value },
+            variant: None,
             long: Long::Auto,
             short: None,
             help: None,
@@ -124,6 +131,7 @@ impl ExposeMap {
         self.entries.push(ExposeEntry {
             path: path.into(),
             kind: ExposeKind::List,
+            variant: None,
             long: Long::Auto,
             short: None,
             help: None,
@@ -141,6 +149,7 @@ impl ExposeMap {
         self.entries.push(ExposeEntry {
             path: path.into(),
             kind: ExposeKind::Positional,
+            variant: None,
             long: Long::None,
             short: None,
             help: None,
@@ -186,7 +195,9 @@ impl ExposeMap {
                 }
             }
 
-            if !matches!(&entry.kind, ExposeKind::Flag { .. }) {
+            // Variant entries carry the arm's payload as their CLI value, not an enum name, so
+            // the unit-enum possible-values parser must not apply to them.
+            if entry.variant.is_none() && !matches!(&entry.kind, ExposeKind::Flag { .. }) {
                 if let Some(variants) = enum_variants_for_entry(desc, &entry.path) {
                     let possible_values: Vec<PossibleValue> =
                         variants.iter().map(possible_value_from_variant).collect();
@@ -263,6 +274,34 @@ fn variant_help_text(variant: &VariantDesc) -> Option<String> {
 }
 
 impl ExposeEntry {
+    /// Wraps this entry's value in a single-key map, addressing one variant of an enum field.
+    ///
+    /// The entry's path names the enum field; `key` is the variant's *serialized* config key
+    /// (after any `rename`/`rename_all`), not necessarily the Rust variant name. At apply time
+    /// the computed value is wrapped as `#{ key: value }` and assigned at the path wholesale, so
+    /// selecting one arm always displaces whichever arm the config held. This reaches arms whose
+    /// payload parses from a single CLI string (or, for flags, from the fixed node); unit
+    /// variants of derived enums serialize as bare strings and are better served by a plain
+    /// fixed-value flag. Repeated calls replace the key (the last call wins); nesting is not
+    /// supported.
+    ///
+    /// Without a custom long name, the long option name derives from the variant key rather
+    /// than the path, so `e.option("source").variant("grid")` exposes `--grid`.
+    ///
+    /// # Panics
+    ///
+    /// Panics for list entries; append-inside-a-variant semantics are not defined.
+    pub fn variant(&mut self, key: impl Into<String>) -> &mut Self {
+        assert!(
+            !matches!(self.kind, ExposeKind::List),
+            "exposed list '{}' cannot take a variant wrapper: \
+             append-inside-a-variant semantics are not defined",
+            self.path
+        );
+        self.variant = Some(key.into());
+        self
+    }
+
     /// Sets a custom long option name.
     pub fn long(&mut self, name: impl Into<String>) -> &mut Self {
         self.long = Long::Custom(name.into());
@@ -298,11 +337,14 @@ impl ExposeEntry {
 
     /// Returns the argument name used as the clap argument ID.
     ///
-    /// For [`Long::Auto`] and [`Long::None`], the path is converted to kebab-case.
-    /// For [`Long::Custom`], the custom name is used.
+    /// For [`Long::Auto`] and [`Long::None`], the variant key (when set) or otherwise the path
+    /// is converted to kebab-case. For [`Long::Custom`], the custom name is used.
     pub fn arg_name(&self) -> String {
         match &self.long {
-            Long::Auto | Long::None => self.path.to_kebab_case(),
+            Long::Auto | Long::None => match &self.variant {
+                Some(key) => key.to_kebab_case(),
+                None => self.path.to_kebab_case(),
+            },
             Long::Custom(name) => name.clone(),
         }
     }

@@ -1646,3 +1646,243 @@ mod argv_ordering {
         assert!(handler_called.load(Ordering::SeqCst));
     }
 }
+
+// ---------------------------------------------------------------------------------------------- //
+// Variant Expose Tests
+
+mod variant_expose {
+    use super::*;
+
+    /// A data-carrying enum in Scry's standard single-key-map form.
+    #[derive(Debug, PartialEq, scry::FromNode, scry::ToNode, scry::Describe)]
+    enum ImageSource {
+        /// A grid directory.
+        Grid(String),
+        /// A set of image files.
+        Files(String),
+    }
+
+    #[derive(Debug, Config)]
+    struct SourceConfig {
+        /// Where the images come from.
+        source: ImageSource,
+    }
+
+    /// Runs a bundle exposing `--grid` / `--files` variant options over a prior config state,
+    /// asserting the source the handler receives.
+    fn assert_source(prior: &'static str, args: &[&str], expected: ImageSource) {
+        let handler_called = Arc::new(AtomicBool::new(false));
+        let handler_called_clone = handler_called.clone();
+
+        let bundle = Setup::new("test")
+            .override_args(OverrideArgs::new().set("set", None))
+            .query_args(QueryArgs::new())
+            .expose(|e: &mut ExposeMap| {
+                e.option("source").variant("grid");
+                e.option("source").variant("files");
+            })
+            .config_source(|c| {
+                c.positional("CONFIG", "Path to config file", Required::Yes)
+                    .loader(json_loader(prior))
+            })
+            .into_bundle(move |cfg: SourceConfig| {
+                assert_eq!(cfg.source, expected);
+                handler_called_clone.store(true, Ordering::SeqCst);
+            });
+
+        let mut argv = vec!["test", "config.json"];
+        argv.extend_from_slice(args);
+        let result = bundle.run_from(argv);
+        assert!(result.is_ok(), "run failed: {result:?}");
+        assert!(handler_called.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn option_variant_wraps_value() {
+        assert_source(r#"{}"#, &["--grid", "g/dir"], ImageSource::Grid("g/dir".into()));
+    }
+
+    #[test]
+    fn variant_replaces_other_arm_wholesale() {
+        // The regression this feature exists for: selecting one arm over a config holding the
+        // other arm must replace the map, not graft a second (ambiguous) key into it.
+        assert_source(
+            r#"{"source": {"grid": "from-config"}}"#,
+            &["--files", "f"],
+            ImageSource::Files("f".into()),
+        );
+    }
+
+    #[test]
+    fn variant_replaces_leaf_shorthand() {
+        assert_source(
+            r#"{"source": "loose-leaf"}"#,
+            &["--files", "f"],
+            ImageSource::Files("f".into()),
+        );
+    }
+
+    #[test]
+    fn variant_replaces_same_arm_payload() {
+        // Same arm held by the config with a structurally different payload: replaced, not merged.
+        assert_source(
+            r#"{"source": {"files": ["a", "b"]}}"#,
+            &["--files", "f"],
+            ImageSource::Files("f".into()),
+        );
+    }
+
+    #[test]
+    fn sibling_variants_last_wins() {
+        assert_source(r#"{}"#, &["--grid", "g", "--files", "f"], ImageSource::Files("f".into()));
+        assert_source(r#"{}"#, &["--files", "f", "--grid", "g"], ImageSource::Grid("g".into()));
+    }
+
+    #[test]
+    fn variant_then_dotted_set_grafts_into_fresh_map() {
+        // A dotted --set after a variant option grafts into the freshly written single-key map,
+        // even when the config file held the other arm.
+        assert_source(
+            r#"{"source": {"grid": "from-config"}}"#,
+            &["--files", "f", "--set", "source.files", "s"],
+            ImageSource::Files("s".into()),
+        );
+    }
+
+    #[test]
+    fn dotted_set_then_variant_last_wins() {
+        assert_source(
+            r#"{}"#,
+            &["--set", "source.files", "s", "--grid", "g"],
+            ImageSource::Grid("g".into()),
+        );
+    }
+
+    #[test]
+    fn custom_long_overrides_derived_name() {
+        let bundle = Setup::new("test")
+            .override_args(OverrideArgs::new())
+            .query_args(QueryArgs::new())
+            .expose(|e: &mut ExposeMap| {
+                e.option("source").variant("files").long("browse");
+            })
+            .into_bundle(|cfg: SourceConfig| {
+                assert_eq!(cfg.source, ImageSource::Files("f".into()));
+            });
+
+        assert!(bundle.run_from(["test", "--browse", "f"]).is_ok());
+    }
+
+    #[test]
+    fn repeated_variant_is_last_wins_setter() {
+        let bundle = Setup::new("test")
+            .override_args(OverrideArgs::new())
+            .query_args(QueryArgs::new())
+            .expose(|e: &mut ExposeMap| {
+                e.option("source").variant("grid").variant("files");
+            })
+            .into_bundle(|cfg: SourceConfig| {
+                assert_eq!(cfg.source, ImageSource::Files("f".into()));
+            });
+
+        // The derived long name follows the last key too.
+        assert!(bundle.run_from(["test", "--files", "f"]).is_ok());
+    }
+
+    #[test]
+    fn flag_variant_wraps_fixed_value() {
+        let bundle = Setup::new("test")
+            .override_args(OverrideArgs::new())
+            .query_args(QueryArgs::new())
+            .expose(|e: &mut ExposeMap| {
+                e.flag("source", "preset/dir").variant("grid").long("preset-grid");
+            })
+            .into_bundle(|cfg: SourceConfig| {
+                assert_eq!(cfg.source, ImageSource::Grid("preset/dir".into()));
+            });
+
+        assert!(bundle.run_from(["test", "--preset-grid"]).is_ok());
+    }
+
+    #[test]
+    fn positional_variant_wraps_value() {
+        let bundle = Setup::new("test")
+            .override_args(OverrideArgs::new())
+            .query_args(QueryArgs::new())
+            .expose(|e: &mut ExposeMap| {
+                e.positional("source").variant("grid");
+            })
+            .into_bundle(|cfg: SourceConfig| {
+                assert_eq!(cfg.source, ImageSource::Grid("g/dir".into()));
+            });
+
+        assert!(bundle.run_from(["test", "g/dir"]).is_ok());
+    }
+
+    #[test]
+    fn renamed_arm_uses_serialized_key() {
+        // The variant key is the serialized config key, not the Rust variant name.
+        #[derive(Debug, PartialEq, scry::FromNode, scry::ToNode, scry::Describe)]
+        enum RenamedSource {
+            /// A directory arm, renamed in config.
+            #[scry(rename = "dir")]
+            Directory(String),
+        }
+
+        #[derive(Debug, Config)]
+        struct RenamedConfig {
+            /// The source.
+            source: RenamedSource,
+        }
+
+        let bundle = Setup::new("test")
+            .override_args(OverrideArgs::new())
+            .query_args(QueryArgs::new())
+            .expose(|e: &mut ExposeMap| {
+                e.option("source").variant("dir");
+            })
+            .into_bundle(|cfg: RenamedConfig| {
+                assert_eq!(cfg.source, RenamedSource::Directory("d".into()));
+            });
+
+        assert!(bundle.run_from(["test", "--dir", "d"]).is_ok());
+    }
+
+    #[test]
+    fn variant_entry_skips_unit_enum_possible_values() {
+        // A variant entry's CLI value is the arm's payload, so the unit-enum possible-values
+        // parser must not constrain it even when the target field describes a unit enum. Without
+        // the skip, clap would reject "anything" before scry ever saw it; --get exits before
+        // typed conversion, so clap acceptance is all this asserts.
+        let bundle = Setup::new("test")
+            .override_args(OverrideArgs::new())
+            .query_args(QueryArgs::new().get("get", None))
+            .expose(|e: &mut ExposeMap| {
+                e.option("order").variant("custom");
+            })
+            .into_bundle(|_cfg: EnumExposeConfig| {});
+
+        let result = bundle.run_from(["test", "--custom", "anything", "--get", "order"]);
+        assert!(result.is_ok(), "run failed: {result:?}");
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot take a variant wrapper")]
+    fn variant_on_list_panics() {
+        let mut map = ExposeMap::new();
+        map.list("source").variant("files");
+    }
+
+    #[test]
+    #[should_panic(expected = "CLI argument collision")]
+    fn duplicate_variant_keys_panic() {
+        Setup::new("test")
+            .override_args(OverrideArgs::new())
+            .query_args(QueryArgs::new())
+            .expose(|e: &mut ExposeMap| {
+                e.option("source").variant("grid");
+                e.flag("source", "fixed").variant("grid");
+            })
+            .into_bundle(|_cfg: SourceConfig| {});
+    }
+}

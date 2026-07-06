@@ -313,6 +313,40 @@ The four variants can be read as:
 { "database": { "host": "db.example.com", "table": "logs" } }
 ```
 
+### Enums on the Command Line
+
+For unit enums, exposing the field as a plain option is enough: `#[derive(Config)]` already
+teaches the CLI layer the variant names, and the exposed option gets them as possible values.
+
+Data-carrying enums need one more piece. Their single-key-map form interacts poorly with `--set`:
+`--set` values are plain string leaves, and a dotted path like `--set output.file app.log` grafts
+a `file` key into whatever map is already there - if the config held `{ "remote": ... }`, the
+result is a two-key map that enum parsing rejects as ambiguous. The `variant` modifier on exposed
+entries closes this gap. It declares that the entry addresses one variant of the enum field: the
+entry's value is wrapped as `{ "<key>": value }` and assigned at the field's path wholesale, so
+selecting one variant always displaces whichever variant the config held.
+
+```rust
+Setup::standard("app")
+    .expose(|e| {
+        e.option("output").variant("file");  // --file <VALUE>  ->  output: { "file": "<VALUE>" }
+    })
+```
+
+- Without a custom long name (`.long(...)`), the option name derives from the variant key rather
+  than the field path - `--file` above.
+- The CLI value is still one string, so an exposed option reaches variants whose payload parses
+  from a single string (`file` here). Variants with structured payloads (`remote`, `database`)
+  stay config-only - or use a `flag`, whose fixed `ToNode` value is wrapped the same way and may
+  be structured.
+- Pass the *serialized* variant key, i.e. the spelling after `rename` / `rename_all`.
+- The modifier composes with `option`, `positional`, and `flag`; `list` entries reject it.
+  Variant options participate in the usual command-line override order, later operations winning.
+
+More generally, the expose vocabulary splits along two axes: constructors (`option`, `flag`,
+`list`, `positional`) name an argument's CLI shape, while modifiers like `variant` refine its
+presentation and write shape.
+
 ### Implementing FromNode Manually
 
 For custom parsing logic (multiple input formats, validation, computed fields), implement `FromNode` yourself. This example accepts three different input formats:

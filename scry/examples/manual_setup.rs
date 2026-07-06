@@ -16,6 +16,7 @@
 //!   cargo run --example manual_setup -- examples/manual_setup.json --get
 //!   cargo run --example manual_setup -- examples/manual_setup.json --set retries 5
 //!   cargo run --example manual_setup -- examples/manual_setup.json --env staging -n
+//!   cargo run --example manual_setup -- examples/manual_setup.json --canary beta
 
 use clap::Command;
 
@@ -41,6 +42,20 @@ struct Deploy {
     /// Run without making changes.
     #[scry(default = false)]
     dry_run: bool,
+    /// Rollout strategy; full rollout when unset.
+    rollout: Option<Rollout>,
+}
+
+/// How the deployment rolls out.
+///
+/// Serializes in Scry's standard enum form, a single-key map naming the variant:
+/// `{"canary": "beta"}` or `{"percent": 25}`.
+#[derive(Debug, scry::FromNode, scry::ToNode, scry::Describe)]
+enum Rollout {
+    /// Deploys to a named canary group first.
+    Canary(String),
+    /// Deploys to a percentage of servers.
+    Percent(u32),
 }
 
 // ---------------------------------------------------------------------------------------------- //
@@ -55,6 +70,10 @@ fn main() -> anyhow::Result<()> {
     let mut expose_map = ExposeMap::new();
     expose_map.option("environment").short('e').long("env");
     expose_map.flag("dry_run", true).short('n');
+    // Variant options address one enum arm each; the long names derive from the variant keys,
+    // and selecting one arm replaces whichever arm the config held.
+    expose_map.option("rollout").variant("canary");
+    expose_map.option("rollout").variant("percent");
 
     // Check for argument collisions.
     check_collisions(Some(&config_source), &override_args, &query_args, &expose_map, &[])?;
@@ -101,6 +120,11 @@ fn main() -> anyhow::Result<()> {
     println!("Deploying to: {}", config.target);
     println!("Environment: {}", config.environment);
     println!("Retries: {}", config.retries);
+    match &config.rollout {
+        Some(Rollout::Canary(group)) => println!("Rollout: canary group '{group}'"),
+        Some(Rollout::Percent(percent)) => println!("Rollout: {percent}% of servers"),
+        None => println!("Rollout: full"),
+    }
 
     Ok(())
 }
