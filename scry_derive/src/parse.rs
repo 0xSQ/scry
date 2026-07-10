@@ -435,7 +435,11 @@ fn parse_rename_all(lit: &LitStr) -> Result<RenameAll> {
     }
 }
 
-/// Extracts doc comments from attributes.
+/// Extracts the summary of a doc comment from attributes.
+///
+/// Only the first paragraph - the lines up to the first blank doc line - is kept, following
+/// rustdoc's convention: the first paragraph is the short description, and everything after it
+/// is elaboration for source readers that would bloat `--desc` output and error field listings.
 pub fn extract_doc(attrs: &[Attribute]) -> String {
     let docs: Vec<String> = attrs
         .iter()
@@ -455,5 +459,8 @@ pub fn extract_doc(attrs: &[Attribute]) -> String {
         })
         .collect();
 
-    docs.join(" ")
+    docs.split(|line| line.is_empty())
+        .find(|paragraph| !paragraph.is_empty())
+        .unwrap_or_default()
+        .join(" ")
 }
