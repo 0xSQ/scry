@@ -20,6 +20,7 @@ use crate::kit::OneOrMany;
 use crate::node::{Node, NodeError};
 use crate::traits::{Describe, FromNode};
 use crate::util::{PathError, PathExt};
+use crate::ToNode;
 use globset::{GlobBuilder, GlobMatcher, GlobSet, GlobSetBuilder};
 use indexmap::IndexSet;
 use std::collections::HashSet;
@@ -31,7 +32,7 @@ use std::path::{Path, PathBuf};
 ///
 /// Holds one or more [`SourceSpec`]s. Each source defines discovery rules (`from`) and
 /// filtering rules (`where`). Results are merged across sources with deduplication.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, ToNode)]
 pub struct Files {
     /// The sources to collect files from.
     pub sources: Vec<SourceSpec>,
@@ -42,11 +43,12 @@ pub struct Files {
 /// Can be specified as a string (shorthand for a single `from.root` entry) or a map with
 /// optional `from` and optional `where` blocks. If `from` is omitted, the caller-provided
 /// `base_dir` is used as the implicit root.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, ToNode)]
 pub struct SourceSpec {
     /// Discovery rules: where to walk and what to skip.
     pub from: Option<FromSpec>,
     /// Filtering rules: which discovered files to keep.
+    #[scry(rename = "where")]
     pub where_: Option<WhereSpec>,
 }
 
@@ -56,7 +58,7 @@ pub struct SourceSpec {
 ///
 /// Can be specified as a string (shorthand for a single root) or a map with `root` and
 /// optional `prune`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, ToNode)]
 pub struct FromSpec {
     /// Starting locations to walk. Accepts paths and/or patterns.
     pub root: OneOrMany<PathPatternSpec>,
@@ -69,7 +71,7 @@ pub struct FromSpec {
 ///
 /// Can be a string shorthand (auto-detected) or an explicit map with `path`, optional
 /// `syntax`, and optional `must_exist` and `recursive` fields.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, ToNode)]
 pub struct PathPatternSpec {
     /// The path text.
     pub path: String,
@@ -94,7 +96,8 @@ impl PathPatternSpec {
 }
 
 /// Controls how a pattern string is interpreted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ToNode)]
+#[scry(rename_all = "snake_case")]
 pub enum PatternSyntax {
     /// Literal string/path matching.
     #[default]
@@ -107,7 +110,7 @@ pub enum PatternSyntax {
 ///
 /// Each filter (`path`, `name`, `stem`, `ext`) uses the same include/exclude model.
 /// Multiple attributes combine with AND semantics. Case sensitivity is controlled by `case`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, ToNode)]
 pub struct WhereSpec {
     /// Case sensitivity mode for all attribute matching. Defaults to insensitive.
     pub case: CaseMode,
@@ -122,7 +125,8 @@ pub struct WhereSpec {
 }
 
 /// Controls case sensitivity for attribute matching in `where` blocks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ToNode)]
+#[scry(rename_all = "snake_case")]
 pub enum CaseMode {
     /// Case-insensitive matching (the default).
     #[default]
@@ -137,7 +141,7 @@ pub enum CaseMode {
 /// - String shorthand: `"rs"` (equivalent to `#{ include: "rs" }`).
 /// - Array shorthand: `["rs", "md"]` (equivalent to `#{ include: ["rs", "md"] }`).
 /// - Full map: `#{ include: ["rs"], exclude: ["bak"] }`.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, ToNode)]
 pub struct AttrRuleSpec {
     /// Patterns a file attribute must match. If empty, all values are allowed.
     pub include: OneOrMany<TextPatternSpec>,
@@ -149,7 +153,7 @@ pub struct AttrRuleSpec {
 ///
 /// Can be a string shorthand (auto-detected) or an explicit map with `pattern` and optional
 /// `syntax`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, ToNode)]
 pub struct TextPatternSpec {
     /// The pattern text.
     pub pattern: String,
@@ -1917,6 +1921,25 @@ mod tests {
         let files: Files = node.as_type().unwrap();
         assert_eq!(files.sources.len(), 1);
         assert!(files.sources[0].from.is_none());
+    }
+
+    #[test]
+    fn files_round_trip_through_canonical_json() {
+        let node = Node::parse_str(
+            r#"#{ from: #{ root: #{ path: "images", recursive: false } }, where: #{ ext: ["png", "webp"] } }"#,
+            Format::Rhai,
+        )
+        .unwrap();
+        let files: Files = node.as_type().unwrap();
+
+        let json = files.to_node().unwrap().to_string_as(Format::Json).unwrap();
+        let reparsed: Files = Node::parse_str(&json, Format::Json).unwrap().as_type().unwrap();
+
+        let source = &reparsed.sources[0];
+        let root = &source.from.as_ref().unwrap().root[0];
+        assert_eq!(root.path, "images");
+        assert!(!root.recursive);
+        assert_eq!(source.where_.as_ref().unwrap().ext.as_ref().unwrap().include.len(), 2);
     }
 
     // ------------------------------------------------------------------------------------------ //
