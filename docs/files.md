@@ -1,9 +1,10 @@
 # Files
 
-`scry::kit::Files` describes a set of files in two steps:
+`scry::kit::Files` describes a set of files with three controls:
 
 - `from` says where to look.
 - `where` says which discovered files to keep.
+- `sort` says how to order files found under each root.
 
 The type is meant to be pleasant to write in any Scry-supported config format, including JSON,
 TOML, YAML, and Rhai. The examples below use Rhai because it is compact and readable, but the same
@@ -55,8 +56,28 @@ files: #{
 - `where.name`: filters on the final file name, including extension.
 - `where.stem`: filters on the file name without extension.
 - `where.ext`: filters on the extension.
+- `sort`: orders files discovered from each root. Defaults to `natural`.
 
 Results from all sources are merged, deduplicated, and kept in first-seen order.
+
+## Ordering
+
+Scry processes sources in their declared order, then processes each source's roots in their
+declared order. Files discovered from one root are sorted as one batch before they are merged and
+deduplicated. The final merged result is not globally sorted.
+
+The default `natural` order compares paths component by component and case-sensitively. Contiguous
+runs of ASCII digits `0` through `9` are compared by numeric magnitude, so `image-2.png` sorts
+before `image-10.png`. Other characters, including non-ASCII digits, are compared as text.
+
+Use `lexicographic` for exact component-wise ordering that treats digits as text:
+
+```rhai
+files: #{
+    from: "images",
+    sort: "lexicographic",
+}
+```
 
 ## Syntax Forms
 
@@ -354,9 +375,15 @@ files: #{
 ```rhai
 files: "path/or/pattern"
 files: ["path/a", "path/b"]
-files: #{ from: "...", where: #{ ... } }
+files: #{ from: "...", where: #{ ... }, sort: "natural" }
 files: #{ sources: [ ... ] }
 ```
+
+Source fields:
+
+- `from`: discovery roots and prune rules.
+- `where`: filters for discovered files.
+- `sort`: `natural` or `lexicographic`. Defaults to `natural`.
 
 ### `from`
 
