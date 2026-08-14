@@ -1,4 +1,52 @@
 //! Reusable path ordering.
+//!
+//! [`PathSort::Natural`] compares paired runs of ASCII digits by numeric magnitude, while
+//! [`PathSort::Lexicographic`] treats digits as ordinary text. The difference is easiest to see
+//! in paths containing numbers:
+//!
+//! | Input paths | Natural order | Lexicographic order |
+//! | --- | --- | --- |
+//! | `file-2`, `file-10` | `file-2 < file-10` | `file-10 < file-2` |
+//! | `v1.9`, `v1.10` | `v1.9 < v1.10` | `v1.10 < v1.9` |
+//! | `dir-9/x`, `dir-10/x` | `dir-9/x < dir-10/x` | `dir-10/x < dir-9/x` |
+//!
+//! For example:
+//!
+//! ```
+//! use scry::util::PathSort;
+//! use std::path::PathBuf;
+//!
+//! let paths = vec![
+//!     PathBuf::from("image-10.png"),
+//!     PathBuf::from("image-2.png"),
+//!     PathBuf::from("image-1.png"),
+//! ];
+//!
+//! let mut natural = paths.clone();
+//! PathSort::Natural.sort(&mut natural);
+//! assert_eq!(
+//!     natural,
+//!     vec![
+//!         PathBuf::from("image-1.png"),
+//!         PathBuf::from("image-2.png"),
+//!         PathBuf::from("image-10.png"),
+//!     ]
+//! );
+//!
+//! let mut lexicographic = paths;
+//! PathSort::Lexicographic.sort(&mut lexicographic);
+//! assert_eq!(
+//!     lexicographic,
+//!     vec![
+//!         PathBuf::from("image-1.png"),
+//!         PathBuf::from("image-10.png"),
+//!         PathBuf::from("image-2.png"),
+//!     ]
+//! );
+//! ```
+//!
+//! Only ASCII digit runs receive numeric treatment. Both modes remain case-sensitive and
+//! locale-independent.
 
 use std::cmp::Ordering;
 use std::path::{Component, Path};
