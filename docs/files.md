@@ -450,3 +450,5 @@ a symlinked directory is an error.
 
 Relative roots need a base directory from the Rust caller. Exact roots must exist unless
 `must_exist: false` is set. Wildcard roots may match nothing unless `must_exist: true` is set.
+Used structural paths must be Unicode. Non-Unicode entries discovered beneath a valid root follow
+the caller's `OnError` policy and never enter filtering, deduplication, sorting, or returned results.

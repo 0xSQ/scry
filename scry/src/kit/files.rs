@@ -15,12 +15,19 @@
 //! encountered during traversal are silently skipped. Broken symlinks encountered during
 //! traversal are skipped; an exact root pointing to a broken symlink behaves like a
 //! missing path (`must_exist` applies).
+//!
+//! # Unicode path behavior
+//!
+//! [`Files`] only processes and returns paths with an exact Unicode representation. Used bases,
+//! resolved exact roots, and resolved exact prune paths must be Unicode and fail structurally if
+//! they are not. Non-Unicode wildcard matches and directory entries encountered during discovery
+//! follow [`OnError`]. No files below a rejected directory enter results, and Scry's own directory
+//! walker does not recurse into it.
 
 use crate::desc::{self, Desc};
 use crate::kit::OneOrMany;
 use crate::node::{Node, NodeError};
 use crate::traits::{Describe, FromNode};
-use crate::util::{PathError, PathExt};
 use crate::ToNode;
 use globset::{GlobBuilder, GlobMatcher, GlobSet, GlobSetBuilder};
 use indexmap::IndexSet;
@@ -243,9 +250,9 @@ pub enum FilesError {
         #[source]
         source: std::io::Error,
     },
-    /// Base directory path contains invalid UTF-8.
-    #[error(transparent)]
-    BaseDirNotUtf8(PathError),
+    /// A path encountered during resolution cannot be represented as Unicode.
+    #[error("path cannot be represented as Unicode: {path:?}")]
+    NonUnicodePath { path: PathBuf },
     /// I/O error while traversing a directory.
     #[error("error reading directory '{}'", path.display())]
     DirTraversalIo {
@@ -275,14 +282,16 @@ pub enum FilesError {
 // ---------------------------------------------------------------------------------------------- //
 // Error Policy
 
-/// Controls how I/O errors during directory traversal and wildcard expansion are handled.
+/// Controls how recoverable discovery errors are handled.
 ///
-/// This only affects errors encountered while walking directories (`read_dir`, reading
-/// entries, `file_type`) and iterating wildcard matches. Structural errors like invalid
-/// patterns, missing required paths, or unsupported path types always fail regardless.
+/// This affects errors encountered while walking directories (`read_dir`, reading entries,
+/// `file_type`), iterating wildcard matches, and rejecting non-Unicode entries discovered under
+/// an otherwise usable root. Structural errors always fail regardless. These include non-Unicode
+/// used bases and resolved exact roots or prune paths, invalid patterns, missing required paths,
+/// and unsupported path types.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum OnError {
-    /// Stops on the first I/O error.
+    /// Stops on the first recoverable discovery error.
     Fail,
     /// Logs a warning to stderr and continues.
     #[default]
@@ -292,7 +301,7 @@ pub enum OnError {
 }
 
 impl OnError {
-    /// Handles a traversal error according to this policy.
+    /// Handles a recoverable discovery error according to this policy.
     fn handle(&self, err: FilesError) -> Result<(), FilesError> {
         match self {
             OnError::Fail => Err(err),
@@ -648,15 +657,16 @@ impl Files {
     /// Collects file paths from all sources.
     ///
     /// Iterates over each [`SourceSpec`], calls its `locate`, and deduplicates results
-    /// across sources while preserving first-seen order.
+    /// across sources while preserving first-seen order. Recoverable discovery errors use
+    /// [`OnError::Warn`].
     pub fn locate(&self, base_dir: Option<&Path>) -> Result<Vec<PathBuf>, FilesError> {
         self.locate_with(base_dir, OnError::default())
     }
 
     /// Collects file paths from all sources, with explicit error handling policy.
     ///
-    /// Like [`locate`](Self::locate), but lets the caller choose how I/O errors during
-    /// directory traversal and wildcard expansion are handled.
+    /// Like [`locate`](Self::locate), but lets the caller choose how recoverable directory,
+    /// wildcard, and non-Unicode entry errors are handled.
     pub fn locate_with(
         &self,
         base_dir: Option<&Path>,
@@ -676,13 +686,13 @@ impl SourceSpec {
     ///
     /// If `base_dir` is `Some`, relative paths and patterns are resolved against it.
     /// If `None`, all paths must be absolute. If `from` is omitted, `base_dir` is used
-    /// as the implicit root.
+    /// as the implicit root. Used bases and resolved exact roots must be Unicode. Recoverable
+    /// discovery errors use [`OnError::Warn`].
     pub fn locate(&self, base_dir: Option<&Path>) -> Result<Vec<PathBuf>, FilesError> {
         self.locate_with(base_dir, OnError::default())
     }
 
-    /// Collects file paths matching this source's specification, with explicit error handling
-    /// policy.
+    /// Collects file paths matching this source with an explicit recoverable-error policy.
     pub fn locate_with(
         &self,
         base_dir: Option<&Path>,
@@ -696,9 +706,10 @@ impl SourceSpec {
                 let base = base_dir.ok_or_else(|| FilesError::MissingBaseDir {
                     path: "<implicit root>".to_string(),
                 })?;
+                require_unicode_path(base)?;
                 default_from = FromSpec {
                     root: OneOrMany::one(PathPatternSpec {
-                        path: base.to_string_lossy().into_owned(),
+                        path: String::new(),
                         syntax: PatternSyntax::Exact,
                         must_exist: true,
                         recursive: true,
@@ -715,9 +726,10 @@ impl SourceSpec {
             let base = base_dir.ok_or_else(|| FilesError::MissingBaseDir {
                 path: "<implicit root>".to_string(),
             })?;
+            require_unicode_path(base)?;
             default_root_from = FromSpec {
                 root: OneOrMany::one(PathPatternSpec {
-                    path: base.to_string_lossy().into_owned(),
+                    path: String::new(),
                     syntax: PatternSyntax::Exact,
                     must_exist: true,
                     recursive: true,
@@ -775,6 +787,8 @@ struct CompiledPrune {
     exclude_dirs_nonrec: Vec<PathBuf>,
     /// Compiled wildcard patterns for prune matching.
     prune_globset: GlobSet,
+    /// Whether relative wildcard matching uses the caller-provided base directory.
+    has_relative_wildcard: bool,
 }
 
 impl CompiledPrune {
@@ -787,6 +801,7 @@ impl CompiledPrune {
         let mut prune_dirs = Vec::new();
         let mut exclude_dirs_nonrec = Vec::new();
         let mut glob_builder = GlobSetBuilder::new();
+        let mut has_relative_wildcard = false;
 
         for pp in patterns {
             match pp.syntax {
@@ -817,6 +832,12 @@ impl CompiledPrune {
                     }
                 }
                 PatternSyntax::Wildcard => {
+                    if !Path::new(&pp.path).is_absolute() {
+                        has_relative_wildcard = true;
+                        if let Some(base_dir) = base_dir {
+                            require_unicode_path(base_dir)?;
+                        }
+                    }
                     let escaped = escape_wildcard_for_globset(&pp.path);
                     let glob = GlobBuilder::new(&escaped).literal_separator(true).build().map_err(
                         |e| FilesError::PruneWildcardPattern {
@@ -837,6 +858,7 @@ impl CompiledPrune {
             prune_dirs,
             exclude_dirs_nonrec,
             prune_globset,
+            has_relative_wildcard,
         })
     }
 
@@ -863,7 +885,10 @@ impl CompiledPrune {
             if self.prune_globset.is_match(path) {
                 return true;
             }
-            if let Some(bd) = base_dir {
+            if self.has_relative_wildcard {
+                let Some(bd) = base_dir else {
+                    return false;
+                };
                 if let Ok(relative) = path.strip_prefix(bd) {
                     if self.prune_globset.is_match(relative) {
                         return true;
@@ -990,6 +1015,10 @@ fn expand_wildcard(
                 continue;
             }
         };
+        if let Err(error) = require_unicode_path(&path) {
+            on_error.handle(error)?;
+            continue;
+        }
         match classify_path(&path)? {
             Some(ResolvedPath::File) => {
                 let source_root = path.parent().unwrap_or_else(|| Path::new(""));
@@ -1025,24 +1054,12 @@ fn expand_wildcard(
 
 /// Sorts one discovered root batch using the selected path order.
 fn sort_paths(paths: &mut [PathBuf], sort: PathSort) {
+    debug_assert!(paths.iter().all(|path| path.to_str().is_some()));
     paths.sort_by(|left, right| compare_paths(left, right, sort));
 }
 
-/// Compares paths using an intrinsic Unicode/opaque partition.
-///
-/// This partition is temporary until `260812-2316-unicode-path-policy-for-files-design.md`
-/// establishes that opaque paths cannot reach sorting.
+/// Compares validated Unicode paths component by component.
 fn compare_paths(left: &Path, right: &Path, sort: PathSort) -> Ordering {
-    match (left.to_str().is_some(), right.to_str().is_some()) {
-        (true, true) => compare_unicode_paths(left, right, sort),
-        (true, false) => Ordering::Less,
-        (false, true) => Ordering::Greater,
-        (false, false) => left.cmp(right),
-    }
-}
-
-/// Compares Unicode paths component by component.
-fn compare_unicode_paths(left: &Path, right: &Path, sort: PathSort) -> Ordering {
     let mut left_components = left.components();
     let mut right_components = right.components();
 
@@ -1207,24 +1224,24 @@ fn collect_dir_files(
                 continue;
             }
         };
+        let path = entry.path();
+        if let Err(error) = require_unicode_path(&path) {
+            on_error.handle(error)?;
+            continue;
+        }
         let ft = match entry.file_type() {
             Ok(ft) => ft,
             Err(e) => {
-                on_error.handle(FilesError::DirTraversalIo {
-                    path: entry.path(),
-                    source: e,
-                })?;
+                on_error.handle(FilesError::DirTraversalIo { path, source: e })?;
                 continue;
             }
         };
 
         if ft.is_file() {
-            let path = entry.path();
             if where_filter.is_none_or(|f| f.matches(&path, source_root)) {
                 batch.push(path);
             }
         } else if recursive && ft.is_dir() {
-            let path = entry.path();
             // Check if this directory should be pruned.
             if compiled_prune.is_pruned(&path) {
                 continue;
@@ -1239,15 +1256,12 @@ fn collect_dir_files(
                 on_error,
             )?;
         } else if ft.is_symlink() {
-            let target_meta = match std::fs::metadata(entry.path()) {
+            let target_meta = match std::fs::metadata(&path) {
                 Ok(meta) => meta,
                 Err(_) => continue, // Broken symlink: skip silently.
             };
-            if target_meta.is_file() {
-                let path = entry.path();
-                if where_filter.is_none_or(|f| f.matches(&path, source_root)) {
-                    batch.push(path);
-                }
+            if target_meta.is_file() && where_filter.is_none_or(|f| f.matches(&path, source_root)) {
+                batch.push(path);
             }
             // Symlinked directories are intentionally not recursed into.
         }
@@ -1345,6 +1359,8 @@ impl CompiledWhereSpec {
 
     /// Returns true if the path passes all filters.
     fn matches(&self, path: &Path, source_root: &Path) -> bool {
+        debug_assert!(path.to_str().is_some());
+        debug_assert!(source_root.to_str().is_some());
         if let Some(ref rule) = self.path {
             if !rule.matches(path, source_root) {
                 return false;
@@ -1353,9 +1369,9 @@ impl CompiledWhereSpec {
 
         // Check name filter.
         if let Some(ref rule) = self.name {
-            let name = match path.file_name().and_then(|n| n.to_str()) {
-                Some(n) => n,
-                None => return false, // Non-UTF8 file name: treat as non-matching.
+            let name = match path.file_name() {
+                Some(name) => name.to_str().expect("validated path has a Unicode file name"),
+                None => return false,
             };
             if !rule.matches(name) {
                 return false;
@@ -1364,8 +1380,8 @@ impl CompiledWhereSpec {
 
         // Check stem filter.
         if let Some(ref rule) = self.stem {
-            let stem = match path.file_stem().and_then(|s| s.to_str()) {
-                Some(s) => s,
+            let stem = match path.file_stem() {
+                Some(stem) => stem.to_str().expect("validated path has a Unicode file stem"),
                 None => return false,
             };
             if !rule.matches(stem) {
@@ -1376,7 +1392,10 @@ impl CompiledWhereSpec {
         // Check ext filter.
         if let Some(ref rule) = self.ext {
             // Extension can be None (file without extension). Represent as "".
-            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            let ext = path
+                .extension()
+                .map(|ext| ext.to_str().expect("validated path has a Unicode extension"))
+                .unwrap_or("");
             if !rule.matches(ext) {
                 return false;
             }
@@ -1628,10 +1647,16 @@ fn normalize_path_separators(s: &str) -> String {
 /// Adapts a path to a base directory if needed.
 fn adapt_path(base_dir: Option<&Path>, path: &Path) -> Result<PathBuf, FilesError> {
     if path.is_absolute() {
+        require_unicode_path(path)?;
         return Ok(path.to_path_buf());
     }
     match base_dir {
-        Some(dir) => Ok(dir.join(path)),
+        Some(dir) => {
+            require_unicode_path(dir)?;
+            let resolved = dir.join(path);
+            require_unicode_path(&resolved)?;
+            Ok(resolved)
+        }
         None => Err(FilesError::MissingBaseDir {
             path: path.display().to_string(),
         }),
@@ -1650,8 +1675,7 @@ fn adapt_pattern(base_dir: Option<&Path>, pattern: &str) -> Result<String, Files
     }
     match base_dir {
         Some(dir) => {
-            let mut base =
-                normalize_path_separators(dir.path_str().map_err(FilesError::BaseDirNotUtf8)?);
+            let mut base = normalize_path_separators(require_unicode_path(dir)?);
             if !base.ends_with('/') {
                 base.push('/');
             }
@@ -1661,6 +1685,13 @@ fn adapt_pattern(base_dir: Option<&Path>, pattern: &str) -> Result<String, Files
             path: pattern.to_string(),
         }),
     }
+}
+
+/// Requires a path to have an exact Unicode representation.
+fn require_unicode_path(path: &Path) -> Result<&str, FilesError> {
+    path.to_str().ok_or_else(|| FilesError::NonUnicodePath {
+        path: path.to_path_buf(),
+    })
 }
 
 /// Escapes a wildcard pattern for the `glob` crate.
@@ -1701,7 +1732,9 @@ fn candidate_path_text(path: &Path, source_root: &Path, absolute: bool) -> Optio
     } else {
         path.strip_prefix(source_root).ok()?
     };
-    candidate.to_str().map(normalize_path_separators)
+    Some(normalize_path_separators(
+        candidate.to_str().expect("validated candidate path is Unicode"),
+    ))
 }
 
 /// Normalizes an extension string by removing a leading dot.
@@ -2187,6 +2220,136 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[test]
+    fn adapt_path_uses_an_empty_implicit_root_without_repeating_the_base() {
+        let base = Path::new("relative/base");
+
+        let result = adapt_path(Some(base), Path::new("")).unwrap();
+
+        assert_eq!(result, base);
+    }
+
+    // ------------------------------------------------------------------------------------------ //
+    // Unicode Path Validation Tests
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn require_unicode_path_retains_the_exact_opaque_path() {
+        let path = PathBuf::from(opaque_component(b'v'));
+
+        assert_non_unicode_error(require_unicode_path(&path), &path);
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn used_opaque_bases_are_structural_errors_for_every_policy() {
+        let opaque_base = PathBuf::from(opaque_component(b'b'));
+        let relative_exact = source_with_root("file.txt");
+        let relative_wildcard = SourceSpec {
+            from: Some(FromSpec {
+                root: OneOrMany::one(PathPatternSpec {
+                    path: "*.txt".to_string(),
+                    syntax: PatternSyntax::Wildcard,
+                    must_exist: false,
+                    recursive: true,
+                }),
+                prune: OneOrMany::default(),
+            }),
+            where_: None,
+            sort: PathSort::Natural,
+        };
+        let implicit = SourceSpec::default();
+        let empty_root = SourceSpec {
+            from: Some(FromSpec::default()),
+            ..Default::default()
+        };
+
+        for on_error in [OnError::Fail, OnError::Warn, OnError::Ignore] {
+            for spec in [&relative_exact, &relative_wildcard, &implicit, &empty_root] {
+                assert_non_unicode_error(
+                    spec.locate_with(Some(&opaque_base), on_error),
+                    &opaque_base,
+                );
+            }
+        }
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn relative_exact_prune_makes_an_opaque_base_structural() {
+        let dir = TempDir::new().unwrap();
+        create_test_files(&dir, &["root/file.txt"]);
+        let opaque_base = PathBuf::from(opaque_component(b'p'));
+        let root = dir.path().join("root");
+        let spec = SourceSpec {
+            from: Some(FromSpec {
+                root: OneOrMany::one(PathPatternSpec {
+                    path: root.to_str().unwrap().to_string(),
+                    syntax: PatternSyntax::Exact,
+                    must_exist: true,
+                    recursive: true,
+                }),
+                prune: OneOrMany::one(PathPatternSpec {
+                    path: "optional-prune".to_string(),
+                    syntax: PatternSyntax::Exact,
+                    must_exist: false,
+                    recursive: true,
+                }),
+            }),
+            where_: None,
+            sort: PathSort::Natural,
+        };
+
+        for on_error in [OnError::Fail, OnError::Warn, OnError::Ignore] {
+            assert_non_unicode_error(spec.locate_with(Some(&opaque_base), on_error), &opaque_base);
+        }
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn relative_wildcard_prune_makes_an_opaque_base_structural() {
+        let dir = TempDir::new().unwrap();
+        create_test_files(&dir, &["root/file.txt"]);
+        let opaque_base = PathBuf::from(opaque_component(b'g'));
+        let root = dir.path().join("root");
+        let spec = SourceSpec {
+            from: Some(FromSpec {
+                root: OneOrMany::one(PathPatternSpec {
+                    path: root.to_str().unwrap().to_string(),
+                    syntax: PatternSyntax::Exact,
+                    must_exist: true,
+                    recursive: true,
+                }),
+                prune: OneOrMany::one(PathPatternSpec {
+                    path: "**/*.tmp".to_string(),
+                    syntax: PatternSyntax::Wildcard,
+                    must_exist: false,
+                    recursive: true,
+                }),
+            }),
+            where_: None,
+            sort: PathSort::Natural,
+        };
+
+        for on_error in [OnError::Fail, OnError::Warn, OnError::Ignore] {
+            assert_non_unicode_error(spec.locate_with(Some(&opaque_base), on_error), &opaque_base);
+        }
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn unused_opaque_base_does_not_affect_an_absolute_source() {
+        let dir = TempDir::new().unwrap();
+        create_test_files(&dir, &["root/file.txt"]);
+        let opaque_base = PathBuf::from(opaque_component(b'u'));
+        let root = dir.path().join("root");
+        let spec = source_with_root(root.to_str().unwrap());
+
+        let result = spec.locate_with(Some(&opaque_base), OnError::Fail).unwrap();
+
+        assert_eq!(result, [root.join("file.txt")]);
+    }
+
     // ------------------------------------------------------------------------------------------ //
     // Extension Normalization Tests
 
@@ -2226,16 +2389,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[cfg(unix)]
-    fn opaque_path(tag: u8) -> PathBuf {
-        PathBuf::from(OsString::from_vec(vec![b'o', 0xff, tag]))
-    }
-
-    #[cfg(windows)]
-    fn opaque_path(tag: u8) -> PathBuf {
-        PathBuf::from(OsString::from_wide(&[b'o' as u16, 0xd800, tag as u16]))
     }
 
     #[test]
@@ -2348,23 +2501,9 @@ mod tests {
         }
     }
 
-    #[cfg(any(unix, windows))]
-    #[test]
-    fn path_order_partitions_unicode_before_opaque_paths() {
-        let opaque_a = opaque_path(b'a');
-        let opaque_b = opaque_path(b'b');
-        let unicode = Path::new("z");
-
-        for sort in [PathSort::Natural, PathSort::Lexicographic] {
-            assert_eq!(compare_paths(unicode, &opaque_a, sort), Ordering::Less);
-            assert_eq!(compare_paths(&opaque_a, unicode, sort), Ordering::Greater);
-            assert_eq!(compare_paths(&opaque_a, &opaque_b, sort), opaque_a.cmp(&opaque_b));
-        }
-    }
-
     #[test]
     fn path_comparator_obeys_total_order_laws_and_ignores_input_permutation() {
-        let mut paths: Vec<PathBuf> = [
+        let paths: Vec<PathBuf> = [
             "",
             std::path::MAIN_SEPARATOR_STR,
             ".",
@@ -2391,12 +2530,6 @@ mod tests {
         .into_iter()
         .map(PathBuf::from)
         .collect();
-        #[cfg(any(unix, windows))]
-        {
-            paths.push(opaque_path(b'a'));
-            paths.push(opaque_path(b'b'));
-        }
-
         for sort in [PathSort::Natural, PathSort::Lexicographic] {
             assert_comparator_laws(&paths, sort);
 
@@ -2425,6 +2558,57 @@ mod tests {
                 fs::create_dir_all(parent).unwrap();
             }
             fs::write(&path, "test content").unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    fn opaque_component(tag: u8) -> OsString {
+        OsString::from_vec(vec![b'o', 0xff, tag])
+    }
+
+    #[cfg(windows)]
+    fn opaque_component(tag: u8) -> OsString {
+        OsString::from_wide(&[b'o' as u16, 0xd800, tag as u16])
+    }
+
+    #[cfg(unix)]
+    fn opaque_file_name(tag: u8) -> OsString {
+        OsString::from_vec(vec![b'o', 0xff, tag, b'.', b't', b'x', b't'])
+    }
+
+    #[cfg(windows)]
+    fn opaque_file_name(tag: u8) -> OsString {
+        OsString::from_wide(&[
+            b'o' as u16,
+            0xd800,
+            tag as u16,
+            b'.' as u16,
+            b't' as u16,
+            b'x' as u16,
+            b't' as u16,
+        ])
+    }
+
+    #[cfg(any(unix, windows))]
+    fn create_opaque_file(dir: &Path, tag: u8) -> PathBuf {
+        let path = dir.join(opaque_file_name(tag));
+        fs::write(&path, "opaque file").unwrap();
+        path
+    }
+
+    #[cfg(any(unix, windows))]
+    fn create_opaque_dir(dir: &Path, tag: u8) -> PathBuf {
+        let path = dir.join(opaque_component(tag));
+        fs::create_dir(&path).unwrap();
+        path
+    }
+
+    #[cfg(any(unix, windows))]
+    fn assert_non_unicode_error<T>(result: Result<T, FilesError>, expected: &Path) {
+        match result {
+            Err(FilesError::NonUnicodePath { path }) => assert_eq!(path, expected),
+            Err(error) => panic!("expected NonUnicodePath for {expected:?}, got {error:?}"),
+            Ok(_) => panic!("expected NonUnicodePath for {expected:?}, got success"),
         }
     }
 
@@ -2550,6 +2734,141 @@ mod tests {
         assert_eq!(result.len(), 2);
     }
 
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn locate_opaque_file_follows_error_policy_before_sorting() {
+        let dir = TempDir::new().unwrap();
+        create_test_files(&dir, &["d/file-10.txt", "d/file-2.txt"]);
+        let opaque = create_opaque_file(&dir.path().join("d"), b'f');
+
+        for sort in [PathSort::Natural, PathSort::Lexicographic] {
+            let mut spec = source_with_root("d");
+            spec.sort = sort;
+
+            assert_non_unicode_error(spec.locate_with(Some(dir.path()), OnError::Fail), &opaque);
+
+            for on_error in [OnError::Warn, OnError::Ignore] {
+                let result = spec.locate_with(Some(dir.path()), on_error).unwrap();
+                let expected = match sort {
+                    PathSort::Natural => ["d/file-2.txt", "d/file-10.txt"],
+                    PathSort::Lexicographic => ["d/file-10.txt", "d/file-2.txt"],
+                };
+                assert_eq!(relative_path_strings(&dir, &result), expected);
+                assert!(result.iter().all(|path| path.to_str().is_some()));
+            }
+        }
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn locate_opaque_entry_is_rejected_before_where_filters() {
+        let dir = TempDir::new().unwrap();
+        create_test_files(&dir, &["d/keep.rs"]);
+        let opaque = create_opaque_file(&dir.path().join("d"), b'w');
+
+        let filters = [
+            WhereSpec {
+                path: Some(AttrRuleSpec {
+                    include: OneOrMany::one(TextPatternSpec::exact("never".to_string())),
+                    exclude: OneOrMany::default(),
+                }),
+                ..Default::default()
+            },
+            WhereSpec {
+                name: Some(AttrRuleSpec {
+                    include: OneOrMany::one(TextPatternSpec::exact("never".to_string())),
+                    exclude: OneOrMany::default(),
+                }),
+                ..Default::default()
+            },
+            WhereSpec {
+                stem: Some(AttrRuleSpec {
+                    include: OneOrMany::one(TextPatternSpec::exact("never".to_string())),
+                    exclude: OneOrMany::default(),
+                }),
+                ..Default::default()
+            },
+            WhereSpec {
+                ext: Some(AttrRuleSpec {
+                    include: OneOrMany::one(TextPatternSpec::exact("txt".to_string())),
+                    exclude: OneOrMany::default(),
+                }),
+                ..Default::default()
+            },
+        ];
+
+        for where_ in filters {
+            let mut spec = source_with_root("d");
+            spec.where_ = Some(where_);
+            assert_non_unicode_error(spec.locate_with(Some(dir.path()), OnError::Fail), &opaque);
+        }
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn locate_opaque_entry_is_rejected_before_postcollection_pruning() {
+        let dir = TempDir::new().unwrap();
+        fs::create_dir(dir.path().join("d")).unwrap();
+        let opaque = create_opaque_file(&dir.path().join("d"), b'p');
+        let spec = SourceSpec {
+            from: Some(FromSpec {
+                root: OneOrMany::one(PathPatternSpec {
+                    path: "d".to_string(),
+                    syntax: PatternSyntax::Exact,
+                    must_exist: true,
+                    recursive: true,
+                }),
+                prune: OneOrMany::one(PathPatternSpec {
+                    path: "**/*.txt".to_string(),
+                    syntax: PatternSyntax::Wildcard,
+                    must_exist: false,
+                    recursive: true,
+                }),
+            }),
+            where_: None,
+            sort: PathSort::Natural,
+        };
+
+        let compiled =
+            CompiledPrune::build(Some(dir.path()), &spec.from.as_ref().unwrap().prune).unwrap();
+        assert!(compiled.is_excluded(&opaque, Some(dir.path())));
+
+        assert_non_unicode_error(spec.locate_with(Some(dir.path()), OnError::Fail), &opaque);
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn locate_opaque_directory_follows_policy_and_omits_its_subtree() {
+        let dir = TempDir::new().unwrap();
+        create_test_files(&dir, &["d/keep.txt"]);
+        let opaque = create_opaque_dir(&dir.path().join("d"), b'd');
+        fs::write(opaque.join("hidden.txt"), "hidden beneath opaque directory").unwrap();
+
+        let spec = source_with_root("d");
+        assert_non_unicode_error(spec.locate_with(Some(dir.path()), OnError::Fail), &opaque);
+
+        let result = spec.locate_with(Some(dir.path()), OnError::Ignore).unwrap();
+        assert_eq!(relative_path_strings(&dir, &result), ["d/keep.txt"]);
+
+        let non_recursive = SourceSpec {
+            from: Some(FromSpec {
+                root: OneOrMany::one(PathPatternSpec {
+                    path: "d".to_string(),
+                    syntax: PatternSyntax::Exact,
+                    must_exist: true,
+                    recursive: false,
+                }),
+                prune: OneOrMany::default(),
+            }),
+            where_: None,
+            sort: PathSort::Natural,
+        };
+        assert_non_unicode_error(
+            non_recursive.locate_with(Some(dir.path()), OnError::Fail),
+            &opaque,
+        );
+    }
+
     #[test]
     fn locate_root_wildcard_expansion() {
         let dir = TempDir::new().unwrap();
@@ -2621,6 +2940,32 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("matched no files"), "error should mention no matches: {err}");
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn wildcard_must_exist_counts_only_accepted_unicode_files() {
+        let dir = TempDir::new().unwrap();
+        fs::create_dir(dir.path().join("bucket")).unwrap();
+        let opaque = create_opaque_file(&dir.path().join("bucket"), b'm');
+        let spec = SourceSpec {
+            from: Some(FromSpec {
+                root: OneOrMany::one(PathPatternSpec {
+                    path: "bucket*".to_string(),
+                    syntax: PatternSyntax::Wildcard,
+                    must_exist: true,
+                    recursive: true,
+                }),
+                prune: OneOrMany::default(),
+            }),
+            where_: None,
+            sort: PathSort::Natural,
+        };
+
+        assert_non_unicode_error(spec.locate_with(Some(dir.path()), OnError::Fail), &opaque);
+
+        let result = spec.locate_with(Some(dir.path()), OnError::Ignore);
+        assert!(matches!(result, Err(FilesError::WildcardMustExist { .. })));
     }
 
     #[test]
@@ -3718,7 +4063,7 @@ mod tests {
         let spec = SourceSpec {
             from: Some(FromSpec {
                 root: OneOrMany::one(PathPatternSpec {
-                    path: abs_path.to_string_lossy().into_owned(),
+                    path: abs_path.to_str().unwrap().to_string(),
                     syntax: PatternSyntax::Exact,
                     must_exist: true,
                     recursive: true,
