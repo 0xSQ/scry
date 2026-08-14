@@ -4,11 +4,11 @@
 //! [`PathSort::Lexicographic`] treats digits as ordinary text. The difference is easiest to see
 //! in paths containing numbers:
 //!
-//! | Input paths | Natural order | Lexicographic order |
-//! | --- | --- | --- |
-//! | `file-2`, `file-10` | `file-2 < file-10` | `file-10 < file-2` |
-//! | `v1.9`, `v1.10` | `v1.9 < v1.10` | `v1.10 < v1.9` |
-//! | `dir-9/x`, `dir-10/x` | `dir-9/x < dir-10/x` | `dir-10/x < dir-9/x` |
+//! | Input paths               | Natural order             | Lexicographic order       |
+//! | ------------------------- | ------------------------- | ------------------------- |
+//! | `file-2`, `file-10`       | `file-2 < file-10`        | `file-10 < file-2`        |
+//! | `v1.9`, `v1.10`           | `v1.9 < v1.10`            | `v1.10 < v1.9`            |
+//! | `dir-9/x`, `dir-10/x`     | `dir-9/x < dir-10/x`      | `dir-10/x < dir-9/x`      |
 //!
 //! For example:
 //!
