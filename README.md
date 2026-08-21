@@ -328,8 +328,21 @@ Flags can assign any value supported by `ToNode`, not only boolean `true`. For e
 zero-argument shorthand for `--set notify.on_failure_only false`. If the flag is absent, the loaded
 config remains unchanged.
 
-Flags and `--set` can be used together. Each operation is applied in command-line order, so the
-later argument wins when both target the same path.
+When several fixed assignments form one named CLI concept, declare a preset instead:
+
+```rust
+e.preset("safe")
+    .set("dry_run", true)
+    .set("parallelism", 1_usize)
+    .help("Runs one operation at a time without applying changes.");
+```
+
+`flag(path, value)` is the concise one-assignment form of this same fixed-assignment mechanism. A
+preset names the CLI argument independently from its config paths, so it does not inherit help from
+any one assignment. Give presets explicit help unless the name is entirely self-explanatory.
+
+Flags, presets, and `--set` can be used together. Each operation is applied in command-line order,
+so the later argument wins when several operations target the same path.
 
 ### Config Discovery and Redirect Files
 

@@ -142,7 +142,7 @@ impl OverrideArgs {
     /// This includes:
     /// - `--set KEY VALUE` occurrences
     /// - `--remove KEY` occurrences
-    /// - Exposed options and flags
+    /// - Exposed options, flags, and presets
     ///
     /// All operations are sorted by their argv index and applied in that order,
     /// ensuring command-line arguments work as users expect (later args override earlier ones).
@@ -206,39 +206,41 @@ impl OverrideArgs {
             }
         }
 
-        // Collect exposed field operations.
+        // Collect exposed argument operations.
         for entry in &expose_map.entries {
             let arg_name = entry.arg_name();
 
             match &entry.kind {
-                ExposeKind::Flag { value } => {
+                ExposeKind::Fixed { assignments } => {
                     if matches.get_flag(&arg_name) {
                         if let Some(idx) = matches.indices_of(&arg_name).and_then(Iterator::last) {
-                            ops.push((
-                                idx,
-                                Op::Set {
-                                    path: entry.path.clone(),
-                                    value: wrap_variant(entry, value.clone()),
-                                },
-                            ));
+                            for assignment in assignments {
+                                ops.push((
+                                    idx,
+                                    Op::Set {
+                                        path: assignment.path.clone(),
+                                        value: wrap_variant(entry, assignment.value.clone()),
+                                    },
+                                ));
+                            }
                         }
                     }
                 }
-                ExposeKind::Option | ExposeKind::Positional => {
+                ExposeKind::Option { path } | ExposeKind::Positional { path } => {
                     if let Some(value_str) = matches.get_one::<String>(&arg_name) {
                         let value_node = node_from_arg_str(value_str);
                         if let Some(idx) = matches.indices_of(&arg_name).and_then(Iterator::last) {
                             ops.push((
                                 idx,
                                 Op::Set {
-                                    path: entry.path.clone(),
+                                    path: path.clone(),
                                     value: wrap_variant(entry, value_node),
                                 },
                             ));
                         }
                     }
                 }
-                ExposeKind::List => {
+                ExposeKind::List { path } => {
                     if let Some(values) = matches.get_many::<String>(&arg_name) {
                         let indices: Vec<usize> =
                             matches.indices_of(&arg_name).map(|i| i.collect()).unwrap_or_default();
@@ -248,7 +250,7 @@ impl OverrideArgs {
                             ops.push((
                                 idx,
                                 Op::Append {
-                                    path: entry.path.clone(),
+                                    path: path.clone(),
                                     value: value_node,
                                 },
                             ));

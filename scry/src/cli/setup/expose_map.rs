@@ -1,4 +1,4 @@
-//! Configuration for exposing config fields as CLI arguments.
+//! Configuration for exposing config values as CLI arguments.
 
 use clap::builder::PossibleValue;
 use clap::{Arg, ArgAction, Command};
@@ -11,61 +11,72 @@ use crate::{Desc, ToNode};
 
 // ---------------------------------------------------------------------------------------------- //
 
-/// Specifies which config fields to expose as CLI arguments.
+/// Specifies which config values to expose as CLI arguments.
 ///
-/// Each field in the config can be exposed as a CLI argument, allowing users
-/// to override config values directly from the command line.
+/// Each entry describes one CLI argument and the config operation it performs. Presence-only fixed
+/// entries can contain one or several assignments; value-taking entries target one config path.
 ///
 /// Use the builder methods ([`option`](Self::option), [`flag`](Self::flag),
-/// [`list`](Self::list)) or construct directly with public fields.
+/// [`preset`](Self::preset), [`list`](Self::list)) or construct directly with public fields.
 #[derive(Default, Clone)]
 pub struct ExposeMap {
-    /// List of config fields to expose as CLI arguments.
+    /// CLI arguments that modify the input config.
     pub entries: Vec<ExposeEntry>,
 }
 
-/// Configuration for a single exposed field.
+/// Configures one exposed CLI argument.
 #[derive(Clone)]
 pub struct ExposeEntry {
-    /// Config path (e.g., "format" or "host.port").
-    pub path: String,
-    /// The kind of CLI argument this field is exposed as.
+    /// Logical CLI name before kebab-case conversion or a custom long-name override.
+    pub name: String,
+    /// Config operation performed by this argument.
     pub kind: ExposeKind,
-    /// Enum variant key to wrap the value in (`#{ key: value }`) before assignment.
-    /// `None` assigns the value at the path directly.
+    /// Enum variant key used to wrap a single assigned value.
+    ///
+    /// `None` assigns the value at its path directly.
     pub variant: Option<String>,
-    /// Long option behavior. Defaults to deriving from the variant key when set, else from the
-    /// path (kebab-case).
+    /// Config path whose documentation supplies fallback help.
+    ///
+    /// Presets have no primary config path and therefore leave this unset.
+    pub help_path: Option<String>,
+    /// Long option behavior.
     pub long: Long,
     /// Short option character.
     pub short: Option<char>,
-    /// Custom help text. If None, the field's config description is used.
+    /// Custom help text.
     pub help: Option<String>,
-    /// Custom display name for positional arguments (e.g., "PATTERN").
-    /// If None, derived from path via SCREAMING_SNAKE_CASE. Only used for positionals.
+    /// Custom display name for positional arguments.
     pub value_name: Option<String>,
 }
 
-/// The kind of CLI argument an exposed config field maps to.
+/// Describes the config operation performed by an exposed CLI argument.
 #[derive(Clone, Debug)]
 pub enum ExposeKind {
-    /// A presence-only flag that assigns a fixed value when present.
-    Flag { value: Node },
-    /// A value-taking option (e.g., `--port 8080`).
-    Option,
-    /// A repeatable list option where each occurrence appends one element.
-    List,
-    /// A positional argument (e.g., `[PREFIX]`).
-    Positional,
+    /// A presence-only argument that applies one or more fixed assignments.
+    Fixed { assignments: Vec<FixedAssignment> },
+    /// A value-taking option that assigns its argument to one path.
+    Option { path: String },
+    /// A repeatable option that appends each argument to one list path.
+    List { path: String },
+    /// A positional argument that assigns its value to one path.
+    Positional { path: String },
 }
 
-/// Controls the long option name for an exposed config field.
+/// One fixed config assignment carried by a flag or preset.
+#[derive(Clone, Debug)]
+pub struct FixedAssignment {
+    /// Config path to assign.
+    pub path: String,
+    /// Preconfigured value assigned when the argument is present.
+    pub value: Node,
+}
+
+/// Controls the long option name for an exposed argument.
 #[derive(Clone, Debug)]
 pub enum Long {
     /// No long option (short flag only).
     None,
-    /// Derives the long name via kebab-case conversion, from the variant key when the entry has
-    /// one, else from the config path.
+    /// Derives the long name from the variant key when set, otherwise from the logical name.
     Auto,
     /// Uses a custom long option name.
     Custom(String),
@@ -81,96 +92,100 @@ impl ExposeMap {
 
     /// Exposes a config field as a value-taking CLI option.
     ///
-    /// The long name is derived from the field path (snake_case to kebab-case).
+    /// The long name and fallback help are derived from the field path.
     pub fn option(&mut self, path: impl Into<String>) -> &mut ExposeEntry {
-        self.entries.push(ExposeEntry {
-            path: path.into(),
-            kind: ExposeKind::Option,
-            variant: None,
-            long: Long::Auto,
-            short: None,
-            help: None,
-            value_name: None,
-        });
-        self.entries.last_mut().unwrap()
+        let path = path.into();
+        self.push_entry(
+            path.clone(),
+            ExposeKind::Option { path: path.clone() },
+            Some(path),
+            Long::Auto,
+        )
     }
 
-    /// Exposes a fixed assignment as a presence-only CLI flag.
+    /// Exposes one fixed assignment as a presence-only CLI flag.
     ///
-    /// The flag is syntactic sugar for a fixed `--set PATH VALUE` operation: it assigns `value`
-    /// when the flag is present and leaves the loaded config unchanged when absent. The value is
-    /// usually boolean `true`, but any [`ToNode`] value works. The long name is derived from the
-    /// field path (snake_case to kebab-case).
+    /// This is the concise form of a one-assignment [`preset`](Self::preset): the config path also
+    /// supplies the default long name and fallback help. The flag leaves the loaded config
+    /// unchanged when absent. Any value supported by [`ToNode`] can be assigned.
     ///
     /// # Panics
     ///
     /// Panics if the fixed value cannot be converted to a [`Node`].
     pub fn flag(&mut self, path: impl Into<String>, value: impl ToNode) -> &mut ExposeEntry {
         let path = path.into();
-        let value = value.to_node().unwrap_or_else(|error| {
-            panic!("failed to configure value for exposed flag '{path}': {error}")
-        });
-        self.entries.push(ExposeEntry {
-            path,
-            kind: ExposeKind::Flag { value },
-            variant: None,
-            long: Long::Auto,
-            short: None,
-            help: None,
-            value_name: None,
-        });
-        self.entries.last_mut().unwrap()
+        self.push_entry(
+            path.clone(),
+            ExposeKind::Fixed {
+                assignments: Vec::new(),
+            },
+            Some(path.clone()),
+            Long::Auto,
+        )
+        .set(path, value)
+    }
+
+    /// Exposes a named presence-only CLI preset containing fixed assignments.
+    ///
+    /// Add assignments with [`ExposeEntry::set`]. A preset shares the same fixed-assignment
+    /// mechanism as [`flag`](Self::flag), but names the CLI concept independently from its config
+    /// paths and does not inherit help from any one assignment.
+    ///
+    /// # Panics
+    ///
+    /// Building a command panics if the preset contains no assignments.
+    pub fn preset(&mut self, name: impl Into<String>) -> &mut ExposeEntry {
+        self.push_entry(
+            name.into(),
+            ExposeKind::Fixed {
+                assignments: Vec::new(),
+            },
+            None,
+            Long::Auto,
+        )
     }
 
     /// Exposes a config field as a repeatable list CLI option.
     ///
     /// Each occurrence appends one element to the config array. For example,
-    /// `--items a --items b` produces `["a", "b"]`. The long name is derived
-    /// from the field path (snake_case to kebab-case).
+    /// `--items a --items b` produces `["a", "b"]`. The long name and fallback help are derived
+    /// from the field path.
     pub fn list(&mut self, path: impl Into<String>) -> &mut ExposeEntry {
-        self.entries.push(ExposeEntry {
-            path: path.into(),
-            kind: ExposeKind::List,
-            variant: None,
-            long: Long::Auto,
-            short: None,
-            help: None,
-            value_name: None,
-        });
-        self.entries.last_mut().unwrap()
+        let path = path.into();
+        self.push_entry(
+            path.clone(),
+            ExposeKind::List { path: path.clone() },
+            Some(path),
+            Long::Auto,
+        )
     }
 
     /// Exposes a config field as a positional CLI argument.
     ///
-    /// The display name is derived from the field path via SCREAMING_SNAKE_CASE
-    /// conversion (e.g., `"prefix"` becomes `[PREFIX]`). Not required by default,
-    /// since the config file may provide the value.
+    /// The display name is derived from the field path via SCREAMING_SNAKE_CASE conversion
+    /// (for example, `"prefix"` becomes `[PREFIX]`). It is not required by default because the
+    /// config file may already provide the value.
     pub fn positional(&mut self, path: impl Into<String>) -> &mut ExposeEntry {
-        self.entries.push(ExposeEntry {
-            path: path.into(),
-            kind: ExposeKind::Positional,
-            variant: None,
-            long: Long::None,
-            short: None,
-            help: None,
-            value_name: None,
-        });
-        self.entries.last_mut().unwrap()
+        let path = path.into();
+        self.push_entry(
+            path.clone(),
+            ExposeKind::Positional { path: path.clone() },
+            Some(path),
+            Long::None,
+        )
     }
 
-    /// Adds the exposed entries as arguments to a clap Command.
+    /// Adds the exposed entries as arguments to a Clap command.
     pub fn augment(&self, mut cmd: Command, desc: &Desc) -> Command {
         for entry in &self.entries {
+            entry.validate();
             let arg_name = entry.arg_name();
             let mut arg = Arg::new(arg_name.clone());
 
-            // Configure the argument based on its kind.
             match &entry.kind {
-                ExposeKind::Positional => {
-                    let display = entry
-                        .value_name
-                        .clone()
-                        .unwrap_or_else(|| entry.path.to_shouty_snake_case());
+                ExposeKind::Positional { path } => {
+                    let display =
+                        entry.value_name.clone().unwrap_or_else(|| path.to_shouty_snake_case());
                     arg = arg.value_name(display).required(false);
                 }
                 kind => {
@@ -178,16 +193,16 @@ impl ExposeMap {
                         arg = arg.long(arg_name);
                     }
                     match kind {
-                        ExposeKind::Flag { .. } => {
+                        ExposeKind::Fixed { .. } => {
                             arg = arg.action(ArgAction::SetTrue);
                         }
-                        ExposeKind::Option => {
+                        ExposeKind::Option { .. } => {
                             arg = arg.num_args(1).value_name("VALUE");
                         }
-                        ExposeKind::List => {
+                        ExposeKind::List { .. } => {
                             arg = arg.num_args(1).value_name("ENTRY").action(ArgAction::Append);
                         }
-                        ExposeKind::Positional => unreachable!(),
+                        ExposeKind::Positional { .. } => unreachable!(),
                     }
                     if let Some(short) = entry.short {
                         arg = arg.short(short);
@@ -197,24 +212,27 @@ impl ExposeMap {
 
             // Variant entries carry the arm's payload as their CLI value, not an enum name, so
             // the unit-enum possible-values parser must not apply to them.
-            if entry.variant.is_none() && !matches!(&entry.kind, ExposeKind::Flag { .. }) {
-                if let Some(variants) = enum_variants_for_entry(desc, &entry.path) {
-                    let possible_values: Vec<PossibleValue> =
-                        variants.iter().map(possible_value_from_variant).collect();
-                    arg = arg.value_parser(possible_values);
-                    arg = arg.ignore_case(true);
+            if entry.variant.is_none() && !matches!(&entry.kind, ExposeKind::Fixed { .. }) {
+                if let Some(path) = entry.target_path() {
+                    if let Some(variants) = enum_variants_for_entry(desc, path) {
+                        let possible_values: Vec<PossibleValue> =
+                            variants.iter().map(possible_value_from_variant).collect();
+                        arg = arg.value_parser(possible_values);
+                        arg = arg.ignore_case(true);
+                    }
                 }
             }
 
-            // Use explicit help text, or fall back to config description.
             let help_text = entry.help.clone().or_else(|| {
-                desc.entry_at_path(&entry.path).and_then(|entry| {
-                    let doc = entry.doc();
-                    if doc.is_empty() {
-                        None
-                    } else {
-                        Some(doc.to_string())
-                    }
+                entry.help_path.as_deref().and_then(|path| {
+                    desc.entry_at_path(path).and_then(|entry| {
+                        let doc = entry.doc();
+                        if doc.is_empty() {
+                            None
+                        } else {
+                            Some(doc.to_string())
+                        }
+                    })
                 })
             });
             if let Some(help) = help_text {
@@ -225,6 +243,26 @@ impl ExposeMap {
         }
 
         cmd
+    }
+
+    fn push_entry(
+        &mut self,
+        name: String,
+        kind: ExposeKind,
+        help_path: Option<String>,
+        long: Long,
+    ) -> &mut ExposeEntry {
+        self.entries.push(ExposeEntry {
+            name,
+            kind,
+            variant: None,
+            help_path,
+            long,
+            short: None,
+            help: None,
+            value_name: None,
+        });
+        self.entries.last_mut().unwrap()
     }
 }
 
@@ -274,30 +312,66 @@ fn variant_help_text(variant: &VariantDesc) -> Option<String> {
 }
 
 impl ExposeEntry {
-    /// Wraps this entry's value in a single-key map, addressing one variant of an enum field.
-    ///
-    /// The entry's path names the enum field; `key` is the variant's *serialized* config key
-    /// (after any `rename`/`rename_all`), not necessarily the Rust variant name. At apply time
-    /// the computed value is wrapped as `#{ key: value }` and assigned at the path wholesale, so
-    /// selecting one arm always displaces whichever arm the config held. This reaches arms whose
-    /// payload parses from a single CLI string (or, for flags, from the fixed node); unit
-    /// variants of derived enums serialize as bare strings and are better served by a plain
-    /// fixed-value flag. Repeated calls replace the key (the last call wins); nesting is not
-    /// supported.
-    ///
-    /// Without a custom long name, the long option name derives from the variant key rather
-    /// than the path, so `e.option("source").variant("grid")` exposes `--grid`.
+    /// Adds a fixed config assignment to this flag or preset.
     ///
     /// # Panics
     ///
-    /// Panics for list entries; append-inside-a-variant semantics are not defined.
-    pub fn variant(&mut self, key: impl Into<String>) -> &mut Self {
+    /// Panics if this is not a fixed-assignment entry, if the path is already assigned by this
+    /// entry, or if the value cannot be converted to a [`Node`].
+    pub fn set(&mut self, path: impl Into<String>, value: impl ToNode) -> &mut Self {
+        let path = path.into();
+        let arg_name = self.arg_name();
+        let kind_name = self.kind.name();
+        let ExposeKind::Fixed { assignments } = &mut self.kind else {
+            panic!("exposed {kind_name} '{arg_name}' cannot add fixed assignment '{path}'");
+        };
+
         assert!(
-            !matches!(self.kind, ExposeKind::List),
-            "exposed list '{}' cannot take a variant wrapper: \
-             append-inside-a-variant semantics are not defined",
-            self.path
+            !assignments.iter().any(|assignment| assignment.path == path),
+            "exposed fixed argument '{arg_name}' already assigns config path '{path}'"
         );
+
+        let value = value.to_node().unwrap_or_else(|error| {
+            panic!(
+                "failed to configure assignment '{path}' for exposed fixed argument \
+                 '{arg_name}': {error}"
+            )
+        });
+        assignments.push(FixedAssignment { path, value });
+        self
+    }
+
+    /// Wraps this entry's single assigned value in one enum variant.
+    ///
+    /// The target path names the enum field; `key` is the variant's serialized config key after
+    /// any `rename` or `rename_all` rule. The value is wrapped as `#{ key: value }` and assigned
+    /// at the target path wholesale.
+    ///
+    /// Without a custom long name, the CLI name derives from the variant key. Repeated calls
+    /// replace the key, with the last call winning.
+    ///
+    /// # Panics
+    ///
+    /// Panics for lists, explicit presets, or fixed entries with other than one assignment.
+    pub fn variant(&mut self, key: impl Into<String>) -> &mut Self {
+        let arg_name = self.arg_name();
+        match &self.kind {
+            ExposeKind::List { path } => {
+                panic!(
+                    "exposed list '{path}' cannot take a variant wrapper: \
+                     append-inside-a-variant semantics are not defined"
+                );
+            }
+            ExposeKind::Fixed { assignments } => {
+                assert!(
+                    self.help_path.is_some() && assignments.len() == 1,
+                    "exposed fixed argument '{arg_name}' cannot take a variant wrapper unless it \
+                     is a one-assignment field flag"
+                );
+            }
+            ExposeKind::Option { .. } | ExposeKind::Positional { .. } => {}
+        }
+
         self.variant = Some(key.into());
         self
     }
@@ -320,7 +394,7 @@ impl ExposeEntry {
         self
     }
 
-    /// Sets custom help text, overriding the config description.
+    /// Sets custom help text, overriding config-derived fallback help.
     pub fn help(&mut self, text: impl Into<String>) -> &mut Self {
         self.help = Some(text.into());
         self
@@ -329,23 +403,68 @@ impl ExposeEntry {
     /// Sets the display name for positional arguments.
     ///
     /// Only meaningful for [`ExposeKind::Positional`]. For example,
-    /// `.value_name("PATTERN")` displays as `[PATTERN]` in help text.
+    /// `.value_name("PATTERN")` displays as `[PATTERN]`.
     pub fn value_name(&mut self, name: impl Into<String>) -> &mut Self {
         self.value_name = Some(name.into());
         self
     }
 
-    /// Returns the argument name used as the clap argument ID.
+    /// Returns the argument name used as the Clap argument ID.
     ///
-    /// For [`Long::Auto`] and [`Long::None`], the variant key (when set) or otherwise the path
-    /// is converted to kebab-case. For [`Long::Custom`], the custom name is used.
+    /// [`Long::Auto`] and [`Long::None`] derive from the variant key when present, otherwise from
+    /// the logical name. [`Long::Custom`] returns its configured name unchanged.
     pub fn arg_name(&self) -> String {
         match &self.long {
-            Long::Auto | Long::None => match &self.variant {
-                Some(key) => key.to_kebab_case(),
-                None => self.path.to_kebab_case(),
-            },
+            Long::Auto | Long::None => self.variant.as_ref().unwrap_or(&self.name).to_kebab_case(),
             Long::Custom(name) => name.clone(),
+        }
+    }
+
+    pub(crate) fn target_path(&self) -> Option<&str> {
+        match &self.kind {
+            ExposeKind::Fixed { .. } => None,
+            ExposeKind::Option { path }
+            | ExposeKind::List { path }
+            | ExposeKind::Positional { path } => Some(path),
+        }
+    }
+
+    fn validate(&self) {
+        let ExposeKind::Fixed { assignments } = &self.kind else {
+            return;
+        };
+
+        assert!(
+            !assignments.is_empty(),
+            "exposed preset '{}' must contain at least one fixed assignment",
+            self.arg_name()
+        );
+
+        assert!(
+            self.variant.is_none() || (self.help_path.is_some() && assignments.len() == 1),
+            "exposed fixed argument '{}' cannot take a variant wrapper unless it is a \
+             one-assignment field flag",
+            self.arg_name()
+        );
+
+        for (index, assignment) in assignments.iter().enumerate() {
+            assert!(
+                !assignments[..index].iter().any(|prior| prior.path == assignment.path),
+                "exposed fixed argument '{}' assigns config path '{}' more than once",
+                self.arg_name(),
+                assignment.path
+            );
+        }
+    }
+}
+
+impl ExposeKind {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Fixed { .. } => "fixed argument",
+            Self::Option { .. } => "option",
+            Self::List { .. } => "list",
+            Self::Positional { .. } => "positional",
         }
     }
 }

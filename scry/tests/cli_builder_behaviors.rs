@@ -71,6 +71,22 @@ struct EnumExposeConfig {
     order: ProcessOrder,
 }
 
+#[derive(Debug, Config)]
+struct PresetConfig {
+    /// Runs without executing the real operation.
+    #[scry(default = false)]
+    dry_run: bool,
+    /// Prints detailed output.
+    #[scry(default = false)]
+    verbose: bool,
+    /// Limits the selected rows.
+    #[scry(default)]
+    row_max: Option<usize>,
+    /// Limits the selected columns.
+    #[scry(default)]
+    col_max: Option<usize>,
+}
+
 // ---------------------------------------------------------------------------------------------- //
 // Test Helpers
 
@@ -887,6 +903,97 @@ mod expose_args {
     }
 
     #[test]
+    fn preset_applies_all_fixed_assignments() {
+        let bundle = Setup::new("test")
+            .override_args(OverrideArgs::new())
+            .query_args(QueryArgs::new())
+            .expose(|e: &mut ExposeMap| {
+                e.preset("probe")
+                    .set("dry_run", true)
+                    .set("verbose", true)
+                    .set("row_max", 1_usize)
+                    .set("col_max", 1_usize);
+            })
+            .into_bundle(|cfg: PresetConfig| {
+                assert!(cfg.dry_run);
+                assert!(cfg.verbose);
+                assert_eq!(cfg.row_max, Some(1));
+                assert_eq!(cfg.col_max, Some(1));
+            });
+
+        assert!(bundle.run_from(["test", "--probe"]).is_ok());
+    }
+
+    #[test]
+    fn absent_preset_leaves_config_unchanged() {
+        let bundle = Setup::new("test")
+            .override_args(OverrideArgs::new())
+            .query_args(QueryArgs::new())
+            .expose(|e: &mut ExposeMap| {
+                e.preset("probe")
+                    .set("dry_run", true)
+                    .set("verbose", true)
+                    .set("row_max", 1_usize)
+                    .set("col_max", 1_usize);
+            })
+            .into_bundle(|cfg: PresetConfig| {
+                assert!(!cfg.dry_run);
+                assert!(!cfg.verbose);
+                assert_eq!(cfg.row_max, None);
+                assert_eq!(cfg.col_max, None);
+            });
+
+        assert!(bundle.run_from(["test"]).is_ok());
+    }
+
+    #[test]
+    fn preset_uses_explicit_name_and_help() {
+        let bundle = Setup::new("test")
+            .override_args(OverrideArgs::new())
+            .query_args(QueryArgs::new())
+            .expose(|e: &mut ExposeMap| {
+                e.preset("quick_probe")
+                    .set("dry_run", true)
+                    .set("verbose", true)
+                    .help("Inspects one setup without running it.");
+            })
+            .into_bundle(|_cfg: PresetConfig| {});
+
+        let mut command = bundle.command().clone();
+        let help = command.render_long_help().to_string();
+
+        assert!(help.contains("--quick-probe"), "was:\n{help}");
+        assert!(help.contains("Inspects one setup without running it."), "was:\n{help}");
+        assert!(!help.contains("--quick-probe <"), "was:\n{help}");
+    }
+
+    #[test]
+    #[should_panic(expected = "must contain at least one fixed assignment")]
+    fn empty_preset_panics_when_building_command() {
+        Setup::new("test")
+            .override_args(OverrideArgs::new())
+            .query_args(QueryArgs::new())
+            .expose(|e: &mut ExposeMap| {
+                e.preset("empty");
+            })
+            .into_bundle(|_cfg: PresetConfig| {});
+    }
+
+    #[test]
+    #[should_panic(expected = "already assigns config path 'verbose'")]
+    fn duplicate_preset_assignment_panics() {
+        let mut map = ExposeMap::new();
+        map.preset("probe").set("verbose", true).set("verbose", false);
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot add fixed assignment")]
+    fn set_on_option_panics() {
+        let mut map = ExposeMap::new();
+        map.option("verbose").set("dry_run", true);
+    }
+
+    #[test]
     fn expose_with_custom_long() {
         let handler_called = Arc::new(AtomicBool::new(false));
         let handler_called_clone = handler_called.clone();
@@ -1182,6 +1289,19 @@ mod collision_detection {
 
     #[test]
     #[should_panic(expected = "CLI argument collision")]
+    fn preset_collides_with_exposed_flag_panics() {
+        Setup::new("test")
+            .override_args(OverrideArgs::new())
+            .query_args(QueryArgs::new())
+            .expose(|e: &mut ExposeMap| {
+                e.flag("verbose", true);
+                e.preset("verbose").set("value", "preset");
+            })
+            .into_bundle(|_cfg: NestedConfig| {});
+    }
+
+    #[test]
+    #[should_panic(expected = "CLI argument collision")]
     fn expose_collides_with_config_flag_panics() {
         Setup::new("test")
             .override_args(OverrideArgs::new())
@@ -1451,6 +1571,28 @@ mod argv_ordering {
         move |_path| Ok(Node::parse_str(r#"{ "value": "", "other": "" }"#, Format::Json).unwrap())
     }
 
+    fn assert_preset_order(args: &[&str], expected: &'static str) {
+        let bundle = Setup::new("test")
+            .override_args(OverrideArgs::new().set("set", None))
+            .query_args(QueryArgs::new())
+            .expose(|e: &mut ExposeMap| {
+                e.preset("bundle").set("value", "from-preset").set("other", "preset-other");
+                e.option("value");
+            })
+            .config_source(|c| {
+                c.positional("CONFIG", "Path to config file", Required::Yes)
+                    .loader(order_config_loader())
+            })
+            .into_bundle(move |cfg: OrderTestConfig| {
+                assert_eq!(cfg.value, expected);
+                assert_eq!(cfg.other, "preset-other");
+            });
+
+        let mut argv = vec!["test", "config.json"];
+        argv.extend_from_slice(args);
+        assert!(bundle.run_from(argv).is_ok());
+    }
+
     #[test]
     fn set_then_set_last_wins() {
         // Multiple --set for the same key: last one wins
@@ -1531,6 +1673,18 @@ mod argv_ordering {
             "--flag-value",
         ]);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn preset_and_option_follow_argv_order() {
+        assert_preset_order(&["--bundle", "--value", "from-option"], "from-option");
+        assert_preset_order(&["--value", "from-option", "--bundle"], "from-preset");
+    }
+
+    #[test]
+    fn preset_and_set_follow_argv_order() {
+        assert_preset_order(&["--bundle", "--set", "value", "from-set"], "from-set");
+        assert_preset_order(&["--set", "value", "from-set", "--bundle"], "from-preset");
     }
 
     #[test]
@@ -1871,6 +2025,25 @@ mod variant_expose {
     fn variant_on_list_panics() {
         let mut map = ExposeMap::new();
         map.list("source").variant("files");
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot take a variant wrapper")]
+    fn variant_on_preset_panics() {
+        let mut map = ExposeMap::new();
+        map.preset("preset-grid").set("source", "preset/dir").variant("grid");
+    }
+
+    #[test]
+    #[should_panic(expected = "unless it is a one-assignment field flag")]
+    fn variant_flag_cannot_gain_another_assignment() {
+        Setup::new("test")
+            .override_args(OverrideArgs::new())
+            .query_args(QueryArgs::new())
+            .expose(|e: &mut ExposeMap| {
+                e.flag("source", "preset/dir").variant("grid").set("value", "extra");
+            })
+            .into_bundle(|_cfg: EnumExposeConfig| {});
     }
 
     #[test]
