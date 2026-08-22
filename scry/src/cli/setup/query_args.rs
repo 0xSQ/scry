@@ -136,7 +136,7 @@ impl QueryArgs {
                 .value_name("KEY")
                 .default_missing_value("")
                 .help_heading(SUPPORT_HEADING)
-                .help("Prints config description and exits (no key = full description)");
+                .help("Prints config description and exits (no key = full description).");
 
             if let Some(short) = desc_arg.short {
                 arg = arg.short(short);
@@ -154,7 +154,7 @@ impl QueryArgs {
                 .value_name("KEY")
                 .default_missing_value("")
                 .help_heading(SUPPORT_HEADING)
-                .help("Prints config value and exits (no key = whole config)");
+                .help("Prints config value and exits (no key = whole config).");
 
             if let Some(short) = get_arg.short {
                 arg = arg.short(short);
@@ -172,7 +172,7 @@ impl QueryArgs {
                 .value_name("KEY")
                 .default_missing_value("")
                 .help_heading(SUPPORT_HEADING)
-                .help("Prints config as flat key=value lines");
+                .help("Prints config as flat key=value lines.");
 
             if let Some(short) = get_flat_arg.short {
                 arg = arg.short(short);
@@ -196,7 +196,7 @@ impl QueryArgs {
                 .value_names(["FORMAT", "KEY"])
                 .help_heading(SUPPORT_HEADING)
                 .help(format!(
-                    "Prints config in specified format ({})",
+                    "Prints config in specified format ({}).",
                     if supported.is_empty() {
                         "<none>"
                     } else {

@@ -98,7 +98,7 @@ impl Setup {
             about: None,
             config_source: Some(ConfigSource::new().positional(
                 "CONFIG",
-                "Path to config file",
+                "Path to config file.",
                 Required::Yes,
             )),
             override_args: OverrideArgs::standard(),

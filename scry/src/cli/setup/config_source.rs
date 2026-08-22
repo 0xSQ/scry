@@ -276,7 +276,7 @@ impl ConfigSource {
             // Add help text (custom or default).
             let help_text = match &pos.help {
                 Some(custom) => custom.clone(),
-                None => "Path to config file".to_string(),
+                None => "Path to config file.".to_string(),
             };
             arg = arg.help(help_text);
 
@@ -296,7 +296,7 @@ impl ConfigSource {
             // Add help text (custom or default).
             let help_text = match &opt.help {
                 Some(custom) => custom.clone(),
-                None => "Path to config file".to_string(),
+                None => "Path to config file.".to_string(),
             };
             arg = arg.help(help_text);
 

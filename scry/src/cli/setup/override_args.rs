@@ -107,7 +107,7 @@ impl OverrideArgs {
                 .value_names(["KEY", "VALUE"])
                 .action(ArgAction::Append)
                 .help_heading(SUPPORT_HEADING)
-                .help("Sets a config value (can be repeated)");
+                .help("Sets a config value (can be repeated).");
 
             if let Some(short) = set_arg.short {
                 arg = arg.short(short);
@@ -125,7 +125,7 @@ impl OverrideArgs {
                 .value_name("KEY")
                 .action(ArgAction::Append)
                 .help_heading(SUPPORT_HEADING)
-                .help("Removes a config value (can be repeated)");
+                .help("Removes a config value (can be repeated).");
 
             if let Some(short) = remove_arg.short {
                 arg = arg.short(short);

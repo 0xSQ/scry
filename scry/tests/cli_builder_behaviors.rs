@@ -1549,6 +1549,31 @@ mod setup_behavior {
         assert!(long_names.contains(&"get-flat"));
         assert!(long_names.contains(&"get-as"));
     }
+
+    #[test]
+    fn standard_argument_help_uses_terminal_punctuation() {
+        let bundle = Setup::standard("test").into_bundle(|_cfg: SimpleConfig| {});
+
+        for argument in bundle.command().get_arguments() {
+            if argument.get_id().as_str() == "help" {
+                continue;
+            }
+            let Some(help) = argument.get_help() else {
+                continue;
+            };
+            let help = help.to_string();
+            assert!(
+                matches!(help.chars().last(), Some('.' | '?' | '!')),
+                "argument '{}' has unpunctuated help: {help:?}",
+                argument.get_id()
+            );
+            assert!(
+                !help.contains(';'),
+                "argument '{}' uses a semicolon in help: {help:?}",
+                argument.get_id()
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------- //
