@@ -72,13 +72,17 @@ impl Node {
         }
     }
 
+    /// Creates an empty map node at the given logical config path.
+    pub fn empty_map_at(path: KeyPath) -> Self {
+        Self::new_map(path, IndexMap::new())
+    }
+
     /// Creates an empty map node at the root path.
     ///
-    /// Deserializing this yields a config type built entirely from its declared defaults: every key
-    /// is absent, so each derived field falls back to its `#[scry(default = ...)]`. See
+    /// Deserializing this lets every absent field apply its ordinary Scry fallback policy. See
     /// [`crate::from_defaults`].
     pub fn empty_map() -> Self {
-        Self::new_map(KeyPath::new(), IndexMap::new())
+        Self::empty_map_at(KeyPath::new())
     }
 
     // ------------------------------------------------------------------------------------------ //
@@ -202,10 +206,7 @@ impl Node {
         let kp = path.try_into_key_path()?;
         match self.walk(&kp)? {
             Some(node) => Ok(node),
-            None => {
-                let full_path = self.path.join(&kp);
-                Err(NodeError::missing_required(&full_path))
-            }
+            None => Err(NodeError::missing_required(&self.full_path(kp)?)),
         }
     }
 
@@ -219,6 +220,14 @@ impl Node {
     pub fn opt_node(&self, path: impl TryIntoKeyPath) -> Result<Option<&Node>, NodeError> {
         let kp = path.try_into_key_path()?;
         self.walk(&kp)
+    }
+
+    /// Resolves a relative path against this node's logical config path.
+    ///
+    /// String paths use the same dotted and bracketed syntax accepted by [`Self::req_node`] and
+    /// [`Self::opt_node`].
+    pub fn full_path(&self, path: impl TryIntoKeyPath) -> Result<KeyPath, NodeError> {
+        Ok(self.path.join(&path.try_into_key_path()?))
     }
 
     // ------------------------------------------------------------------------------------------ //

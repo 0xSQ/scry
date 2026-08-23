@@ -33,7 +33,7 @@ There are two steps:
 
 And the `scry::Config` derive generates the code needed for the second step automatically.
 
-The derive also buys you a free constructor: `scry::from_defaults::<T>()` builds a value entirely from its `#[scry(default = ...)]` annotations, as if parsing an empty config - so the annotations stay the single source of truth, with no hand-written `Default` impl restating the values. It is fallible by design: for `Deploy` above it returns an error naming `target`, because that field has no default and fabricating one would be worse.
+The derive also buys you a free constructor: `scry::from_defaults::<T>()` builds a value entirely from its Scry policies, as if parsing an empty config. Fields can use explicit values with `#[scry(default = EXPR)]` or delegate to their type with `#[scry(from_defaults)]`. Named structs derive that delegated construction from their field policies, while an enum opts in by marking one natural variant with `#[scry(default)]`. The annotations stay the single source of truth, with no hand-written Rust `Default` impl restating the values. Construction is fallible by design: for `Deploy` above it returns an error naming `target`, because that field has no default and fabricating one would be worse.
 
 ## But Why?
 
@@ -85,17 +85,17 @@ struct Deploy {
     /// Notification settings.
     notify: Option<Notify>,
     /// Where to send log output.
-    #[scry(default)]
+    #[scry(from_defaults)]
     log_output: LogOutput,
     /// Run without making changes.
     #[scry(default = false)]
     dry_run: bool,
 }
 
-#[derive(Debug, Default, Config)]
+#[derive(Debug, Config)]
 enum LogOutput {
     /// Log to standard output.
-    #[default]
+    #[scry(default)]
     Stdout,
     /// Log to standard error.
     Stderr,
@@ -200,7 +200,7 @@ $ deploy --desc
 ◇ dry_run: bool → false              ‣ Run without making changes.
 ```
 
-Required fields (`◆`), optional fields (`◇`), enum variants (`›`/`»`), default values (`→`) are all indicated visually. Comments are pulled from your struct's doc comments automatically. Symbols, spacing, and other formatting details can be customized if desired.
+Required fields (`◆`), optional fields (`◇`), enum variants (`›`/`»`), and displayable default values (`→`) are all indicated visually. Comments are pulled from your struct's doc comments automatically. Symbols, spacing, and other formatting details can be customized if desired.
 
 Subsections can be queried by path:
 

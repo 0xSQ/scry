@@ -135,22 +135,26 @@ struct LooseConfig {
 }
 ```
 
-## The Three Core Traits
+## The Core Traits
 
-Scry defines three traits for working with configuration types:
+Scry defines four traits for working with configuration types:
 
-| Trait / Derive Macro | Purpose                             |
-| -------------------- | ----------------------------------- |
-| `FromNode`           | Parse a `Node` into a Rust type     |
-| `ToNode`             | Serialize a Rust type to a `Node`   |
-| `Describe`           | Generate type descriptions for docs |
+| Trait / Derive Macro | Purpose                                                  |
+| -------------------- | -------------------------------------------------------- |
+| `FromNode`           | Parse a `Node` into a Rust type                          |
+| `FromDefaults`       | Construct a config type from its Scry field policies     |
+| `ToNode`             | Serialize a Rust type to a `Node`                        |
+| `Describe`           | Generate type descriptions for documentation             |
 
 The `#[derive(Config)]` macro is a shorthand for deriving the most common combination of
-`FromNode` and `Describe` together. You can also derive them individually when you only need
-some functionality. On enums, `Config` can also generate Rust string conversion when requested
-with `#[scry(from_str)]`.
+`FromNode` and `Describe` together. For named structs it also derives `FromDefaults`. An enum gets
+`FromDefaults` when exactly one unit variant has `#[scry(default)]`. You can derive the traits
+individually when you only need some functionality. On enums, `Config` can also generate Rust
+string conversion when requested with `#[scry(from_str)]`.
 
-Each trait has a corresponding `*_with` field attribute for customizing individual fields without implementing the full trait.
+`FromNode`, `ToNode`, and `Describe` have corresponding `*_with` field attributes for customizing
+individual fields without implementing the full trait. `FromDefaults` is selected explicitly with
+the `#[scry(from_defaults)]` field policy described below.
 
 ## FromNode
 
@@ -188,7 +192,18 @@ Structs have a straightforward default implementation:
 
 - Each field is read from a map key with the same name as the field.
 - Fields of type `Option<T>` are automatically optional in the input. If the key is missing, the field is set to `None`.
-- Non-optional fields are required unless a `#[scry(default)]` attribute is specified.
+- Non-optional fields are required unless `#[scry(default = EXPR)]` supplies an explicit value or
+  `#[scry(from_defaults)]` recursively applies the field type's Scry defaults.
+
+There is no bare `#[scry(default)]` field form. Use an explicit expression even when the
+corresponding Rust type also implements `Default`, for example `#[scry(default = Vec::new())]` or
+`#[scry(default = OutputMode::Summary)]`. Use `#[scry(from_defaults)]` only for a nested config type
+whose own Scry policies should be authoritative. A bare `#[scry(default)]` does have a separate,
+deliberate meaning on a unit enum variant, as described below.
+
+Descriptions automatically show only simple literal defaults such as `false`, `3`, `-0.5`, and
+`"cache"`. Constructor calls, enum paths, constants, and other Rust expressions still make the
+field omittable, but `--desc` does not present their source text as if it were a config value.
 
 ### The `rename` Attribute
 
@@ -204,7 +219,7 @@ struct DatabaseConfig {
 }
 ```
 
-This struct expects `{ "host": "...", "db": "..." }` in the config, but uses `hostname` and `database_name` as Rust field names. The rename applies similarly to all three traits.
+This struct expects `{ "host": "...", "db": "..." }` in the config, but uses `hostname` and `database_name` as Rust field names. The rename applies throughout the generated config behavior.
 
 ### Enums
 
@@ -217,7 +232,28 @@ Scry supports all Rust enum variant types: unit, tuple, and struct. For unit var
 | Multi-field tuple  | `{ "name": [v1, v2, ...] }`         |
 | Struct             | `{ "name": {"field": value, ...} }` |
 
-Variant names are translated from Rust's `PascalCase` to `snake_case` by default. Matching accepts both `snake_case` and `kebab-case` spellings for compound variant names, and unit variant matching is case-insensitive. Struct variant fields support the same attributes as regular struct fields (`#[scry(default)]`, `#[scry(rename)]`, etc.).
+Variant names are translated from Rust's `PascalCase` to `snake_case` by default. Matching accepts both `snake_case` and `kebab-case` spellings for compound variant names, and unit variant matching is case-insensitive. Struct variant fields support the same attributes as regular struct fields (`#[scry(default = EXPR)]`, `#[scry(from_defaults)]`, `#[scry(rename)]`, etc.).
+
+An enum can declare its Scry-owned default by marking exactly one unit variant:
+
+```rust
+#[derive(Config)]
+enum OutputMode {
+    #[scry(default)]
+    Summary,
+    Full,
+}
+```
+
+This gives `OutputMode` a `FromDefaults` implementation. A field opts into it with
+`#[scry(from_defaults)]`. The marker is unrelated to Rust's `#[default]`, so an enum may choose
+different variants for Scry construction and `std::default::Default`. Payload variants cannot be
+Scry defaults initially.
+
+Descriptions show the `»` marker when the enum itself is being constructed from Scry defaults,
+including a direct enum field with `#[scry(from_defaults)]`. Required fields and fields with an
+explicit `default = EXPR` do not show that marker because their missing-value policies do not select
+the enum's type-level Scry default.
 
 Use `#[scry(rename_all = "kebab-case")]` on an enum when you want kebab-case to become the
 canonical config and description spelling instead:
@@ -413,6 +449,54 @@ fn parse_color(node: &Node) -> Result<Color, NodeError> {
 ```
 
 If you use the same external type in many places, consider creating a newtype wrapper with its own `FromNode` implementation instead.
+
+## FromDefaults
+
+`FromDefaults` constructs a config value by applying its Scry field policies at a logical config
+path:
+
+```rust
+pub trait FromDefaults: Sized {
+    fn from_defaults_at(path: &KeyPath) -> Result<Self, NodeError>;
+}
+```
+
+`Config` derives this trait for named structs. The generated implementation parses an empty map
+through the same `FromNode` implementation used for authored config, so there is only one field
+interpreter. For enums, `Config` generates `FromDefaults` when exactly one unit variant has
+`#[scry(default)]`. The path anchors diagnostics and must not influence the value being constructed.
+
+Use `#[scry(from_defaults)]` when omitting a nested field should recursively apply that type's own
+Scry policies:
+
+```rust
+use scry::Config;
+
+#[derive(Config)]
+struct AppConfig {
+    #[scry(from_defaults)]
+    server: ServerConfig,
+}
+
+#[derive(Config)]
+struct ServerConfig {
+    #[scry(default = "127.0.0.1".to_string())]
+    host: String,
+    #[scry(default = 8080)]
+    port: u16,
+}
+
+let config: AppConfig = scry::from_defaults()?;
+```
+
+A required descendant remains an error. For example, removing the `host` default above makes an
+omitted `server` report `missing value for 'server.host'`. Missing fields and explicit `null` values
+both invoke the selected field fallback, matching Scry's existing optional-value behavior.
+
+Use the standalone `FromDefaults` derive alongside `FromNode` when you do not want the complete
+`Config` bundle for a named struct. The standalone derive also supports enums with exactly one unit
+variant marked `#[scry(default)]`. Tuple structs should use explicit field expressions or a manual
+implementation where appropriate.
 
 ## ToNode
 

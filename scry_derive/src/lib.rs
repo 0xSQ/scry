@@ -17,6 +17,20 @@ pub fn derive_from_node(input: TokenStream) -> TokenStream {
     }
 }
 
+/// Derives construction from Scry-declared defaults.
+///
+/// Named structs recursively apply their field policies. Enums require exactly one unit variant
+/// marked with `#[scry(default)]`.
+#[proc_macro_derive(FromDefaults, attributes(scry))]
+pub fn derive_from_defaults(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+
+    match generate::derive_from_defaults_impl(&input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
 /// Derives `ToNode` for serializing config to a Node tree.
 #[proc_macro_derive(ToNode, attributes(scry))]
 pub fn derive_to_node(input: TokenStream) -> TokenStream {
@@ -50,10 +64,11 @@ pub fn derive_describe(input: TokenStream) -> TokenStream {
     }
 }
 
-/// Derives both `FromNode` and `Describe` for config types.
+/// Derives Scry's parsing and description traits for config types.
 ///
-/// This is the recommended derive for config types that need both parsing
-/// and description support for `--desc` CLI.
+/// Named structs receive `FromNode`, `FromDefaults`, and `Describe`. Enums receive `FromNode` and
+/// `Describe`, `FromDefaults` when one unit variant has `#[scry(default)]`, and string conversion
+/// when requested with `#[scry(from_str)]`.
 #[proc_macro_derive(Config, attributes(scry))]
 pub fn derive_config(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);

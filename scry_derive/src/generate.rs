@@ -6,7 +6,7 @@ use syn::DeriveInput;
 
 use crate::parse::{
     self, is_option_type, is_vec_type, rename_all_variant, unwrap_inner_type, unwrap_to_base_type,
-    DeriveTarget, EnumInfo, FieldInfo, StructFields, StructInfo, VariantData,
+    DeriveTarget, EnumInfo, FieldFallback, FieldInfo, StructFields, StructInfo, VariantData,
 };
 
 // ---------------------------------------------------------------------------------------------- //
@@ -17,6 +17,14 @@ pub fn derive_from_node_impl(input: &DeriveInput) -> syn::Result<TokenStream> {
     match parse::parse_input(input)? {
         DeriveTarget::Struct(info) => generate_struct_from_node(&info),
         DeriveTarget::Enum(info) => generate_enum_from_node(&info),
+    }
+}
+
+/// Generates `FromDefaults` for recursive construction from Scry field defaults.
+pub fn derive_from_defaults_impl(input: &DeriveInput) -> syn::Result<TokenStream> {
+    match parse::parse_input(input)? {
+        DeriveTarget::Struct(info) => generate_struct_from_defaults(&info),
+        DeriveTarget::Enum(info) => generate_enum_from_defaults(&info, true),
     }
 }
 
@@ -53,19 +61,85 @@ pub fn derive_describe_impl(input: &DeriveInput) -> syn::Result<TokenStream> {
 pub fn derive_config_impl(input: &DeriveInput) -> syn::Result<TokenStream> {
     let from_node = derive_from_node_impl(input)?;
     let desc = derive_describe_impl(input)?;
-    let string_enum = match parse::parse_input(input)? {
-        DeriveTarget::Enum(info) if info.attrs.from_str => generate_enum_string_enum(&info)?,
-        _ => quote! {},
+    let (from_defaults, string_enum) = match parse::parse_input(input)? {
+        DeriveTarget::Struct(info) if matches!(&info.fields, StructFields::Named(_)) => {
+            (generate_struct_from_defaults(&info)?, quote! {})
+        }
+        DeriveTarget::Enum(info) => {
+            let from_defaults = generate_enum_from_defaults(&info, false)?;
+            let string_enum = if info.attrs.from_str {
+                generate_enum_string_enum(&info)?
+            } else {
+                quote! {}
+            };
+            (from_defaults, string_enum)
+        }
+        _ => (quote! {}, quote! {}),
     };
     Ok(quote! {
         #from_node
         #desc
+        #from_defaults
         #string_enum
     })
 }
 
 // ---------------------------------------------------------------------------------------------- //
 // FromNode Generation
+
+fn generate_struct_from_defaults(info: &StructInfo) -> syn::Result<TokenStream> {
+    let struct_name = &info.ident;
+
+    if !matches!(&info.fields, StructFields::Named(_)) {
+        return Err(syn::Error::new_spanned(
+            struct_name,
+            "FromDefaults can only be derived for named structs",
+        ));
+    }
+
+    let scry = scry_crate_path();
+
+    Ok(quote! {
+        impl #scry::FromDefaults for #struct_name {
+            fn from_defaults_at(
+                path: &#scry::KeyPath,
+            ) -> Result<Self, #scry::NodeError> {
+                <Self as #scry::FromNode>::from_node(
+                    &#scry::Node::empty_map_at(path.clone()),
+                )
+            }
+        }
+    })
+}
+
+fn generate_enum_from_defaults(info: &EnumInfo, require_default: bool) -> syn::Result<TokenStream> {
+    let enum_name = &info.ident;
+    let default_variant = info.variants.iter().find(|variant| variant.attrs.is_default);
+
+    let Some(default_variant) = default_variant else {
+        if require_default {
+            return Err(syn::Error::new_spanned(
+                enum_name,
+                "deriving `FromDefaults` for an enum requires exactly one unit variant marked \
+                 `#[scry(default)]`",
+            ));
+        }
+        return Ok(quote! {});
+    };
+
+    let scry = scry_crate_path();
+    let variant_name = &default_variant.ident;
+
+    Ok(quote! {
+        impl #scry::FromDefaults for #enum_name {
+            fn from_defaults_at(
+                _path: &#scry::KeyPath,
+            ) -> Result<Self, #scry::NodeError> {
+                Ok(Self::#variant_name)
+            }
+        }
+    })
+}
 
 fn generate_struct_from_node(info: &StructInfo) -> syn::Result<TokenStream> {
     let scry = scry_crate_path();
@@ -128,29 +202,33 @@ fn generate_struct_from_node(info: &StructInfo) -> syn::Result<TokenStream> {
 }
 
 fn generate_field_parser(field: &FieldInfo) -> TokenStream {
+    let scry = scry_crate_path();
     let field_name = &field.ident;
+    let ty = &field.ty;
     let key = field.attrs.rename.clone().unwrap_or_else(|| field_name.to_string());
 
     // Custom parse function
     if let Some(ref func_path) = field.attrs.from_node_with {
-        // from_node_with with default_value: use opt_node, call parser if present, otherwise default
-        if let Some(ref expr) = field.attrs.default_value {
-            return quote! {
-                #field_name: match node.opt_node(#key)? {
-                    Some(n) => #func_path(n)?,
-                    None => #expr,
-                }
-            };
-        }
-
-        // from_node_with with default: use opt_node, call parser if present, otherwise Default::default()
-        if field.attrs.default {
-            return quote! {
-                #field_name: match node.opt_node(#key)? {
-                    Some(n) => #func_path(n)?,
-                    None => Default::default(),
-                }
-            };
+        match &field.attrs.fallback {
+            FieldFallback::Expression(expr) => {
+                return quote! {
+                    #field_name: match node.opt_node(#key)? {
+                        Some(n) => #func_path(n)?,
+                        None => #expr,
+                    }
+                };
+            }
+            FieldFallback::FromDefaults => {
+                return quote! {
+                    #field_name: match node.opt_node(#key)? {
+                        Some(n) => #func_path(n)?,
+                        None => <#ty as #scry::FromDefaults>::from_defaults_at(
+                            &node.full_path(#key)?,
+                        )?,
+                    }
+                };
+            }
+            FieldFallback::Unspecified => {}
         }
 
         // from_node_with on Option<T>: use opt_node, wrap in Some if present
@@ -169,18 +247,23 @@ fn generate_field_parser(field: &FieldInfo) -> TokenStream {
         };
     }
 
-    // Default with expression
-    if let Some(ref expr) = field.attrs.default_value {
-        return quote! {
-            #field_name: node.opt(#key)?.unwrap_or_else(|| #expr)
-        };
-    }
-
-    // Default (use Default::default())
-    if field.attrs.default {
-        return quote! {
-            #field_name: node.opt(#key)?.unwrap_or_default()
-        };
+    match &field.attrs.fallback {
+        FieldFallback::Expression(expr) => {
+            return quote! {
+                #field_name: node.opt(#key)?.unwrap_or_else(|| #expr)
+            };
+        }
+        FieldFallback::FromDefaults => {
+            return quote! {
+                #field_name: match node.opt_node(#key)? {
+                    Some(n) => n.as_type::<#ty>()?,
+                    None => <#ty as #scry::FromDefaults>::from_defaults_at(
+                        &node.full_path(#key)?,
+                    )?,
+                }
+            };
+        }
+        FieldFallback::Unspecified => {}
     }
 
     // Option type (auto-detected) - implicit None default
@@ -419,28 +502,32 @@ fn generate_enum_from_node(info: &EnumInfo) -> syn::Result<TokenStream> {
 ///
 /// Similar to `generate_field_parser` but uses `payload` as the node variable.
 fn generate_struct_variant_field_parser(field: &FieldInfo) -> TokenStream {
+    let scry = scry_crate_path();
+    let ty = &field.ty;
     let key = field.attrs.rename.clone().unwrap_or_else(|| field.ident.to_string());
 
     // Custom parse function
     if let Some(ref func_path) = field.attrs.from_node_with {
-        // from_node_with with default_value: use opt_node, call parser if present, otherwise default
-        if let Some(ref expr) = field.attrs.default_value {
-            return quote! {
-                match payload.opt_node(#key)? {
-                    Some(n) => #func_path(n)?,
-                    None => #expr,
-                }
-            };
-        }
-
-        // from_node_with with default: use opt_node, call parser if present, otherwise Default::default()
-        if field.attrs.default {
-            return quote! {
-                match payload.opt_node(#key)? {
-                    Some(n) => #func_path(n)?,
-                    None => Default::default(),
-                }
-            };
+        match &field.attrs.fallback {
+            FieldFallback::Expression(expr) => {
+                return quote! {
+                    match payload.opt_node(#key)? {
+                        Some(n) => #func_path(n)?,
+                        None => #expr,
+                    }
+                };
+            }
+            FieldFallback::FromDefaults => {
+                return quote! {
+                    match payload.opt_node(#key)? {
+                        Some(n) => #func_path(n)?,
+                        None => <#ty as #scry::FromDefaults>::from_defaults_at(
+                            &payload.full_path(#key)?,
+                        )?,
+                    }
+                };
+            }
+            FieldFallback::Unspecified => {}
         }
 
         // from_node_with on Option<T>: use opt_node, wrap in Some if present
@@ -457,14 +544,21 @@ fn generate_struct_variant_field_parser(field: &FieldInfo) -> TokenStream {
         return quote! { #func_path(payload.req_node(#key)?)? };
     }
 
-    // Default with expression
-    if let Some(ref expr) = field.attrs.default_value {
-        return quote! { payload.opt(#key)?.unwrap_or_else(|| #expr) };
-    }
-
-    // Default (use Default::default())
-    if field.attrs.default {
-        return quote! { payload.opt(#key)?.unwrap_or_default() };
+    match &field.attrs.fallback {
+        FieldFallback::Expression(expr) => {
+            return quote! { payload.opt(#key)?.unwrap_or_else(|| #expr) };
+        }
+        FieldFallback::FromDefaults => {
+            return quote! {
+                match payload.opt_node(#key)? {
+                    Some(n) => n.as_type::<#ty>()?,
+                    None => <#ty as #scry::FromDefaults>::from_defaults_at(
+                        &payload.full_path(#key)?,
+                    )?,
+                }
+            };
+        }
+        FieldFallback::Unspecified => {}
     }
 
     // Option type (auto-detected) - implicit None default
@@ -834,21 +928,21 @@ fn generate_field_desc(field: &FieldInfo, scry: &TokenStream) -> TokenStream {
 
     // Determine optionality:
     // - Option<T> is optional (implicit None)
-    // - #[scry(default)] or #[scry(default = expr)] makes it optional
+    // - An explicit expression or recursive defaults make it optional
     let is_optional =
-        is_option_type(ty) || field.attrs.default || field.attrs.default_value.is_some();
+        is_option_type(ty) || !matches!(field.attrs.fallback, FieldFallback::Unspecified);
 
-    // Compute default value for display
-    // Only show explicit defaults, not implicit ones
-    let default_expr = if let Some(expr) = &field.attrs.default_value {
-        let expr_str = quote!(#expr).to_string();
-        quote! { .with_default(#expr_str) }
-    } else {
-        quote! {}
+    // Only simple literals are honest config-oriented display values. Arbitrary Rust syntax is
+    // construction machinery rather than user-facing configuration documentation.
+    let default_display = match &field.attrs.fallback {
+        FieldFallback::Expression(expr) => literal_default_display(expr)
+            .map(|display| quote! { .with_default(#display) })
+            .unwrap_or_default(),
+        FieldFallback::Unspecified | FieldFallback::FromDefaults => quote! {},
     };
 
     // Mark as optional if needed
-    let optional_expr = if is_optional && field.attrs.default_value.is_none() {
+    let optional_expr = if is_optional && default_display.is_empty() {
         quote! { .optional() }
     } else {
         quote! {}
@@ -889,12 +983,53 @@ fn generate_field_desc(field: &FieldInfo, scry: &TokenStream) -> TokenStream {
             }
         }
     };
+    let value_expr = if matches!(field.attrs.fallback, FieldFallback::FromDefaults) {
+        value_expr
+    } else {
+        quote! { (#value_expr).without_default_variant() }
+    };
 
     quote! {
         #scry::desc::FieldDesc::new(#field_name, #value_expr)
             .with_doc(#doc)
             #optional_expr
-            #default_expr
+            #default_display
+    }
+}
+
+fn literal_default_display(expr: &syn::Expr) -> Option<String> {
+    match expr {
+        syn::Expr::Paren(expr) => literal_default_display(&expr.expr),
+        syn::Expr::Group(expr) => literal_default_display(&expr.expr),
+        syn::Expr::Lit(syn::ExprLit { lit, .. }) => match lit {
+            syn::Lit::Bool(lit) => Some(lit.value.to_string()),
+            syn::Lit::Int(lit) => Some(lit.base10_digits().to_string()),
+            syn::Lit::Float(lit) => Some(lit.base10_digits().to_string()),
+            syn::Lit::Str(lit) => Some(proc_macro2::Literal::string(&lit.value()).to_string()),
+            _ => None,
+        },
+        syn::Expr::Unary(syn::ExprUnary {
+            op: syn::UnOp::Neg(_),
+            expr,
+            ..
+        }) => numeric_literal_display(expr).map(|display| format!("-{display}")),
+        _ => None,
+    }
+}
+
+fn numeric_literal_display(expr: &syn::Expr) -> Option<String> {
+    match expr {
+        syn::Expr::Paren(expr) => numeric_literal_display(&expr.expr),
+        syn::Expr::Group(expr) => numeric_literal_display(&expr.expr),
+        syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Int(lit),
+            ..
+        }) => Some(lit.base10_digits().to_string()),
+        syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Float(lit),
+            ..
+        }) => Some(lit.base10_digits().to_string()),
+        _ => None,
     }
 }
 
@@ -1002,5 +1137,65 @@ fn scry_crate_path() -> TokenStream {
             let ident = syn::Ident::new(&name, proc_macro2::Span::call_site());
             quote! { ::#ident }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn displays_only_supported_literal_defaults() {
+        let cases: Vec<(syn::Expr, Option<&str>)> = vec![
+            (syn::parse_quote!(false), Some("false")),
+            (syn::parse_quote!(42), Some("42")),
+            (syn::parse_quote!(1.25), Some("1.25")),
+            (syn::parse_quote!("cache"), Some("\"cache\"")),
+            (syn::parse_quote!((-3)), Some("-3")),
+            (syn::parse_quote!(0xff_u32), Some("255")),
+            (syn::parse_quote!(1_000usize), Some("1000")),
+            (syn::parse_quote!(1f32), Some("1")),
+            (syn::parse_quote!(r#"cache"#), Some("\"cache\"")),
+            (syn::parse_quote!(Vec::new()), None),
+            (syn::parse_quote!(PathBuf::from("cache")), None),
+            (syn::parse_quote!(OutputMode::Summary), None),
+            (syn::parse_quote!(DEFAULT_LIMIT), None),
+        ];
+
+        for (expr, expected) in cases {
+            assert_eq!(literal_default_display(&expr).as_deref(), expected);
+        }
+    }
+
+    #[test]
+    fn standalone_from_defaults_requires_an_enum_marker() {
+        let input: DeriveInput = syn::parse_quote! {
+            enum OutputMode {
+                Summary,
+                Full,
+            }
+        };
+
+        let error = match derive_from_defaults_impl(&input) {
+            Ok(_) => panic!("expected an unmarked enum derive to be rejected"),
+            Err(error) => error.to_string(),
+        };
+
+        assert!(error.contains("requires exactly one unit variant"));
+        assert!(error.contains("#[scry(default)]"));
+    }
+
+    #[test]
+    fn standalone_from_defaults_rejects_tuple_structs() {
+        let input: DeriveInput = syn::parse_quote! {
+            struct Wrapper(String);
+        };
+
+        let error = match derive_from_defaults_impl(&input) {
+            Ok(_) => panic!("expected tuple struct derive to be rejected"),
+            Err(error) => error.to_string(),
+        };
+
+        assert!(error.contains("only be derived for named structs"));
     }
 }

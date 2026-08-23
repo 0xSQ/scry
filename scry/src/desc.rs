@@ -67,10 +67,10 @@ pub struct FieldDesc {
     pub name: String,
     /// Doc comment for this field.
     pub doc: String,
-    /// True if field is `Option<T>` or has a default.
+    /// True if the parent key may be omitted and a fallback policy applies.
     pub optional: bool,
-    /// Display string for the default value, if any.
-    pub default_expr: Option<String>,
+    /// Human-facing display string for the default value, if any.
+    pub default_display: Option<String>,
     /// Description of the field's value.
     pub value: Desc,
 }
@@ -91,13 +91,13 @@ pub struct VariantDesc {
 pub enum VariantRepr {
     /// Unit variant: written as a bare string in config (e.g., `"auto"`).
     Unit {
-        /// True if this is the default variant.
+        /// True if this is the Scry default variant.
         is_default: bool,
     },
 
     /// Payload variant: written as a map with one key (e.g., `{ file: "path" }`).
     Payload {
-        /// True if this is the default variant.
+        /// True if this is the Scry default variant.
         is_default: bool,
         /// Description of the payload.
         payload: Desc,
@@ -205,6 +205,23 @@ impl Desc {
             _ => None,
         }
     }
+
+    /// Removes the default marker from a directly described enum.
+    ///
+    /// Struct fields use this when their missing-value policy does not select the enum's Scry
+    /// default. Nested field descriptions remain unchanged.
+    pub fn without_default_variant(mut self) -> Self {
+        if let DescKind::Enum { variants } = &mut self.kind {
+            for variant in variants {
+                match &mut variant.repr {
+                    VariantRepr::Unit { is_default } | VariantRepr::Payload { is_default, .. } => {
+                        *is_default = false
+                    }
+                }
+            }
+        }
+        self
+    }
 }
 
 impl FieldDesc {
@@ -214,7 +231,7 @@ impl FieldDesc {
             name: name.into(),
             doc: String::new(),
             optional: false,
-            default_expr: None,
+            default_display: None,
             value,
         }
     }
@@ -231,10 +248,10 @@ impl FieldDesc {
         self
     }
 
-    /// Sets a default value expression.
-    pub fn with_default(mut self, expr: impl Into<String>) -> Self {
-        self.default_expr = Some(expr.into());
-        self.optional = true; // Having a default implies optional
+    /// Sets the human-facing default value text.
+    pub fn with_default(mut self, display: impl Into<String>) -> Self {
+        self.default_display = Some(display.into());
+        self.optional = true; // A displayed default implies an omittable field.
         self
     }
 }
@@ -267,7 +284,7 @@ impl VariantDesc {
         self
     }
 
-    /// Returns true if this is the default variant.
+    /// Returns true if this is the Scry default variant.
     pub fn is_default(&self) -> bool {
         match &self.repr {
             VariantRepr::Unit { is_default } => *is_default,
@@ -301,7 +318,7 @@ pub struct DisplaySymbols {
     pub required: &'static str,
     /// Symbol for optional fields.
     pub optional: &'static str,
-    /// Symbol for the default enum variant.
+    /// Symbol for the Scry default enum variant.
     pub default_variant: &'static str,
     /// Symbol for non-default enum variants.
     pub variant: &'static str,
@@ -548,7 +565,7 @@ impl FieldDesc {
         }
 
         // Add default value if present
-        if let Some(default_val) = &self.default_expr {
+        if let Some(default_val) = &self.default_display {
             label.push(' ');
             label.push_str(config.symbols.default_value);
             label.push(' ');
@@ -1045,6 +1062,26 @@ mod tests {
         assert!(output.contains("◇ enabled: bool"));
         assert!(output.contains("‣ The name"));
         assert!(output.contains("‣ Whether enabled"));
+    }
+
+    #[test]
+    fn without_default_variant_only_changes_a_direct_enum() {
+        let direct = Desc::enumeration(vec![
+            VariantDesc::unit("summary", true),
+            VariantDesc::unit("full", false),
+        ])
+        .without_default_variant();
+        assert!(direct.unit_enum_variants().unwrap().iter().all(|variant| !variant.is_default()));
+
+        let nested = Desc::list(Desc::enumeration(vec![
+            VariantDesc::unit("summary", true),
+            VariantDesc::unit("full", false),
+        ]))
+        .without_default_variant();
+        let DescKind::List { item } = nested.kind else {
+            panic!("expected a list description");
+        };
+        assert!(item.unit_enum_variants().unwrap()[0].is_default());
     }
 
     #[test]

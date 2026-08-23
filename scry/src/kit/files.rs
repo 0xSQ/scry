@@ -345,7 +345,7 @@ impl Describe for Files {
             name: "sources".to_string(),
             doc: "The sources to collect files from.".to_string(),
             optional: false,
-            default_expr: None,
+            default_display: None,
             value: Desc::plain("file source…"),
         }])
     }

@@ -63,27 +63,29 @@ pub use desc::{Desc, DescPathError};
 pub use key_path::{KeyPath, KeyPathError};
 pub use node::{Node, NodeError};
 pub use string_enum::StringEnumError;
-pub use traits::{Describe, FromNode, ToNode};
+pub use traits::{Describe, FromDefaults, FromNode, ToNode};
 
 // Re-export derive macros.
-pub use scry_derive::{Config, Describe, FromNode, StringEnum, ToNode};
+pub use scry_derive::{Config, Describe, FromDefaults, FromNode, StringEnum, ToNode};
 
 // ---------------------------------------------------------------------------------------------- //
 
-/// Builds a config type entirely from its declared defaults, as if parsing an empty config.
+/// Builds a value from its Scry-declared default policies.
 ///
-/// Every field falls back to its `#[scry(default = ...)]`, or to `None` for `Option<T>`. A required
-/// field with no default returns a [`NodeError`] at that field's path: this is fallible by design,
-/// so a type that cannot be built from defaults alone says so rather than fabricating a value.
+/// Every struct field applies its ordinary Scry fallback: an explicit
+/// `#[scry(default = EXPR)]`, recursive `#[scry(from_defaults)]`, or implicit `None` for
+/// `Option<T>`. An enum uses its unit variant marked `#[scry(default)]`. A required field with no
+/// fallback returns a [`NodeError`] at that field's path. This is fallible by design, so a type that
+/// cannot be built from defaults alone says so rather than fabricating a value.
 ///
-/// This keeps the `#[scry(default = ...)]` annotations as the single source of truth - no
-/// hand-written constructor that restates the defaults.
+/// This keeps Scry's field policies as the single source of truth - no hand-written constructor
+/// that restates the defaults.
 ///
 /// ```ignore
 /// let config: MyConfig = scry::from_defaults()?;
 /// ```
-pub fn from_defaults<T: FromNode>() -> Result<T, NodeError> {
-    T::from_node(&Node::empty_map())
+pub fn from_defaults<T: FromDefaults>() -> Result<T, NodeError> {
+    T::from_defaults_at(&KeyPath::new())
 }
 
 // Re-export probe machinery for derive macro (hidden from docs).

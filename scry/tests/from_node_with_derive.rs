@@ -43,7 +43,7 @@ struct DefaultedConfig {
 
 #[derive(Debug, Clone, PartialEq, scry::FromNode)]
 struct DefaultConfig {
-    #[scry(from_node_with(parse_csv), default)]
+    #[scry(from_node_with(parse_csv), default = Vec::new())]
     tags: Vec<String>,
 }
 

@@ -21,17 +21,17 @@ struct Deploy {
     /// Notification settings.
     notify: Option<Notify>,
     /// Where to send log output.
-    #[scry(default)]
+    #[scry(from_defaults)]
     log_output: LogOutput,
     /// Run without making changes.
     #[scry(default = false)]
     dry_run: bool,
 }
 
-#[derive(Debug, Default, Config)]
+#[derive(Debug, Config)]
 enum LogOutput {
     /// Log to standard output.
-    #[default]
+    #[scry(default)]
     Stdout,
     /// Log to standard error.
     Stderr,

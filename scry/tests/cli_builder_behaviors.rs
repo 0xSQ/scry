@@ -53,7 +53,7 @@ struct DatabaseConfig {
 #[allow(dead_code)]
 struct ListTestConfig {
     /// Items list.
-    #[scry(default)]
+    #[scry(default = Vec::new())]
     items: Vec<String>,
 }
 
@@ -80,10 +80,8 @@ struct PresetConfig {
     #[scry(default = false)]
     verbose: bool,
     /// Limits the selected rows.
-    #[scry(default)]
     row_max: Option<usize>,
     /// Limits the selected columns.
-    #[scry(default)]
     col_max: Option<usize>,
 }
 
