@@ -1,4 +1,4 @@
-# Scry
+# Scry 🔮
 
 A Rust library for building config-file-driven interfaces and CLI tools on top of them.
 
@@ -140,8 +140,6 @@ fn main() -> Result<(), SetupError> {
 
 `Setup` comes with sensible defaults that can be overridden. By default, it takes the config file path as a positional argument and uses `Node::parse_file` to load it.
 
-(Scry re-exports clap as `scry::clap`, since the builder's extension points traffic in clap types like `Arg` and `Command`. Your crate gets the exact clap version Scry was built against, with no second dependency to keep in sync.)
-
 The `into_bundle` method combines your setup with a target *payload* function and returns a `Bundle` - an object that pairs the generated clap command with its dispatch logic. Calling `run()` parses arguments and dispatches to the target function. Running it shows:
 
 ```
@@ -198,7 +196,7 @@ $ deploy --desc
 ◇ dry_run: bool → false              ‣ Run without making changes.
 ```
 
-Required fields (`◆`), optional fields (`◇`), enum variants (`›`/`»`), and displayable default values (`→`) are all indicated visually. Comments are pulled from your struct's doc comments automatically. Symbols, spacing, and other formatting details can be customized if desired.
+Required fields (`◆`), optional fields (`◇`), enum variants (`›`/`»`), and (displayable) default values (`→`) are all indicated visually. Comments are pulled from your struct's doc comments automatically. Symbols, spacing, and other formatting details can be customized if desired.
 
 Subsections can be queried by path:
 
@@ -286,8 +284,7 @@ The same validation happens for config files themselves - unknown keys are caugh
 ### Exposing Config Values as CLI Arguments
 
 Frequently used values can be promoted to proper CLI arguments via the `expose` method. Value-taking
-arguments use `option`, while `flag` creates a presence-only argument that applies a predeclared
-`--set PATH VALUE` operation:
+arguments use `option`, while `flag`  applies a predeclared `--set PATH VALUE` operation:
 
 ```rust
 use scry::cli::setup::{Setup, SetupError};
@@ -321,12 +318,13 @@ Now users can write:
 $ deploy deploy.json -n -e production
 ```
 
-Flags can assign any value supported by `ToNode`, not only boolean `true`. For example,
+Flags can assign any value, not only boolean `true`. For example,
 `e.flag("notify.on_failure_only", false).long("always-notify")` creates `--always-notify` as a
 zero-argument shorthand for `--set notify.on_failure_only false`. If the flag is absent, the loaded
 config remains unchanged.
 
 When several fixed assignments form one named CLI concept, declare a preset instead:
+
 
 ```rust
 e.preset("safe")
@@ -334,10 +332,6 @@ e.preset("safe")
     .set("parallelism", 1_usize)
     .help("Runs one operation at a time without applying changes.");
 ```
-
-`flag(path, value)` is the concise one-assignment form of this same fixed-assignment mechanism. A
-preset names the CLI argument independently from its config paths, so it does not inherit help from
-any one assignment. Give presets explicit help unless the name is entirely self-explanatory.
 
 Flags, presets, and `--set` can be used together. Each operation is applied in command-line order,
 so the later argument wins when several operations target the same path.
@@ -407,8 +401,11 @@ defaults::base + #{
 ## Further
 
 - **[Core Concepts](docs/concepts.md)** - Explains the basics: how the `Node` tree works, how to implement `FromNode` manually, etc.
-- **[Files](docs/files.md)** - Cookbook-style file set selection for Scry configs, with examples
-  written in Rhai.
+- The [`kit`](scry/src/kit.rs) module provides reusable building blocks for common configuration
+  patterns. [`Files`](docs/files.md) represents sets of files using config-file syntax,
+  [`KeyValues<V>`](scry/src/kit/key_values.rs) provides key-value entries for initializing Rust map
+  types, and [`OneOrMany<T>`](scry/src/kit/one_or_many.rs) lets a field accept either a
+  single value or an array.
 
 See the [examples](scry/examples) directory for complete working code.
 
@@ -420,7 +417,7 @@ The Cambridge Dictionary has the following definition of the word *scry*: "to se
 
 ## Status
 
-Experimental.
+Experimental for-fun personal project. But quite usable for that, methinks!
 
 ## License
 
