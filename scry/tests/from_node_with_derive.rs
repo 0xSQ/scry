@@ -1,8 +1,8 @@
 //! Tests for from_node_with derive support.
 #![cfg(feature = "format-json")]
 
-use scry::node::Format;
-use scry::{Node, NodeError};
+use scry::node::{Format, Value};
+use scry::{FromNode, Node, NodeError};
 
 // ---------------------------------------------------------------------------------------------- //
 // Test Types
@@ -18,6 +18,15 @@ fn parse_port(node: &Node) -> Result<Port, NodeError> {
         return Err(NodeError::invalid_value(&node.path, "port cannot be 0"));
     }
     Ok(Port(val))
+}
+
+/// Parses the complete optional port field, including explicit null.
+fn parse_optional_port(node: &Node) -> Result<Option<Port>, NodeError> {
+    if matches!(node.read_leaf("optional port")?, Value::Null) {
+        Ok(None)
+    } else {
+        parse_port(node).map(Some)
+    }
 }
 
 /// Parses a comma-separated list of strings.
@@ -49,7 +58,7 @@ struct DefaultConfig {
 
 #[derive(Debug, Clone, PartialEq, scry::FromNode)]
 struct OptionalConfig {
-    #[scry(from_node_with(parse_port))]
+    #[scry(from_node_with(parse_optional_port))]
     port: Option<Port>,
 }
 
@@ -148,4 +157,32 @@ fn optional_parse_with_validation_error_when_invalid() {
     let err = n.as_type::<OptionalConfig>().unwrap_err();
     let msg = err.to_string();
     assert!(msg.contains("cannot be 0"), "error should mention validation: {}", msg);
+}
+
+#[test]
+fn hook_named_value_is_not_shadowed_by_generated_field_bindings() {
+    #[derive(Debug, PartialEq, FromNode)]
+    struct Config {
+        #[scry(from_node_with(value))]
+        port: Option<u16>,
+    }
+
+    #[derive(Debug, PartialEq, FromNode)]
+    enum Mode {
+        Named {
+            #[scry(from_node_with(value))]
+            port: Option<u16>,
+        },
+    }
+
+    fn value(node: &Node) -> Result<Option<u16>, NodeError> {
+        node.as_type()
+    }
+
+    for (input, expected) in [("null", None), ("3000", Some(3000))] {
+        let source = format!(r#"{{ "port": {input} }}"#);
+        assert_eq!(node(&source).as_type::<Config>().unwrap(), Config { port: expected });
+        let source = format!(r#"{{ "named": {{ "port": {input} }} }}"#);
+        assert_eq!(node(&source).as_type::<Mode>().unwrap(), Mode::Named { port: expected });
+    }
 }

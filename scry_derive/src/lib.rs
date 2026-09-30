@@ -7,6 +7,16 @@ mod parse;
 // ---------------------------------------------------------------------------------------------- //
 
 /// Derives `FromNode` for parsing config from a Node tree.
+///
+/// Named structs and named enum payloads require maps. Present fields, including null, are
+/// decoded as their complete Rust type. Only missing fields select `#[scry(default = EXPR)]`,
+/// recursive `#[scry(from_defaults)]`, or implicit `None` for a written `Option<T>` type.
+/// A type alias hiding `Option<T>` needs an explicit fallback to permit omission.
+///
+/// `#[scry(from_node_with(parse))]` calls `parse(&Node)` for present fields and expects
+/// `Result<FieldType, NodeError>`. For `Option<T>`, the hook returns `Option<T>` and receives
+/// null too. Missing fields use their fallback without calling the hook. Leaf parsers should
+/// use `Node::read_leaf` or typed decoding to consume input for unknown-key validation.
 #[proc_macro_derive(FromNode, attributes(scry))]
 pub fn derive_from_node(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -32,6 +42,11 @@ pub fn derive_from_defaults(input: TokenStream) -> TokenStream {
 }
 
 /// Derives `ToNode` for serializing config to a Node tree.
+///
+/// Every named field is serialized, including in enum payloads. `Option<T>::None` produces
+/// null rather than omitting the key, preserving the value when a missing field has a default.
+/// `#[scry(to_node_with(write))]` calls `write(&FieldType)` and expects `Result<Node, NodeError>`.
+/// For `Option<T>`, the hook receives `&Option<T>` even when the value is `None`.
 #[proc_macro_derive(ToNode, attributes(scry))]
 pub fn derive_to_node(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -69,6 +84,7 @@ pub fn derive_describe(input: TokenStream) -> TokenStream {
 /// Named structs receive `FromNode`, `FromDefaults`, and `Describe`. Enums receive `FromNode` and
 /// `Describe`, `FromDefaults` when one unit variant has `#[scry(default)]`, and string conversion
 /// when requested with `#[scry(from_str)]`.
+/// See [`FromNode`](macro@FromNode) for field fallback and parsing-hook rules.
 #[proc_macro_derive(Config, attributes(scry))]
 pub fn derive_config(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);

@@ -102,7 +102,7 @@ impl FromNode for RedirectSpec {
         }
 
         if node.kind.is_map() {
-            let dir: Option<String> = node.opt("dir")?;
+            let dir = node.opt::<Option<String>>("dir")?.flatten();
             let mut commands = IndexMap::new();
             if let Some(commands_node) = node.opt_node("commands")? {
                 for (key, value) in commands_node.as_map()? {
@@ -315,6 +315,7 @@ fn format_tried(tried: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::node::Format;
     use std::fs;
     use tempfile::TempDir;
 
@@ -322,6 +323,18 @@ mod tests {
         let path = dir.join(name);
         fs::write(&path, content).unwrap();
         path
+    }
+
+    #[test]
+    fn null_directory_is_optional_but_null_commands_are_invalid() {
+        let node = Node::parse_str("#{ dir: () }", Format::Rhai).unwrap();
+        let spec = RedirectSpec::from_node(&node).unwrap();
+        assert!(spec.dir.is_none());
+        assert!(spec.commands.is_empty());
+        node.ensure_no_unknown_keys().unwrap();
+
+        let node = Node::parse_str("#{ commands: () }", Format::Rhai).unwrap();
+        assert!(RedirectSpec::from_node(&node).is_err());
     }
 
     #[test]
@@ -432,6 +445,7 @@ mod tests {
         assert!(matches!(err, RedirectError::InvalidRedirectFile { .. }));
     }
 
+    #[cfg(feature = "format-json")]
     #[test]
     fn json_redirect_file_works() {
         let temp = TempDir::new().unwrap();

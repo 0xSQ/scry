@@ -1,6 +1,6 @@
 //! Code generation for derive macros: FromNode, ToNode, Describe, Config.
 
-use proc_macro2::TokenStream;
+use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
 use syn::DeriveInput;
 
@@ -159,6 +159,7 @@ fn generate_struct_from_node(info: &StructInfo) -> syn::Result<TokenStream> {
             Ok(quote! {
                 impl #scry::FromNode for #struct_name {
                     fn from_node(node: &#scry::Node) -> Result<Self, #scry::NodeError> {
+                        node.as_map()?;
                         let result = Self {
                             #(#field_parsers),*
                         };
@@ -202,80 +203,40 @@ fn generate_struct_from_node(info: &StructInfo) -> syn::Result<TokenStream> {
 }
 
 fn generate_field_parser(field: &FieldInfo) -> TokenStream {
-    let scry = scry_crate_path();
     let field_name = &field.ident;
-    let ty = &field.ty;
-    let key = field.attrs.rename.clone().unwrap_or_else(|| field_name.to_string());
+    let value = generate_field_value_parser(field, &quote! { node });
 
-    // Custom parse function
-    if let Some(ref func_path) = field.attrs.from_node_with {
-        match &field.attrs.fallback {
-            FieldFallback::Expression(expr) => {
-                return quote! {
-                    #field_name: match node.opt_node(#key)? {
-                        Some(n) => #func_path(n)?,
-                        None => #expr,
-                    }
-                };
-            }
-            FieldFallback::FromDefaults => {
-                return quote! {
-                    #field_name: match node.opt_node(#key)? {
-                        Some(n) => #func_path(n)?,
-                        None => <#ty as #scry::FromDefaults>::from_defaults_at(
-                            &node.full_path(#key)?,
-                        )?,
-                    }
-                };
-            }
-            FieldFallback::Unspecified => {}
-        }
-
-        // from_node_with on Option<T>: use opt_node, wrap in Some if present
-        if is_option_type(&field.ty) {
-            return quote! {
-                #field_name: match node.opt_node(#key)? {
-                    Some(n) => Some(#func_path(n)?),
-                    None => None,
-                }
-            };
-        }
-
-        // Required field with from_node_with
-        return quote! {
-            #field_name: #func_path(node.req_node(#key)?)?
-        };
-    }
-
-    match &field.attrs.fallback {
-        FieldFallback::Expression(expr) => {
-            return quote! {
-                #field_name: node.opt(#key)?.unwrap_or_else(|| #expr)
-            };
-        }
-        FieldFallback::FromDefaults => {
-            return quote! {
-                #field_name: match node.opt_node(#key)? {
-                    Some(n) => n.as_type::<#ty>()?,
-                    None => <#ty as #scry::FromDefaults>::from_defaults_at(
-                        &node.full_path(#key)?,
-                    )?,
-                }
-            };
-        }
-        FieldFallback::Unspecified => {}
-    }
-
-    // Option type (auto-detected) - implicit None default
-    if is_option_type(&field.ty) {
-        return quote! {
-            #field_name: node.opt(#key)?
-        };
-    }
-
-    // Required field
     quote! {
-        #field_name: node.req(#key)?
+        #field_name: #value
+    }
+}
+
+/// Generates complete-field decoding with a separate missing-field fallback.
+fn generate_field_value_parser(field: &FieldInfo, parent: &TokenStream) -> TokenStream {
+    let scry = scry_crate_path();
+    let ty = &field.ty;
+    let key = field.attrs.rename.clone().unwrap_or_else(|| field.ident.to_string());
+    let input = Ident::new("__scry_field_node", Span::mixed_site());
+    let present = match &field.attrs.from_node_with {
+        Some(func_path) => quote! { #func_path(#input)? },
+        None => quote! { #input.as_type::<#ty>()? },
+    };
+    let missing = match &field.attrs.fallback {
+        FieldFallback::Expression(expr) => quote! { #expr },
+        FieldFallback::FromDefaults => quote! {
+            <#ty as #scry::FromDefaults>::from_defaults_at(&#parent.full_path(#key)?)?
+        },
+        FieldFallback::Unspecified if is_option_type(ty) => quote! { None },
+        FieldFallback::Unspecified => quote! {
+            return Err(#scry::NodeError::missing_required(&#parent.full_path(#key)?))
+        },
+    };
+
+    quote! {
+        match #parent.opt_node(#key)? {
+            Some(#input) => #present,
+            None => #missing,
+        }
     }
 }
 
@@ -394,6 +355,7 @@ fn generate_enum_from_node(info: &EnumInfo) -> syn::Result<TokenStream> {
                     let field_names: Vec<&syn::Ident> = fields.iter().map(|f| &f.ident).collect();
 
                     quote! {
+                        payload.as_map()?;
                         let result = #enum_name::#v_ident {
                             #(#field_names: #field_parsers),*
                         };
@@ -430,8 +392,9 @@ fn generate_enum_from_node(info: &EnumInfo) -> syn::Result<TokenStream> {
 
                 match &node.kind {
                     // String form: only unit variants allowed
-                    Kind::Leaf(leaf) => {
-                        if let #scry::node::Value::String(s) = &leaf.value {
+                    Kind::Leaf(_) => {
+                        let value = node.read_leaf("string or map")?;
+                        if let #scry::node::Value::String(s) = value {
                             match s.to_ascii_lowercase().as_str() {
                                 #(#unit_string_arms,)*
                                 #(#payload_string_error_arms,)*
@@ -448,7 +411,7 @@ fn generate_enum_from_node(info: &EnumInfo) -> syn::Result<TokenStream> {
                             return Err(#scry::NodeError::type_mismatch(
                                 &node.path,
                                 "string or map",
-                                leaf.value.type_name(),
+                                value.type_name(),
                             ));
                         }
                     }
@@ -502,72 +465,7 @@ fn generate_enum_from_node(info: &EnumInfo) -> syn::Result<TokenStream> {
 ///
 /// Similar to `generate_field_parser` but uses `payload` as the node variable.
 fn generate_struct_variant_field_parser(field: &FieldInfo) -> TokenStream {
-    let scry = scry_crate_path();
-    let ty = &field.ty;
-    let key = field.attrs.rename.clone().unwrap_or_else(|| field.ident.to_string());
-
-    // Custom parse function
-    if let Some(ref func_path) = field.attrs.from_node_with {
-        match &field.attrs.fallback {
-            FieldFallback::Expression(expr) => {
-                return quote! {
-                    match payload.opt_node(#key)? {
-                        Some(n) => #func_path(n)?,
-                        None => #expr,
-                    }
-                };
-            }
-            FieldFallback::FromDefaults => {
-                return quote! {
-                    match payload.opt_node(#key)? {
-                        Some(n) => #func_path(n)?,
-                        None => <#ty as #scry::FromDefaults>::from_defaults_at(
-                            &payload.full_path(#key)?,
-                        )?,
-                    }
-                };
-            }
-            FieldFallback::Unspecified => {}
-        }
-
-        // from_node_with on Option<T>: use opt_node, wrap in Some if present
-        if is_option_type(&field.ty) {
-            return quote! {
-                match payload.opt_node(#key)? {
-                    Some(n) => Some(#func_path(n)?),
-                    None => None,
-                }
-            };
-        }
-
-        // Required field with from_node_with
-        return quote! { #func_path(payload.req_node(#key)?)? };
-    }
-
-    match &field.attrs.fallback {
-        FieldFallback::Expression(expr) => {
-            return quote! { payload.opt(#key)?.unwrap_or_else(|| #expr) };
-        }
-        FieldFallback::FromDefaults => {
-            return quote! {
-                match payload.opt_node(#key)? {
-                    Some(n) => n.as_type::<#ty>()?,
-                    None => <#ty as #scry::FromDefaults>::from_defaults_at(
-                        &payload.full_path(#key)?,
-                    )?,
-                }
-            };
-        }
-        FieldFallback::Unspecified => {}
-    }
-
-    // Option type (auto-detected) - implicit None default
-    if is_option_type(&field.ty) {
-        return quote! { payload.opt(#key)? };
-    }
-
-    // Required field
-    quote! { payload.req(#key)? }
+    generate_field_value_parser(field, &quote! { payload })
 }
 
 // ---------------------------------------------------------------------------------------------- //
@@ -632,32 +530,13 @@ fn generate_field_serializer(field: &FieldInfo, scry: &TokenStream) -> TokenStre
     let field_name = &field.ident;
     let key = field.attrs.rename.clone().unwrap_or_else(|| field_name.to_string());
 
-    // Custom to_node_with function
-    if let Some(ref func_path) = field.attrs.to_node_with {
-        if is_option_type(&field.ty) {
-            return quote! {
-                if let Some(ref value) = self.#field_name {
-                    map.insert(#key.to_string(), #func_path(value)?);
-                }
-            };
-        } else {
-            return quote! {
-                map.insert(#key.to_string(), #func_path(&self.#field_name)?);
-            };
-        }
-    }
+    let value = match &field.attrs.to_node_with {
+        Some(func_path) => quote! { #func_path(&self.#field_name)? },
+        None => quote! { #scry::ToNode::to_node(&self.#field_name)? },
+    };
 
-    // For Option<T> fields, only serialize if Some (omit None)
-    if is_option_type(&field.ty) {
-        quote! {
-            if let Some(ref value) = self.#field_name {
-                map.insert(#key.to_string(), #scry::ToNode::to_node(value)?);
-            }
-        }
-    } else {
-        quote! {
-            map.insert(#key.to_string(), #scry::ToNode::to_node(&self.#field_name)?);
-        }
+    quote! {
+        map.insert(#key.to_string(), #value);
     }
 }
 
@@ -669,32 +548,13 @@ fn generate_struct_variant_field_serializer(field: &FieldInfo, scry: &TokenStrea
     let field_name = &field.ident;
     let key = field.attrs.rename.clone().unwrap_or_else(|| field_name.to_string());
 
-    // Custom to_node_with function
-    if let Some(ref func_path) = field.attrs.to_node_with {
-        if is_option_type(&field.ty) {
-            return quote! {
-                if let Some(ref value) = #field_name {
-                    inner_map.insert(#key.to_string(), #func_path(value)?);
-                }
-            };
-        } else {
-            return quote! {
-                inner_map.insert(#key.to_string(), #func_path(#field_name)?);
-            };
-        }
-    }
+    let value = match &field.attrs.to_node_with {
+        Some(func_path) => quote! { #func_path(#field_name)? },
+        None => quote! { #scry::ToNode::to_node(#field_name)? },
+    };
 
-    // For Option<T> fields, only serialize if Some (omit None)
-    if is_option_type(&field.ty) {
-        quote! {
-            if let Some(ref value) = #field_name {
-                inner_map.insert(#key.to_string(), #scry::ToNode::to_node(value)?);
-            }
-        }
-    } else {
-        quote! {
-            inner_map.insert(#key.to_string(), #scry::ToNode::to_node(#field_name)?);
-        }
+    quote! {
+        inner_map.insert(#key.to_string(), #value);
     }
 }
 
@@ -765,7 +625,7 @@ fn generate_enum_to_node(info: &EnumInfo) -> syn::Result<TokenStream> {
             }
             VariantData::Struct(fields) => {
                 // Struct variant: serialize as {"name": {"f1": v1, "f2": v2}}
-                // Respects rename and omits None for Option<T> fields
+                // Serializes every complete field value and respects field renaming.
                 let field_names: Vec<&syn::Ident> = fields.iter().map(|f| &f.ident).collect();
                 let field_serializers: Vec<TokenStream> = fields
                     .iter()

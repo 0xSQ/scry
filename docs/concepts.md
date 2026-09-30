@@ -11,13 +11,13 @@ Its basic primitive types are:
 - **Signed Integers** (`i8`, `i16`, `i32`, `i64`)
 - **Floats** (`f32`, `f64`)
 - **String**
-- **Null** (in rare cases when we need to represent `None` explicitly)
+- **Null** (an explicit value, normally decoded as `Option<T>::None`)
 
 ### Node Structure
 
 A `Node` is either:
 
-- A **leaf** containing a primitive value (string, number, bool)
+- A **leaf** containing a primitive value (string, number, bool, or null)
 - A **vec** containing an ordered list of child nodes
 - A **map** containing named child nodes
 
@@ -55,18 +55,24 @@ examples, see the API docs on `Format`, `ConfigFormatParser`, `ConfigFormatWrite
 
 ### Reading Values
 
-The two main methods are `req()` for required values and `opt()` for optional ones:
+The two main methods are `req()` for required paths and `opt()` for paths that may be missing:
 
 ```rust
 // Required value, returns error if missing.
 let host: String = node.req("server.host")?;
 let port: u16 = node.req("server.port")?;
 
-// Optional value, returns `None` if missing.
+// Optional path, returns `None` if missing and rejects a present null.
 let timeout: Option<u32> = node.opt("server.timeout")?;
+
+// Optional field value, accepts both missing and explicit null as None.
+let nullable_timeout: Option<u32> = node.opt::<Option<u32>>("server.timeout")?.flatten();
 ```
 
 Both methods parse the value into your target type automatically. If the value exists but can't be converted or if your path has invalid syntax, you get an error with helpful details.
+
+Missing and null are distinct. Raw lookup preserves null, while typed lookup lets the target
+type decide whether to accept it. See the [`Node` API docs](../scry/src/node.rs) for traversal rules.
 
 For navigating to a subsection without parsing:
 
@@ -191,9 +197,14 @@ struct ServerConfig {
 Structs have a straightforward default implementation:
 
 - Each field is read from a map key with the same name as the field.
-- Fields of type `Option<T>` are automatically optional in the input. If the key is missing, the field is set to `None`.
+- Fields of type `Option<T>` are automatically optional in the input. Without an explicit
+  fallback, a missing key becomes `None`. A present null also decodes as `None`.
 - Non-optional fields are required unless `#[scry(default = EXPR)]` supplies an explicit value or
   `#[scry(from_defaults)]` recursively applies the field type's Scry defaults.
+
+Fallbacks apply only to missing keys. For example, an `Option<u64>` field with
+`#[scry(default = Some(30))]` uses `Some(30)` when missing and `None` when explicitly null.
+A present value that cannot be converted is an error, even if the field has a default.
 
 There is no bare `#[scry(default)]` field form. Use an explicit expression even when the
 corresponding Rust type also implements `Default`, for example `#[scry(default = Vec::new())]` or
@@ -204,6 +215,7 @@ deliberate meaning on a unit enum variant, as described below.
 Descriptions automatically show only simple literal defaults such as `false`, `3`, `-0.5`, and
 `"cache"`. Constructor calls, enum paths, constants, and other Rust expressions still make the
 field omittable, but `--desc` does not present their source text as if it were a config value.
+The description's optional marker means a field can be omitted, not that it accepts null.
 
 ### The `rename` Attribute
 
@@ -354,34 +366,24 @@ The four variants can be read as:
 For unit enums, exposing the field as a plain option is enough: `#[derive(Config)]` already
 teaches the CLI layer the variant names, and the exposed option gets them as possible values.
 
-Data-carrying enums need one more piece. Their single-key-map form interacts poorly with `--set`:
-`--set` values are plain string leaves, and a dotted path like `--set output.file app.log` grafts
-a `file` key into whatever map is already there - if the config held `{ "remote": ... }`, the
-result is a two-key map that enum parsing rejects as ambiguous. The `variant` modifier on exposed
-entries closes this gap. It declares that the entry addresses one variant of the enum field: the
-entry's value is wrapped as `{ "<key>": value }` and assigned at the field's path wholesale, so
-selecting one variant always displaces whichever variant the config held.
+For data-carrying enums, `.variant(key)` wraps the supplied value in the enum's single-key map
+and replaces the whole field. This lets selecting a variant displace the previous one, instead
+of adding a second variant key through `--set`.
 
 ```rust
 Setup::standard("app")
     .expose(|e| {
         e.option("output").variant("file");  // --file <VALUE>  ->  output: { "file": "<VALUE>" }
+        e.option("output").variant("remote").array(2).value_names(["HOST", "PORT"]);
     })
 ```
 
-- Without a custom long name (`.long(...)`), the option name derives from the variant key rather
-  than the field path - `--file` above.
-- The CLI value is still one string, so an exposed option reaches variants whose payload parses
-  from a single string (`file` here). Variants with structured payloads (`remote`, `database`)
-  stay config-only - or use a `flag`, whose fixed `ToNode` value is wrapped the same way and may
-  be structured.
-- Pass the *serialized* variant key, i.e. the spelling after `rename` / `rename_all`.
-- The modifier composes with `option`, `positional`, and `flag`; `list` entries reject it.
-  Variant options participate in the usual command-line override order, later operations winning.
+Here, `--remote logs.example.com 5140` supplies the tuple's two elements. They enter the tree as
+strings and are converted to the tuple's Rust types afterward.
 
-More generally, the expose vocabulary splits along two axes: constructors (`option`, `flag`,
-`list`, `positional`) name an argument's CLI shape, while modifiers like `variant` refine its
-presentation and write shape.
+More generally, `.array(arity)` groups CLI values into an array, while `.append()` extends a
+configured collection instead of replacing it. The [`ExposeMap` API docs](../scry/src/cli/setup/expose_map.rs)
+cover combinations and parsing boundaries.
 
 ### Implementing FromNode Manually
 
@@ -450,6 +452,9 @@ fn parse_color(node: &Node) -> Result<Color, NodeError> {
 
 If you use the same external type in many places, consider creating a newtype wrapper with its own `FromNode` implementation instead.
 
+The hook returns the complete field type, including `Option<T>`. Missing fields use their
+fallback without calling it. See the [derive docs](../scry_derive/src/lib.rs) for the contract.
+
 ## FromDefaults
 
 `FromDefaults` constructs a config value by applying its Scry field policies at a logical config
@@ -490,8 +495,9 @@ let config: AppConfig = scry::from_defaults()?;
 ```
 
 A required descendant remains an error. For example, removing the `host` default above makes an
-omitted `server` report `missing value for 'server.host'`. Missing fields and explicit `null` values
-both invoke the selected field fallback, matching Scry's existing optional-value behavior.
+omitted `server` report `missing value for 'server.host'`. Only a missing field invokes recursive
+defaults. An explicit null is decoded as the field's type and is invalid for `ServerConfig`.
+An explicit empty map instead decodes the child and applies the child's own field policies.
 
 Use the standalone `FromDefaults` derive alongside `FromNode` when you do not want the complete
 `Config` bundle for a named struct. The standalone derive also supports enums with exactly one unit
@@ -523,6 +529,9 @@ let output = Output { status: "ok".into(), code: 200 };
 let node = output.to_node()?;
 let json = node.to_string_as(scry::node::Format::Json)?;
 ```
+
+`None` fields serialize as null so reading them back preserves `None` instead of restoring a
+default. This requires a format that supports null, such as JSON or Rhai. TOML rejects it.
 
 ### Implementing ToNode Manually
 
@@ -562,7 +571,7 @@ Use `to_node_with` to specify a custom serialization function for individual fie
 use scry::{Config, Node, NodeError, ToNode};
 use some_crate::Color;
 
-#[derive(Config)]
+#[derive(Config, ToNode)]
 struct Theme {
     #[scry(from_node_with(parse_color), to_node_with(color_to_node))]
     background: Color,
@@ -572,6 +581,9 @@ fn color_to_node(color: &Color) -> Result<Node, NodeError> {
     color.to_hex_string().to_node()
 }
 ```
+
+Like the parsing hook, the serializer handles the complete field type. For an optional color,
+it takes `&Option<Color>`, including `None`.
 
 ## Describe
 

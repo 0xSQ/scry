@@ -29,7 +29,9 @@ pub use config_source::{
     MissingConfigPolicy, MultiSourcePolicy, NodeLoaderFn, Required, ResolvedConfigInput,
 };
 pub use error::SetupError;
-pub use expose_map::{ExposeEntry, ExposeKind, ExposeMap, FixedAssignment, Long};
+pub use expose_map::{
+    Arity, ExposeEntry, ExposeKind, ExposeMap, FixedAssignment, Long, ValueShape,
+};
 pub use override_args::OverrideArgs;
 pub use query_args::{handle_get_request, GetFormat, GetRequest, QueryArgs};
 pub use redirect::{require_command_config, resolve_command_config, RedirectError, RedirectSpec};
@@ -174,7 +176,8 @@ impl Setup {
     ///
     /// # Panics
     ///
-    /// Panics if argument names collide (duplicate IDs, long options, or short flags).
+    /// Panics if argument names collide (duplicate IDs, long options, or short flags), an exposure
+    /// declaration is invalid, or a positional array uses an unsupported positional layout.
     pub fn into_bundle<T, R>(
         self,
         func: impl FnOnce(T) -> R + 'static,
@@ -194,7 +197,8 @@ impl Setup {
     ///
     /// # Panics
     ///
-    /// Panics if argument names collide (duplicate IDs, long options, or short flags).
+    /// Panics if argument names collide (duplicate IDs, long options, or short flags), an exposure
+    /// declaration is invalid, or a positional array uses an unsupported positional layout.
     pub fn into_bundle_with_matches<T, R>(
         self,
         func: impl FnOnce(T, &ArgMatches) -> R + 'static,
@@ -217,7 +221,8 @@ impl Setup {
     ///
     /// # Panics
     ///
-    /// Panics if argument names collide (duplicate IDs, long options, or short flags).
+    /// Panics if argument names collide (duplicate IDs, long options, or short flags), an exposure
+    /// declaration is invalid, or a positional array uses an unsupported positional layout.
     fn build_command(&self, desc: &Desc) -> Command {
         if let Err(e) = check_collisions(
             self.config_source.as_ref(),
@@ -241,6 +246,81 @@ impl Setup {
         cmd = self.expose_map.augment(cmd, desc);
         for arg in &self.extra_args {
             cmd = cmd.arg(arg.clone());
+        }
+        self.configure_positional_arrays(cmd)
+    }
+
+    fn configure_positional_arrays(&self, mut cmd: Command) -> Command {
+        let arrays: Vec<_> = self
+            .expose_map
+            .entries
+            .iter()
+            .filter(|entry| {
+                matches!(entry.kind, ExposeKind::Positional { .. })
+                    && entry.shape == ValueShape::Array
+            })
+            .collect();
+        if arrays.is_empty() {
+            return cmd;
+        }
+        assert!(arrays.len() == 1, "only one exposed positional array is supported");
+        let array_name = arrays[0].arg_name();
+        assert!(
+            self.config_source.as_ref().is_none_or(|source| source.positional.is_none()),
+            "positional array '{array_name}' cannot share a command with a config positional. Use a named config option instead"
+        );
+
+        // Reserve explicit indices before assigning implicit positions, including raw arguments
+        // added after the exposures. This lets a required raw prefix use index 1.
+        let mut reserved = HashSet::new();
+        for arg in cmd.get_positionals() {
+            if let Some(index) = arg.get_index() {
+                assert!(
+                    index > 0 && reserved.insert(index),
+                    "invalid or duplicate positional index {index}"
+                );
+            }
+        }
+        let mut next = 1;
+        let implicit: Vec<_> = cmd
+            .get_positionals()
+            .filter(|arg| arg.get_index().is_none())
+            .map(|arg| arg.get_id().clone())
+            .collect();
+        for id in implicit {
+            while reserved.contains(&next) {
+                next += 1;
+            }
+            cmd = cmd.mut_arg(id, |arg| arg.index(next));
+            reserved.insert(next);
+            next += 1;
+        }
+
+        let mut positionals: Vec<_> = cmd.get_positionals().collect();
+        positionals.sort_by_key(|arg| arg.get_index());
+        for (offset, arg) in positionals.iter().enumerate() {
+            assert!(arg.get_index() == Some(offset + 1), "positional indices must be contiguous");
+        }
+        assert!(
+            positionals.last().is_some_and(|arg| arg.get_id().as_str() == array_name),
+            "positional array '{array_name}' must be the final positional argument"
+        );
+        for arg in &positionals[..positionals.len() - 1] {
+            // Clap infers arity from plural labels or the action when num_args is unset.
+            let single_value = arg.get_num_args().map_or_else(
+                || arg.get_value_names().is_none_or(|names| names.len() == 1),
+                |arity| arity.min_values() == 1 && arity.max_values() == 1,
+            );
+            assert!(
+                arg.is_required_set()
+                    && arg.get_action().takes_values()
+                    && single_value
+                    && arg.get_value_delimiter().is_none()
+                    && !arg.is_last_set()
+                    && !arg.is_trailing_var_arg_set(),
+                "positional argument '{}' before array '{array_name}' must be required and take exactly one value",
+                arg.get_id()
+            );
         }
         cmd
     }

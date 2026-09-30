@@ -75,6 +75,14 @@ pub enum SetupError {
     #[error("{message}")]
     RemoveNotFound { message: String },
 
+    /// An append target exists but is not an array in the loaded config.
+    #[error("cannot append to '{path}': expected array in loaded config. Store scalar shorthand as a one-element array or clear the value with a fixed-assignment flag before appending.")]
+    AppendToNonArray { path: String },
+
+    /// Parsed CLI values do not carry the positions needed for ordered overrides.
+    #[error("invalid parsed values for argument '{argument}': {message}")]
+    InvalidCliMatches { argument: String, message: String },
+
     /// Invalid format string for `--get-as` argument. (TODO: print format list automatically).
     #[error("unknown config format '{format_str}'")]
     UnknownGetAsFormat { format_str: String },

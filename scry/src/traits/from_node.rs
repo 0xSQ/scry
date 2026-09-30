@@ -9,6 +9,9 @@ use crate::node::{Kind, Node, NodeError, Value};
 /// Parses a value from a Node tree.
 ///
 /// Use `#[derive(scry::FromNode)]` or `#[derive(scry::Config)]` to generate implementations.
+///
+/// Implementations must consume accepted leaves through [`Node::read_leaf`] or typed decoding,
+/// including on direct trait calls, so [`Node::ensure_no_unknown_keys`] can detect unread input.
 pub trait FromNode: Sized {
     /// Parses a Node into this type.
     fn from_node(node: &Node) -> Result<Self, NodeError>;
@@ -167,13 +170,14 @@ impl FromNode for PathBuf {
 
 impl<T: FromNode> FromNode for Option<T> {
     fn from_node(node: &Node) -> Result<Self, NodeError> {
-        // Check if it's a null leaf (which means None)
+        // Null represents None and must be consumed even on direct trait calls.
         if let Kind::Leaf(leaf) = &node.kind {
             if matches!(leaf.value, Value::Null) {
+                node.read_leaf("optional value")?;
                 return Ok(None);
             }
         }
-        // Otherwise parse as T
+        // Otherwise parse as T.
         T::from_node(node).map(Some)
     }
 }

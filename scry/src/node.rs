@@ -40,7 +40,9 @@ impl Node {
     // ------------------------------------------------------------------------------------------ //
     // Constructors
 
-    /// Create an empty node.
+    /// Creates a null leaf at the root path.
+    ///
+    /// Use [`Self::empty_map`] for an object whose missing fields should select their defaults.
     pub fn new() -> Self {
         Self {
             path: KeyPath::new(),
@@ -153,9 +155,9 @@ impl Node {
     /// Internal traversal helper with strict error semantics.
     ///
     /// Returns:
-    /// - `Ok(None)` if a key/index is missing, or if the resolved node is Null
+    /// - `Ok(None)` if a key/index is missing
     /// - `Err(...)` for type mismatches (e.g., indexing into a map, keying into a vec)
-    /// - `Ok(Some(&Node))` when fully resolved to a non-Null node
+    /// - `Ok(Some(&Node))` when fully resolved to a present node
     fn walk(&self, path: &KeyPath) -> Result<Option<&Node>, NodeError> {
         let mut node = self;
 
@@ -176,22 +178,8 @@ impl Node {
                     return Err(NodeError::index_on_map(&node.path, *idx));
                 }
                 (_, Kind::Leaf(leaf)) => {
-                    // Null is treated as absence - mark visited so it's not flagged as unknown
-                    if matches!(leaf.value, Value::Null) {
-                        leaf.mark_visited();
-                        return Ok(None);
-                    }
-                    // Trying to descend into a non-null leaf is an error.
                     return Err(NodeError::descend_into_leaf(&node.path, leaf.value.type_name()));
                 }
-            }
-        }
-
-        // Check final node for Null-as-absence - mark visited so it's not flagged as unknown
-        if let Kind::Leaf(leaf) = &node.kind {
-            if matches!(leaf.value, Value::Null) {
-                leaf.mark_visited();
-                return Ok(None);
             }
         }
 
@@ -202,6 +190,7 @@ impl Node {
     ///
     /// String paths are parsed as dotted paths (e.g., `"server.port"` navigates to `server` then `port`).
     /// For keys containing dots, use bracket notation: `["server.port"]`.
+    /// A present null is returned normally. Lookup does not mark leaves as visited.
     pub fn req_node(&self, path: impl TryIntoKeyPath) -> Result<&Node, NodeError> {
         let kp = path.try_into_key_path()?;
         match self.walk(&kp)? {
@@ -210,13 +199,14 @@ impl Node {
         }
     }
 
-    /// Returns an optional child node by path, or None if not found or null.
+    /// Returns an optional child node by path, or None if not found.
     ///
     /// String paths are parsed as dotted paths (e.g., `"server.port"` navigates to `server` then `port`).
     /// For keys containing dots, use bracket notation: `["server.port"]`.
     ///
     /// Returns `Err` for path syntax errors or type mismatches during traversal.
-    /// Returns `Ok(None)` only when the path is absent or null.
+    /// Returns `Ok(None)` only when the path is absent. A present null is returned as `Some`.
+    /// Descending through null is an error. Lookup does not mark leaves as visited.
     pub fn opt_node(&self, path: impl TryIntoKeyPath) -> Result<Option<&Node>, NodeError> {
         let kp = path.try_into_key_path()?;
         self.walk(&kp)
@@ -244,6 +234,7 @@ impl Node {
     /// Returns a required value by path.
     ///
     /// String paths are parsed as dotted paths (e.g., `"server.port"` navigates to `server` then `port`).
+    /// A present null is decoded as `T`, so `req::<Option<T>>` can return `None`.
     pub fn req<T: crate::FromNode>(&self, path: impl TryIntoKeyPath) -> Result<T, NodeError> {
         self.req_node(path)?.as_type()
     }
@@ -252,7 +243,9 @@ impl Node {
     ///
     /// String paths are parsed as dotted paths (e.g., `"server.port"` navigates to `server` then `port`).
     /// Returns `Err` for path syntax errors or type mismatches during traversal.
-    /// Returns `Ok(None)` only when the path is absent or null.
+    /// Returns `Ok(None)` only when the path is absent. Present values, including null, are decoded
+    /// as `T`. For example, `opt::<Option<u64>>` returns `Some(None)` for a present null.
+    /// Use `node.opt::<Option<T>>(path)?.flatten()` to accept both missing and null as `None`.
     pub fn opt<T: crate::FromNode>(
         &self,
         path: impl TryIntoKeyPath,
@@ -584,12 +577,7 @@ impl Node {
                     Err(NodeError::index_on_map(&self.path, *idx))
                 }
                 (_, Kind::Leaf(leaf)) => {
-                    // Null is treated as absence
-                    if matches!(leaf.value, Value::Null) {
-                        Ok(RemoveOutcome::NotFound)
-                    } else {
-                        Err(NodeError::descend_into_leaf(&self.path, leaf.value.type_name()))
-                    }
+                    Err(NodeError::descend_into_leaf(&self.path, leaf.value.type_name()))
                 }
             }
         }
@@ -818,15 +806,36 @@ mod tests {
         }
 
         #[test]
-        fn null_path_opt_returns_none() {
+        fn null_path_opt_returns_the_present_node() {
             let node = node_from_json(TEST_JSON);
-            assert!(node.opt_node("server.tls").unwrap().is_none());
+            let tls = node.opt_node("server.tls").unwrap().unwrap();
+            assert!(matches!(tls.as_leaf().unwrap().value, Value::Null));
         }
 
         #[test]
-        fn null_path_req_returns_err() {
+        fn null_path_req_returns_the_present_node() {
             let node = node_from_json(TEST_JSON);
-            assert!(node.req_node("server.tls").is_err());
+            let tls = node.req_node("server.tls").unwrap();
+            assert!(matches!(tls.as_leaf().unwrap().value, Value::Null));
+        }
+
+        #[test]
+        fn typed_lookup_separates_missing_from_a_present_optional_value() {
+            let node = node_from_json(TEST_JSON);
+            assert_eq!(node.opt::<Option<u16>>("server.missing").unwrap(), None);
+            assert_eq!(node.opt::<Option<u16>>("server.tls").unwrap(), Some(None));
+            assert_eq!(node.opt::<Option<u16>>("server.port").unwrap(), Some(Some(8080)));
+            assert_eq!(node.req::<Option<u16>>("server.tls").unwrap(), None);
+            assert!(node.req::<Option<u16>>("server.missing").is_err());
+            assert!(node.opt::<u16>("server.tls").is_err());
+        }
+
+        #[test]
+        fn null_ancestor_is_a_traversal_error() {
+            let node = node_from_json(TEST_JSON);
+            let error = node.opt_node("server.tls.enabled").unwrap_err();
+            assert_eq!(error.to_string(), "'server.tls' has type null, cannot descend into it");
+            assert!(node.opt_node("server.missing.enabled").unwrap().is_none());
         }
 
         #[test]
@@ -866,16 +875,13 @@ mod tests {
         use super::*;
 
         #[test]
-        fn null_accessed_via_opt_does_not_cause_unknown_key_error() {
-            // If a key exists with value null, and code reads it via opt_*,
-            // it must not be reported as an unknown key.
+        fn null_lookup_does_not_consume_a_field_but_decoding_does() {
             let node = node_from_json(r#"{"tls": null, "port": 8080}"#);
-
-            // Access both keys - tls via opt (returns None), port via req
-            assert!(node.opt_node("tls").unwrap().is_none());
+            let tls = node.opt_node("tls").unwrap().unwrap();
+            assert!(!tls.as_leaf().unwrap().is_visited());
             let _port: u16 = node.req("port").unwrap();
-
-            // Should pass because both keys were accessed
+            assert!(node.ensure_no_unknown_keys().is_err());
+            assert_eq!(<Option<u16> as crate::FromNode>::from_node(tls).unwrap(), None);
             assert!(node.ensure_no_unknown_keys().is_ok());
         }
     }
@@ -885,6 +891,18 @@ mod tests {
 
     mod remove {
         use super::*;
+
+        #[test]
+        fn null_is_removable_data_and_cannot_be_traversed() {
+            let mut node = node_from_json(r#"{ "field": null, "items": [null, 7] }"#);
+            let error = node.remove("field.child.grandchild").unwrap_err();
+            assert_eq!(error.to_string(), "'field' has type null, cannot descend into it");
+            assert!(node.req_node("field").is_ok());
+            assert_eq!(node.remove("field").unwrap(), RemoveOutcome::Removed);
+            assert_eq!(node.remove("field").unwrap(), RemoveOutcome::NotFound);
+            assert_eq!(node.remove("items[0]").unwrap(), RemoveOutcome::Removed);
+            assert_eq!(node.req::<Vec<u16>>("items").unwrap(), [7]);
+        }
 
         #[test]
         fn remove_map_key() {

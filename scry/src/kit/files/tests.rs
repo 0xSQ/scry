@@ -416,6 +416,31 @@ fn source_spec_where_only() {
 }
 
 #[test]
+fn source_spec_nullable_fields_round_trip() {
+    let node = Node::parse_str("#{ from: (), where: () }", Format::Rhai).unwrap();
+    let spec: SourceSpec = node.as_type().unwrap();
+    assert!(spec.from.is_none());
+    assert!(spec.where_.is_none());
+    node.ensure_no_unknown_keys().unwrap();
+
+    let encoded = spec.to_node().unwrap();
+    assert!(encoded.opt_node("from").unwrap().is_some());
+    assert!(encoded.opt_node("where").unwrap().is_some());
+    let decoded: SourceSpec = encoded.as_type().unwrap();
+    assert!(decoded.from.is_none());
+    assert!(decoded.where_.is_none());
+}
+
+#[test]
+fn source_spec_null_does_not_select_concrete_defaults() {
+    let node = Node::parse_str("#{ sort: () }", Format::Rhai).unwrap();
+    assert!(node.as_type::<SourceSpec>().is_err());
+
+    let node = Node::parse_str("#{ from: #{ root: () } }", Format::Rhai).unwrap();
+    assert!(node.as_type::<SourceSpec>().is_err());
+}
+
+#[test]
 fn source_spec_from_string_shorthand() {
     let node = Node::parse_str(r#"#{ from: "/some/dir" }"#, Format::Rhai).unwrap();
     let spec: SourceSpec = node.as_type().unwrap();
@@ -478,6 +503,38 @@ fn where_spec_defaults() {
     assert!(w.name.is_none());
     assert!(w.stem.is_none());
     assert!(w.ext.is_some());
+}
+
+#[test]
+fn where_spec_nullable_rules_round_trip() {
+    let node = Node::parse_str("#{ path: (), name: (), stem: (), ext: () }", Format::Rhai).unwrap();
+    let spec: WhereSpec = node.as_type().unwrap();
+    assert_eq!(spec.case, CaseMode::Insensitive);
+    assert!(spec.path.is_none());
+    assert!(spec.name.is_none());
+    assert!(spec.stem.is_none());
+    assert!(spec.ext.is_none());
+    node.ensure_no_unknown_keys().unwrap();
+
+    let encoded = spec.to_node().unwrap();
+    let decoded: WhereSpec = encoded.as_type().unwrap();
+    assert!(decoded.path.is_none());
+    assert!(decoded.name.is_none());
+    assert!(decoded.stem.is_none());
+    assert!(decoded.ext.is_none());
+}
+
+#[test]
+fn where_spec_requires_a_map_and_rejects_null_concrete_fields() {
+    for text in [
+        "()",
+        "[]",
+        r#"#{ "case": () }"#,
+        "#{ ext: #{ include: () } }",
+    ] {
+        let node = Node::parse_str(text, Format::Rhai).unwrap();
+        assert!(node.as_type::<WhereSpec>().is_err(), "accepted {text}");
+    }
 }
 
 // ---------------------------------------------------------------------------------------------- //
@@ -545,6 +602,7 @@ fn source_spec_parses_explicit_lexicographic_sort() {
     assert_eq!(spec.sort, PathSort::Lexicographic);
 }
 
+#[cfg(feature = "format-json")]
 #[test]
 fn source_spec_canonical_round_trip_preserves_explicit_sort() {
     let node =
@@ -558,6 +616,7 @@ fn source_spec_canonical_round_trip_preserves_explicit_sort() {
     assert_eq!(reparsed.sort, PathSort::Lexicographic);
 }
 
+#[cfg(feature = "format-json")]
 #[test]
 fn files_round_trip_through_canonical_json() {
     let node = Node::parse_str(
@@ -2109,6 +2168,7 @@ fn locate_filter_and_postcollection_prune_preserve_natural_order() {
     assert_eq!(relative_path_strings(&dir, &result), ["d/item-1.txt", "d/item-10.txt"]);
 }
 
+#[cfg(feature = "format-json")]
 #[test]
 fn files_string_shorthand_uses_natural_order() {
     let dir = TempDir::new().unwrap();

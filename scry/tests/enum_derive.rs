@@ -2,7 +2,7 @@
 #![cfg(feature = "format-json")]
 
 use scry::desc::{DescKind, VariantRepr};
-use scry::node::{Format, Kind};
+use scry::node::{Format, Kind, Value};
 use scry::{Describe, Node, ToNode};
 
 // ---------------------------------------------------------------------------------------------- //
@@ -454,10 +454,10 @@ fn struct_variant_unknown_key_errors() {
 }
 
 // ---------------------------------------------------------------------------------------------- //
-// ToScry Tests: Option Omission
+// ToScry Tests: Optional Values
 
 #[test]
-fn to_scry_struct_variant_omits_none() {
+fn to_scry_struct_variant_serializes_none_as_null() {
     let e = StructFieldsEnum::Config {
         required: "hello".into(),
         optional: None,
@@ -474,11 +474,8 @@ fn to_scry_struct_variant_omits_none() {
         panic!("expected inner map");
     };
 
-    // "optional" should NOT be present since it's None
-    assert!(
-        !inner.contains_key("optional"),
-        "None fields should be omitted, but 'optional' was present"
-    );
+    let optional = inner.get("optional").expect("None field should remain present");
+    assert!(matches!(optional.read_leaf("null").unwrap(), Value::Null));
     // "required" and "with_default" should be present
     assert!(inner.contains_key("required"));
     assert!(inner.contains_key("with_default"));

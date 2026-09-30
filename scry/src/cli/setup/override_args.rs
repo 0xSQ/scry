@@ -2,26 +2,16 @@
 //!
 //! These arguments modify config values before the final config is processed.
 
+use clap::parser::ValueSource;
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use indexmap::IndexMap;
 
 use super::error::SetupError;
-use super::expose_map::{ExposeEntry, ExposeKind, ExposeMap};
+use super::expose_map::{ExposeEntry, ExposeKind, ExposeMap, ValueShape};
 use crate::desc::DescPathError;
 use crate::node::Value;
 use crate::node::{Node, RemoveOutcome};
 use crate::{Describe, KeyPath};
-
-// ---------------------------------------------------------------------------------------------- //
-
-/// Configuration for a single override argument.
-#[derive(Clone)]
-pub struct ArgConfig {
-    /// The long flag name (without --).
-    pub long: String,
-    /// Optional short flag character.
-    pub short: Option<char>,
-}
 
 // ---------------------------------------------------------------------------------------------- //
 
@@ -41,8 +31,6 @@ pub struct OverrideArgs {
     pub remove: Option<ArgConfig>,
 }
 
-// ---------------------------------------------------------------------------------------------- //
-
 impl OverrideArgs {
     /// Creates an empty specification.
     pub fn new() -> Self {
@@ -55,6 +43,8 @@ impl OverrideArgs {
     }
 
     /// Enables --set KEY VALUE for overriding config values.
+    ///
+    /// `VALUE` is a literal string, including `null`, rather than a config expression.
     pub fn set(mut self, long: impl Into<String>, c: Option<char>) -> Self {
         self.set = Some(ArgConfig {
             long: long.into(),
@@ -64,6 +54,9 @@ impl OverrideArgs {
     }
 
     /// Enables --remove KEY for removing config values.
+    ///
+    /// Removal makes the field missing, allowing typed conversion to apply its fallback.
+    /// A missing target is an error. Removing a present null succeeds.
     pub fn remove(mut self, long: impl Into<String>, c: Option<char>) -> Self {
         self.remove = Some(ArgConfig {
             long: long.into(),
@@ -144,120 +137,47 @@ impl OverrideArgs {
     /// - `--remove KEY` occurrences
     /// - Exposed options, flags, and presets
     ///
-    /// All operations are sorted by their argv index and applied in that order,
-    /// ensuring command-line arguments work as users expect (later args override earlier ones).
+    /// Scalar values use their individual parser indices. Grouped values are assigned when their
+    /// last value is consumed. All runs of a positional array form one assignment at its final
+    /// value, even when other options appear between those runs.
     pub fn apply<T: Describe>(
         &self,
         node: &mut Node,
         expose_map: &ExposeMap,
         matches: &ArgMatches,
     ) -> Result<(), SetupError> {
-        // A config modification operation with its argv index for ordering.
-        enum Op {
-            Set { path: String, value: Node },
-            Remove { path: String },
-            Append { path: String, value: Node },
-        }
         let mut ops: Vec<(usize, Op)> = Vec::new();
 
-        // Collect --set operations.
         if let Some(set_arg) = &self.set {
-            if let Some(occurrences) = matches.get_occurrences::<String>(&set_arg.long) {
-                // Get indices for each occurrence.
-                // For --set which takes 2 values, indices_of returns indices for each value.
-                // We take every other index (the first value of each pair).
-                let indices: Vec<usize> =
-                    matches.indices_of(&set_arg.long).map(|i| i.collect()).unwrap_or_default();
-
-                for (i, occurrence) in occurrences.enumerate() {
-                    let values: Vec<_> = occurrence.collect();
-                    let key_str = values[0];
-                    let value_str = values[1];
-                    let value_node = node_from_arg_str(value_str);
-
-                    // For --set with 2 values per occurrence, take every other index (0, 2, 4, ...).
-                    let idx = indices.get(i * 2).copied().unwrap_or(0);
-                    ops.push((
-                        idx,
-                        Op::Set {
-                            path: key_str.clone(),
-                            value: value_node,
-                        },
-                    ));
-                }
+            for occurrence in argument_occurrences(matches, &set_arg.long)? {
+                let [(_, key), (index, value)] = occurrence.values.as_slice() else {
+                    return Err(invalid_matches(&set_arg.long, "expected a key and value"));
+                };
+                ops.push((
+                    *index,
+                    Op::Set {
+                        path: (*key).to_owned(),
+                        value: node_from_arg_str(value),
+                    },
+                ));
             }
         }
 
-        // Collect --remove operations.
         if let Some(remove_arg) = &self.remove {
-            if let Some(keys) = matches.get_many::<String>(&remove_arg.long) {
-                let indices: Vec<usize> =
-                    matches.indices_of(&remove_arg.long).map(|i| i.collect()).unwrap_or_default();
-
-                for (i, key_str) in keys.enumerate() {
-                    let idx = indices.get(i).copied().unwrap_or(0);
+            for occurrence in argument_occurrences(matches, &remove_arg.long)? {
+                for (index, path) in occurrence.values {
                     ops.push((
-                        idx,
+                        index,
                         Op::Remove {
-                            path: key_str.clone(),
+                            path: path.to_owned(),
                         },
                     ));
                 }
             }
         }
 
-        // Collect exposed argument operations.
         for entry in &expose_map.entries {
-            let arg_name = entry.arg_name();
-
-            match &entry.kind {
-                ExposeKind::Fixed { assignments } => {
-                    if matches.get_flag(&arg_name) {
-                        if let Some(idx) = matches.indices_of(&arg_name).and_then(Iterator::last) {
-                            for assignment in assignments {
-                                ops.push((
-                                    idx,
-                                    Op::Set {
-                                        path: assignment.path.clone(),
-                                        value: wrap_variant(entry, assignment.value.clone()),
-                                    },
-                                ));
-                            }
-                        }
-                    }
-                }
-                ExposeKind::Option { path } | ExposeKind::Positional { path } => {
-                    if let Some(value_str) = matches.get_one::<String>(&arg_name) {
-                        let value_node = node_from_arg_str(value_str);
-                        if let Some(idx) = matches.indices_of(&arg_name).and_then(Iterator::last) {
-                            ops.push((
-                                idx,
-                                Op::Set {
-                                    path: path.clone(),
-                                    value: wrap_variant(entry, value_node),
-                                },
-                            ));
-                        }
-                    }
-                }
-                ExposeKind::List { path } => {
-                    if let Some(values) = matches.get_many::<String>(&arg_name) {
-                        let indices: Vec<usize> =
-                            matches.indices_of(&arg_name).map(|i| i.collect()).unwrap_or_default();
-                        for (i, value_str) in values.enumerate() {
-                            let idx = indices.get(i).copied().unwrap_or(0);
-                            let value_node = node_from_arg_str(value_str);
-                            ops.push((
-                                idx,
-                                Op::Append {
-                                    path: path.clone(),
-                                    value: value_node,
-                                },
-                            ));
-                        }
-                    }
-                }
-            }
+            collect_exposed_ops(entry, matches, &mut ops)?;
         }
 
         // Sort by argv index.
@@ -289,9 +209,10 @@ impl OverrideArgs {
                         None => {
                             node.set_node(key_path, Node::new_vec(KeyPath::new(), vec![value]))?;
                         }
-                        Some(_) => {
+                        Some(existing) if existing.kind.is_vec() => {
                             node.push_to(key_path, value)?;
                         }
+                        Some(_) => return Err(SetupError::AppendToNonArray { path }),
                     }
                 }
             }
@@ -302,6 +223,175 @@ impl OverrideArgs {
 }
 
 // ---------------------------------------------------------------------------------------------- //
+
+/// Configuration for a single override argument.
+#[derive(Clone)]
+pub struct ArgConfig {
+    /// The long flag name (without --).
+    pub long: String,
+    /// Optional short flag character.
+    pub short: Option<char>,
+}
+
+enum Op {
+    Set { path: String, value: Node },
+    Remove { path: String },
+    Append { path: String, value: Node },
+}
+
+fn collect_exposed_ops(
+    entry: &ExposeEntry,
+    matches: &ArgMatches,
+    ops: &mut Vec<(usize, Op)>,
+) -> Result<(), SetupError> {
+    let name = entry.arg_name();
+    if !is_command_line(matches, &name)? {
+        return Ok(());
+    }
+
+    let path = match &entry.kind {
+        ExposeKind::Fixed { assignments } => {
+            let present = matches
+                .try_get_one::<bool>(&name)
+                .map_err(|error| invalid_matches(&name, error.to_string()))?
+                .ok_or_else(|| invalid_matches(&name, "missing flag value"))?;
+            if *present {
+                let index = matches
+                    .indices_of(&name)
+                    .and_then(Iterator::last)
+                    .ok_or_else(|| invalid_matches(&name, "missing flag position"))?;
+                for assignment in assignments {
+                    ops.push((
+                        index,
+                        Op::Set {
+                            path: assignment.path.clone(),
+                            value: wrap_variant(entry, assignment.value.clone()),
+                        },
+                    ));
+                }
+            }
+            return Ok(());
+        }
+        ExposeKind::Option { path } | ExposeKind::Positional { path } => path,
+    };
+
+    let occurrences = argument_occurrences(matches, &name)?;
+    if matches!(entry.kind, ExposeKind::Positional { .. }) && entry.shape == ValueShape::Array {
+        if let Some(last) = occurrences.last() {
+            let index = last.completion_index();
+            let children = occurrences
+                .into_iter()
+                .flat_map(|o| o.values)
+                .map(|(_, value)| node_from_arg_str(value))
+                .collect();
+            let value = wrap_variant(entry, Node::new_vec(KeyPath::new(), children));
+            ops.push((
+                index,
+                Op::Set {
+                    path: path.clone(),
+                    value,
+                },
+            ));
+        }
+        return Ok(());
+    }
+
+    for occurrence in occurrences {
+        if entry.shape == ValueShape::Array {
+            let index = occurrence.completion_index();
+            let children =
+                occurrence.values.into_iter().map(|(_, value)| node_from_arg_str(value)).collect();
+            let value = wrap_variant(entry, Node::new_vec(KeyPath::new(), children));
+            let op = if entry.append {
+                Op::Append {
+                    path: path.clone(),
+                    value,
+                }
+            } else {
+                Op::Set {
+                    path: path.clone(),
+                    value,
+                }
+            };
+            ops.push((index, op));
+        } else {
+            if !entry.append && occurrence.values.len() != 1 {
+                return Err(invalid_matches(&name, "expected one scalar value"));
+            }
+            for (index, value) in occurrence.values {
+                let value = wrap_variant(entry, node_from_arg_str(value));
+                let op = if entry.append {
+                    Op::Append {
+                        path: path.clone(),
+                        value,
+                    }
+                } else {
+                    Op::Set {
+                        path: path.clone(),
+                        value,
+                    }
+                };
+                ops.push((index, op));
+            }
+        }
+    }
+    Ok(())
+}
+
+struct Occurrence<'a> {
+    values: Vec<(usize, &'a str)>,
+}
+
+impl Occurrence<'_> {
+    fn completion_index(&self) -> usize {
+        self.values.last().expect("collected occurrences are nonempty").0
+    }
+}
+
+fn argument_occurrences<'a>(
+    matches: &'a ArgMatches,
+    name: &str,
+) -> Result<Vec<Occurrence<'a>>, SetupError> {
+    if !is_command_line(matches, name)? {
+        return Ok(Vec::new());
+    }
+    let occurrences = matches
+        .try_get_occurrences::<String>(name)
+        .map_err(|error| invalid_matches(name, error.to_string()))?
+        .ok_or_else(|| invalid_matches(name, "missing command-line values"))?;
+    let mut indices =
+        matches.indices_of(name).ok_or_else(|| invalid_matches(name, "missing value positions"))?;
+    let mut result = Vec::new();
+    for occurrence in occurrences {
+        let mut values = Vec::new();
+        for value in occurrence {
+            let index = indices
+                .next()
+                .ok_or_else(|| invalid_matches(name, "fewer positions than values"))?;
+            values.push((index, value.as_str()));
+        }
+        if values.is_empty() {
+            return Err(invalid_matches(name, "empty value occurrences are unsupported"));
+        }
+        result.push(Occurrence { values });
+    }
+    if indices.next().is_some() {
+        return Err(invalid_matches(name, "more positions than values"));
+    }
+    Ok(result)
+}
+
+fn is_command_line(matches: &ArgMatches, name: &str) -> Result<bool, SetupError> {
+    matches.try_contains_id(name).map_err(|error| invalid_matches(name, error.to_string()))?;
+    Ok(matches.value_source(name) == Some(ValueSource::CommandLine))
+}
+
+fn invalid_matches(name: &str, message: impl Into<String>) -> SetupError {
+    SetupError::InvalidCliMatches {
+        argument: name.to_owned(),
+        message: message.into(),
+    }
+}
 
 /// Converts a CLI string argument into a leaf Node.
 fn node_from_arg_str(value_str: &str) -> Node {

@@ -1044,15 +1044,16 @@ fn to_toml_string(node: &Node) -> Result<String, NodeError> {
 /// Converts a node tree to a TOML value.
 #[cfg(feature = "format-toml")]
 pub fn to_toml_value(node: &Node) -> Result<toml::Value, NodeError> {
-    to_toml_value_recursive(node)
+    // Derive and custom serializers can produce children without absolute paths.
+    to_toml_value_recursive(node, &node.path)
 }
 
 #[cfg(feature = "format-toml")]
-fn to_toml_value_recursive(node: &Node) -> Result<toml::Value, NodeError> {
+fn to_toml_value_recursive(node: &Node, path: &KeyPath) -> Result<toml::Value, NodeError> {
     match &node.kind {
         Kind::Leaf(leaf) => match &leaf.value {
             Value::Null => {
-                Err(NodeError::invalid_value(&node.path, "cannot serialize null as TOML value"))
+                Err(NodeError::invalid_value(path, "cannot serialize null as TOML value"))
             }
             Value::Bool(v) => Ok(toml::Value::Boolean(*v)),
             Value::String(v) => Ok(toml::Value::String(v.clone())),
@@ -1065,7 +1066,7 @@ fn to_toml_value_recursive(node: &Node) -> Result<toml::Value, NodeError> {
             Value::U32(v) => Ok(toml::Value::Integer(*v as i64)),
             Value::U64(v) => i64::try_from(*v).map(toml::Value::Integer).map_err(|_| {
                 NodeError::invalid_value(
-                    &node.path,
+                    path,
                     format!("u64 value {v} is too large for TOML integer (i64)"),
                 )
             }),
@@ -1074,15 +1075,15 @@ fn to_toml_value_recursive(node: &Node) -> Result<toml::Value, NodeError> {
         },
         Kind::Vec(vec) => {
             let mut arr = Vec::with_capacity(vec.len());
-            for child in vec {
-                arr.push(to_toml_value_recursive(child)?);
+            for (index, child) in vec.iter().enumerate() {
+                arr.push(to_toml_value_recursive(child, &path.push_index(index))?);
             }
             Ok(toml::Value::Array(arr))
         }
         Kind::Map(map) => {
             let mut table = toml::map::Map::new();
             for (key, child) in map {
-                table.insert(key.clone(), to_toml_value_recursive(child)?);
+                table.insert(key.clone(), to_toml_value_recursive(child, &path.push_key(key))?);
             }
             Ok(toml::Value::Table(table))
         }

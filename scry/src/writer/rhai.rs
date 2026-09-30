@@ -603,7 +603,7 @@ fn is_rhai_reserved_identifier(key: &str) -> bool {
     )
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "format-json"))]
 pub(crate) const RHAI_RESERVED_IDENTIFIERS_FOR_TESTS: &[&str] = &[
     "Fn",
     "as",

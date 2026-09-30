@@ -10,8 +10,9 @@ use crate::node::{Kind, Leaf, Node, NodeError, Value};
 /// Serializes a value to a Node tree.
 ///
 /// Use `#[derive(scry::ToNode)]` to generate implementations.
-/// Implementations should create nodes with empty paths - the parent container
-/// will fix paths when inserting child nodes.
+///
+/// Implementations can construct nodes with empty paths. Inserting the result through
+/// [`Node::set_node`] anchors the subtree at its destination.
 pub trait ToNode {
     /// Converts this value to a Node.
     fn to_node(&self) -> Result<Node, NodeError>;

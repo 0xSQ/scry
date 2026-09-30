@@ -1072,7 +1072,7 @@ mod expose_args {
     }
 
     #[test]
-    fn expose_list_appends_to_existing() {
+    fn expose_append_appends_to_existing() {
         let handler_called = Arc::new(AtomicBool::new(false));
         let handler_called_clone = handler_called.clone();
 
@@ -1080,7 +1080,7 @@ mod expose_args {
             .override_args(OverrideArgs::new())
             .query_args(QueryArgs::new())
             .expose(|e: &mut ExposeMap| {
-                e.list("items");
+                e.option("items").append();
             })
             .config_source(|c| {
                 c.positional("CONFIG", "Path to config file", Required::Yes)
@@ -1097,7 +1097,7 @@ mod expose_args {
     }
 
     #[test]
-    fn expose_list_creates_when_missing() {
+    fn expose_append_creates_when_missing() {
         let handler_called = Arc::new(AtomicBool::new(false));
         let handler_called_clone = handler_called.clone();
 
@@ -1105,7 +1105,7 @@ mod expose_args {
             .override_args(OverrideArgs::new())
             .query_args(QueryArgs::new())
             .expose(|e: &mut ExposeMap| {
-                e.list("items");
+                e.option("items").append();
             })
             .config_source(|c| {
                 c.positional("CONFIG", "Path to config file", Required::Yes)
@@ -1122,12 +1122,12 @@ mod expose_args {
     }
 
     #[test]
-    fn expose_list_errors_on_scalar() {
+    fn expose_append_errors_on_scalar() {
         let bundle = Setup::new("test")
             .override_args(OverrideArgs::new())
             .query_args(QueryArgs::new())
             .expose(|e: &mut ExposeMap| {
-                e.list("items");
+                e.option("items").append();
             })
             .config_source(|c| {
                 c.positional("CONFIG", "Path to config file", Required::Yes)
@@ -1143,7 +1143,7 @@ mod expose_args {
     }
 
     #[test]
-    fn expose_list_preserves_argv_order() {
+    fn expose_append_preserves_argv_order() {
         let handler_called = Arc::new(AtomicBool::new(false));
         let handler_called_clone = handler_called.clone();
 
@@ -1151,7 +1151,7 @@ mod expose_args {
             .override_args(OverrideArgs::new())
             .query_args(QueryArgs::new())
             .expose(|e: &mut ExposeMap| {
-                e.list("items");
+                e.option("items").append();
             })
             .config_source(|c| {
                 c.positional("CONFIG", "Path to config file", Required::Yes)
@@ -2044,10 +2044,10 @@ mod variant_expose {
     }
 
     #[test]
-    #[should_panic(expected = "cannot take a variant wrapper")]
-    fn variant_on_list_panics() {
+    #[should_panic(expected = "cannot combine append with a variant wrapper")]
+    fn variant_on_append_panics() {
         let mut map = ExposeMap::new();
-        map.list("source").variant("files");
+        map.option("source").append().variant("files");
     }
 
     #[test]

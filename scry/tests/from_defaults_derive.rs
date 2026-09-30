@@ -153,7 +153,7 @@ fn parse<T: FromNode>(source: &str) -> T {
 // ---------------------------------------------------------------------------------------------- //
 
 #[test]
-fn absent_null_and_empty_map_use_the_same_recursive_defaults() {
+fn absent_and_empty_map_use_the_same_recursive_defaults() {
     let expected = ParentConfig {
         child: ChildConfig {
             retries: 3,
@@ -162,7 +162,6 @@ fn absent_null_and_empty_map_use_the_same_recursive_defaults() {
     };
 
     assert_eq!(parse::<ParentConfig>("{}"), expected);
-    assert_eq!(parse::<ParentConfig>(r#"{"child": null}"#), expected);
     assert_eq!(parse::<ParentConfig>(r#"{"child": {}}"#), expected);
 }
 

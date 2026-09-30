@@ -368,16 +368,10 @@ impl FromNode for SourceSpec {
 
         if node.kind.is_map() {
             // Parse optional `from` block.
-            let from = match node.opt_node("from")? {
-                Some(from_node) => Some(FromSpec::from_node(from_node)?),
-                None => None,
-            };
+            let from = node.opt::<Option<FromSpec>>("from")?.flatten();
 
             // Parse optional `where` block.
-            let where_ = match node.opt_node("where")? {
-                Some(where_node) => Some(WhereSpec::from_node(where_node)?),
-                None => None,
-            };
+            let where_ = node.opt::<Option<WhereSpec>>("where")?.flatten();
             let sort: PathSort = node.opt("sort")?.unwrap_or_default();
 
             node.ensure_no_unknown_keys()?;
@@ -523,24 +517,12 @@ impl Describe for PatternSyntax {
 
 impl FromNode for WhereSpec {
     fn from_node(node: &Node) -> Result<Self, NodeError> {
+        node.as_map()?;
         let case: CaseMode = node.opt("case")?.unwrap_or_default();
-
-        let path = match node.opt_node("path")? {
-            Some(n) => Some(AttrRuleSpec::from_node(n)?),
-            None => None,
-        };
-        let name = match node.opt_node("name")? {
-            Some(n) => Some(AttrRuleSpec::from_node(n)?),
-            None => None,
-        };
-        let stem = match node.opt_node("stem")? {
-            Some(n) => Some(AttrRuleSpec::from_node(n)?),
-            None => None,
-        };
-        let ext = match node.opt_node("ext")? {
-            Some(n) => Some(AttrRuleSpec::from_node(n)?),
-            None => None,
-        };
+        let path = node.opt::<Option<AttrRuleSpec>>("path")?.flatten();
+        let name = node.opt::<Option<AttrRuleSpec>>("name")?.flatten();
+        let stem = node.opt::<Option<AttrRuleSpec>>("stem")?.flatten();
+        let ext = node.opt::<Option<AttrRuleSpec>>("ext")?.flatten();
 
         node.ensure_no_unknown_keys()?;
         Ok(WhereSpec {
