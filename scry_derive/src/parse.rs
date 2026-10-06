@@ -130,20 +130,17 @@ impl FieldAttrs {
                     let content;
                     syn::parenthesized!(content in meta.input);
                     let path: syn::Path = content.parse()?;
-                    result.from_node_with = Some(path);
-                    Ok(())
+                    set_field_hook(&mut result.from_node_with, path, "from_node_with")
                 } else if meta.path.is_ident("describe_with") {
                     let content;
                     syn::parenthesized!(content in meta.input);
                     let path: syn::Path = content.parse()?;
-                    result.describe_with = Some(path);
-                    Ok(())
+                    set_field_hook(&mut result.describe_with, path, "describe_with")
                 } else if meta.path.is_ident("to_node_with") {
                     let content;
                     syn::parenthesized!(content in meta.input);
                     let path: syn::Path = content.parse()?;
-                    result.to_node_with = Some(path);
-                    Ok(())
+                    set_field_hook(&mut result.to_node_with, path, "to_node_with")
                 } else {
                     Err(meta.error("unknown scry field attribute"))
                 }
@@ -208,6 +205,20 @@ impl FieldAttrs {
         self.fallback_span = Some(span);
         Ok(())
     }
+}
+
+/// Sets a field hook once and identifies both declarations if it is repeated.
+fn set_field_hook(hook: &mut Option<syn::Path>, path: syn::Path, name: &str) -> Result<()> {
+    if let Some(first) = hook {
+        return Err(conflicting_declaration_error(
+            path.span(),
+            first.span(),
+            format!("duplicate `{name}` field attribute"),
+        ));
+    }
+
+    *hook = Some(path);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------------------------- //
@@ -313,6 +324,7 @@ pub enum RenameAll {
 #[derive(Default)]
 pub struct EnumAttrs {
     pub rename_all: Option<RenameAll>,
+    rename_all_span: Option<Span>,
     pub from_str: bool,
 }
 
@@ -329,7 +341,15 @@ impl EnumAttrs {
                 if meta.path.is_ident("rename_all") {
                     let _: syn::Token![=] = meta.input.parse()?;
                     let lit: LitStr = meta.input.parse()?;
+                    if let Some(first_span) = result.rename_all_span {
+                        return Err(conflicting_declaration_error(
+                            lit.span(),
+                            first_span,
+                            "duplicate `rename_all` enum attribute",
+                        ));
+                    }
                     result.rename_all = Some(parse_rename_all(&lit)?);
+                    result.rename_all_span = Some(lit.span());
                     Ok(())
                 } else if meta.path.is_ident("from_str") {
                     result.from_str = true;

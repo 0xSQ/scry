@@ -101,6 +101,69 @@ fn duplicate_field_renames_are_rejected_within_and_across_attributes() {
 }
 
 #[test]
+fn duplicate_field_hooks_are_rejected_in_named_and_positional_shapes() {
+    for hook_name in ["from_node_with", "to_node_with", "describe_with"] {
+        let hook = Ident::new(hook_name, Span::call_site());
+        for second_path in [
+            syn::parse_quote!(adapter::first),
+            syn::parse_quote!(adapter::second),
+        ] {
+            let second_path: syn::Path = second_path;
+            for separate_attributes in [false, true] {
+                let attrs: Vec<Attribute> = if separate_attributes {
+                    vec![
+                        syn::parse_quote!(#[scry(#hook(adapter::first))]),
+                        syn::parse_quote!(#[scry(#hook(#second_path))]),
+                    ]
+                } else {
+                    vec![syn::parse_quote!(#[scry(#hook(adapter::first), #hook(#second_path))])]
+                };
+                let inputs: [DeriveInput; 4] = [
+                    syn::parse_quote!(struct Value { #(#attrs)* value: Foreign }),
+                    syn::parse_quote!(struct Value(#(#attrs)* Foreign);),
+                    syn::parse_quote!(enum Value { Payload { #(#attrs)* value: Foreign } }),
+                    syn::parse_quote!(enum Value { Payload(#(#attrs)* Foreign) }),
+                ];
+
+                for input in inputs {
+                    let error =
+                        parse_input(&input).err().expect("duplicate field hooks should fail");
+                    assert_conflicting_attribute_error(
+                        error,
+                        &format!("duplicate `{hook_name}` field attribute"),
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn duplicate_enum_rename_all_is_rejected_within_and_across_attributes() {
+    for second_case in ["snake_case", "kebab-case"] {
+        for separate_attributes in [false, true] {
+            let attrs: Vec<Attribute> = if separate_attributes {
+                vec![
+                    syn::parse_quote!(#[scry(rename_all = "snake_case")]),
+                    syn::parse_quote!(#[scry(rename_all = #second_case)]),
+                ]
+            } else {
+                vec![
+                    syn::parse_quote!(#[scry(rename_all = "snake_case", rename_all = #second_case)]),
+                ]
+            };
+            let input: DeriveInput = syn::parse_quote! {
+                #(#attrs)*
+                enum Mode { FirstValue, SecondValue }
+            };
+
+            let error = parse_input(&input).err().expect("duplicate enum rename_all should fail");
+            assert_conflicting_attribute_error(error, "duplicate `rename_all` enum attribute");
+        }
+    }
+}
+
+#[test]
 fn duplicate_variant_renames_are_rejected_within_and_across_attributes() {
     let inputs: [DeriveInput; 2] = [
         syn::parse_quote! {
@@ -487,14 +550,31 @@ fn container_variant_and_field_doc_summaries_are_preserved_for_all_shapes() {
 }
 
 #[test]
-fn positional_fields_accept_all_three_hooks() {
-    let inputs: [DeriveInput; 2] = [
+fn fields_accept_one_hook_per_operation() {
+    let inputs: [DeriveInput; 4] = [
+        syn::parse_quote! {
+            struct Value {
+                #[scry(from_node_with(adapter::read))]
+                #[scry(to_node_with(adapter::write))]
+                #[scry(describe_with(adapter::describe))]
+                value: Foreign,
+            }
+        },
         syn::parse_quote! {
             struct Value(
                 #[scry(from_node_with(adapter::read), to_node_with(adapter::write),
                        describe_with(adapter::describe))]
                 Foreign,
             );
+        },
+        syn::parse_quote! {
+            enum Value {
+                Payload {
+                    #[scry(from_node_with(adapter::read), to_node_with(adapter::write),
+                           describe_with(adapter::describe))]
+                    value: Foreign,
+                },
+            }
         },
         syn::parse_quote! {
             enum Value {
@@ -512,14 +592,13 @@ fn positional_fields_accept_all_three_hooks() {
         let parsed = parse_input(&input).unwrap();
         let fields = match &parsed {
             DeriveTarget::Struct(StructInfo {
-                fields: StructFields::Tuple(fields),
+                fields: StructFields::Named(fields) | StructFields::Tuple(fields),
                 ..
             }) => fields,
             DeriveTarget::Enum(info) => match &info.variants[0].data {
-                VariantData::Tuple(fields) => fields,
-                _ => panic!("expected positional variant fields"),
+                VariantData::Struct(fields) | VariantData::Tuple(fields) => fields,
+                _ => panic!("expected variant fields"),
             },
-            _ => panic!("expected positional fields"),
         };
         let attrs = &fields.last().unwrap().attrs;
         let from = &attrs.from_node_with;
@@ -605,6 +684,14 @@ fn generic_parameter_named_option_can_use_scry_defaults() {
     };
 
     assert!(parse_input(&input).is_ok());
+}
+
+fn assert_conflicting_attribute_error(error: syn::Error, message: &str) {
+    let declarations: Vec<_> = error.into_iter().collect();
+
+    assert_eq!(declarations.len(), 2, "both declarations should be identified");
+    assert_eq!(declarations[0].to_string(), message);
+    assert_eq!(declarations[1].to_string(), "first declaration is here");
 }
 
 fn field_attrs_error(field: &syn::Field) -> String {
