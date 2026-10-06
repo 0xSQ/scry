@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use heck::{ToKebabCase, ToSnakeCase};
 use proc_macro2::Span;
 use syn::spanned::Spanned;
@@ -11,6 +13,7 @@ pub struct FieldAttrs {
     pub fallback: FieldFallback,
     fallback_span: Option<Span>,
     pub rename: Option<String>,
+    rename_span: Option<Span>,
     /// Custom Node → T conversion function. Set by `from_node_with(...)`.
     pub from_node_with: Option<syn::Path>,
     /// Custom description function. Set by `describe_with(...)`.
@@ -60,7 +63,15 @@ impl FieldAttrs {
                 } else if meta.path.is_ident("rename") {
                     let _: syn::Token![=] = meta.input.parse()?;
                     let lit: LitStr = meta.input.parse()?;
+                    if let Some(first_span) = result.rename_span {
+                        return Err(conflicting_declaration_error(
+                            lit.span(),
+                            first_span,
+                            "duplicate `rename` field attribute",
+                        ));
+                    }
                     result.rename = Some(lit.value());
+                    result.rename_span = Some(lit.span());
                     Ok(())
                 } else if meta.path.is_ident("from_node_with") {
                     let content;
@@ -161,6 +172,7 @@ impl StructAttrs {
 #[derive(Default)]
 pub struct VariantAttrs {
     pub rename: Option<String>,
+    rename_span: Option<Span>,
     pub is_default: bool,
     default_span: Option<Span>,
 }
@@ -178,7 +190,15 @@ impl VariantAttrs {
                 if meta.path.is_ident("rename") {
                     let _: syn::Token![=] = meta.input.parse()?;
                     let lit: LitStr = meta.input.parse()?;
+                    if let Some(first_span) = result.rename_span {
+                        return Err(conflicting_declaration_error(
+                            lit.span(),
+                            first_span,
+                            "duplicate `rename` variant attribute",
+                        ));
+                    }
                     result.rename = Some(lit.value());
+                    result.rename_span = Some(lit.span());
                     Ok(())
                 } else if meta.path.is_ident("default") {
                     if meta.input.peek(syn::Token![=]) {
@@ -317,13 +337,7 @@ fn parse_struct(input: &DeriveInput, data: &syn::DataStruct) -> Result<StructInf
     let struct_attrs = StructAttrs::from_attrs(&input.attrs)?;
 
     let fields = match &data.fields {
-        Fields::Named(fields) => {
-            let mut field_infos = Vec::new();
-            for field in &fields.named {
-                field_infos.push(parse_field(field)?);
-            }
-            StructFields::Named(field_infos)
-        }
+        Fields::Named(fields) => StructFields::Named(parse_named_fields(fields)?),
         Fields::Unnamed(fields) => {
             // Check for #[scry(...)] on unnamed fields - not supported
             for field in &fields.unnamed {
@@ -370,13 +384,7 @@ fn parse_enum(input: &DeriveInput, data: &syn::DataEnum) -> Result<EnumInfo> {
                 let types: Vec<Type> = fields.unnamed.iter().map(|f| f.ty.clone()).collect();
                 VariantData::Tuple(types)
             }
-            Fields::Named(fields) => {
-                let mut field_infos = Vec::new();
-                for f in &fields.named {
-                    field_infos.push(parse_field(f)?);
-                }
-                VariantData::Struct(field_infos)
-            }
+            Fields::Named(fields) => VariantData::Struct(parse_named_fields(fields)?),
         };
 
         let attrs = VariantAttrs::from_attrs(&variant.attrs)?;
@@ -404,11 +412,60 @@ fn parse_enum(input: &DeriveInput, data: &syn::DataEnum) -> Result<EnumInfo> {
         });
     }
 
+    validate_variant_names(&variants, enum_attrs.rename_all)?;
+
     Ok(EnumInfo {
         ident: input.ident.clone(),
         attrs: enum_attrs,
         variants,
     })
+}
+
+fn validate_variant_names(variants: &[VariantInfo], rename_all: Option<RenameAll>) -> Result<()> {
+    let mut canonical_names = HashMap::new();
+    let mut unit_spellings = HashMap::new();
+    let mut payload_spellings = HashMap::new();
+
+    for variant in variants {
+        let name = variant
+            .attrs
+            .rename
+            .clone()
+            .unwrap_or_else(|| rename_all_variant(&variant.ident.to_string(), rename_all));
+        let span = variant.attrs.rename_span.unwrap_or_else(|| variant.ident.span());
+
+        if let Some(first_span) = canonical_names.insert(name.clone(), span) {
+            return Err(conflicting_declaration_error(
+                span,
+                first_span,
+                format!("duplicate Scry variant name {name:?}"),
+            ));
+        }
+
+        let is_unit = matches!(variant.data, VariantData::Unit);
+        let (spellings, kind) = if is_unit {
+            (&mut unit_spellings, "unit")
+        } else {
+            (&mut payload_spellings, "payload")
+        };
+
+        for spelling in variant_spellings(&name) {
+            let spelling = if is_unit {
+                spelling.to_ascii_lowercase()
+            } else {
+                spelling
+            };
+            if let Some(first_span) = spellings.insert(spelling.clone(), span) {
+                return Err(conflicting_declaration_error(
+                    span,
+                    first_span,
+                    format!("conflicting Scry {kind} variant spelling {spelling:?}"),
+                ));
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn parse_field(field: &syn::Field) -> Result<FieldInfo> {
@@ -421,6 +478,25 @@ fn parse_field(field: &syn::Field) -> Result<FieldInfo> {
         attrs,
         doc: extract_doc(&field.attrs),
     })
+}
+
+fn parse_named_fields(fields: &syn::FieldsNamed) -> Result<Vec<FieldInfo>> {
+    let fields = fields.named.iter().map(parse_field).collect::<Result<Vec<_>>>()?;
+    let mut keys = HashMap::new();
+
+    for field in &fields {
+        let key = field.attrs.rename.clone().unwrap_or_else(|| field.ident.to_string());
+        let span = field.attrs.rename_span.unwrap_or_else(|| field.ident.span());
+        if let Some(first_span) = keys.insert(key.clone(), span) {
+            return Err(conflicting_declaration_error(
+                span,
+                first_span,
+                format!("duplicate Scry field key {key:?}"),
+            ));
+        }
+    }
+
+    Ok(fields)
 }
 
 // ---------------------------------------------------------------------------------------------- //
@@ -546,180 +622,17 @@ pub fn extract_doc(attrs: &[Attribute]) -> String {
         .join(" ")
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn explicit_expression_is_a_field_fallback() {
-        let field: syn::Field = syn::parse_quote! {
-            #[scry(default = Vec::new())]
-            values: Vec<String>
-        };
-
-        let attrs = FieldAttrs::from_attrs(&field.attrs).unwrap();
-
-        assert!(matches!(attrs.fallback, FieldFallback::Expression(_)));
-    }
-
-    #[test]
-    fn from_defaults_is_a_field_fallback() {
-        let field: syn::Field = syn::parse_quote! {
-            #[scry(from_defaults)]
-            child: Child
-        };
-
-        let attrs = FieldAttrs::from_attrs(&field.attrs).unwrap();
-
-        assert!(matches!(attrs.fallback, FieldFallback::FromDefaults));
-    }
-
-    #[test]
-    fn bare_default_explains_both_replacements() {
-        let field: syn::Field = syn::parse_quote! {
-            #[scry(default)]
-            child: Child
-        };
-
-        let error = field_attrs_error(&field);
-
-        assert!(error.contains("default = EXPR"));
-        assert!(error.contains("from_defaults"));
-    }
-
-    #[test]
-    fn conflicting_fallbacks_are_rejected() {
-        let field: syn::Field = syn::parse_quote! {
-            #[scry(default = Child::new(), from_defaults)]
-            child: Child
-        };
-
-        let error = field_attrs_error(&field);
-
-        assert!(error.contains("conflicting Scry field fallbacks"));
-    }
-
-    #[test]
-    fn duplicate_fallbacks_are_rejected() {
-        let field: syn::Field = syn::parse_quote! {
-            #[scry(from_defaults, from_defaults)]
-            child: Child
-        };
-
-        let error = field_attrs_error(&field);
-
-        assert!(error.contains("duplicate `from_defaults` field fallback"));
-    }
-
-    #[test]
-    fn from_defaults_on_option_is_rejected() {
-        let input: DeriveInput = syn::parse_quote! {
-            struct Parent {
-                #[scry(from_defaults)]
-                child: Option<Child>,
-            }
-        };
-
-        let error = match parse_input(&input) {
-            Ok(_) => panic!("expected `from_defaults` on `Option<T>` to be rejected"),
-            Err(error) => error.to_string(),
-        };
-
-        assert!(error.contains("not supported on `Option<T>` fields"));
-        assert!(error.contains("implicit `None` fallback"));
-    }
-
-    #[test]
-    fn enum_accepts_one_scry_default_unit_variant() {
-        let input: DeriveInput = syn::parse_quote! {
-            enum OutputMode {
-                #[scry(default)]
-                Summary,
-                Full,
-            }
-        };
-
-        let DeriveTarget::Enum(info) = parse_input(&input).unwrap() else {
-            panic!("expected an enum");
-        };
-
-        assert!(info.variants[0].attrs.is_default);
-        assert!(!info.variants[1].attrs.is_default);
-    }
-
-    #[test]
-    fn enum_rejects_multiple_scry_default_variants() {
-        let input: DeriveInput = syn::parse_quote! {
-            enum OutputMode {
-                #[scry(default)]
-                Summary,
-                #[scry(default)]
-                Full,
-            }
-        };
-
-        let error = parse_input_error(&input);
-
-        assert!(error.contains("multiple `#[scry(default)]` enum variants"));
-        assert!(error.contains("exactly one unit variant"));
-    }
-
-    #[test]
-    fn enum_rejects_a_duplicate_marker_on_one_variant() {
-        let input: DeriveInput = syn::parse_quote! {
-            enum OutputMode {
-                #[scry(default, default)]
-                Summary,
-            }
-        };
-
-        let error = parse_input_error(&input);
-
-        assert!(error.contains("duplicate `#[scry(default)]` marker"));
-    }
-
-    #[test]
-    fn enum_rejects_a_default_payload_variant() {
-        let input: DeriveInput = syn::parse_quote! {
-            enum OutputMode {
-                #[scry(default)]
-                Custom(String),
-            }
-        };
-
-        let error = parse_input_error(&input);
-
-        assert!(error.contains("only supported on unit enum variants"));
-    }
-
-    #[test]
-    fn rust_default_marker_is_unrelated() {
-        let input: DeriveInput = syn::parse_quote! {
-            enum OutputMode {
-                #[default]
-                Summary,
-                Full,
-            }
-        };
-
-        let DeriveTarget::Enum(info) = parse_input(&input).unwrap() else {
-            panic!("expected an enum");
-        };
-
-        assert!(info.variants.iter().all(|variant| !variant.attrs.is_default));
-    }
-
-    fn field_attrs_error(field: &syn::Field) -> String {
-        match FieldAttrs::from_attrs(&field.attrs) {
-            Ok(_) => panic!("expected field attributes to be rejected"),
-            Err(error) => error.to_string(),
-        }
-    }
-
-    fn parse_input_error(input: &DeriveInput) -> String {
-        match parse_input(input) {
-            Ok(_) => panic!("expected derive input to be rejected"),
-            Err(error) => error.to_string(),
-        }
-    }
+fn conflicting_declaration_error(
+    span: Span,
+    first_span: Span,
+    message: impl Into<String>,
+) -> syn::Error {
+    let mut error = syn::Error::new(span, message.into());
+    error.combine(syn::Error::new(first_span, "first declaration is here"));
+    error
 }
+
+// ---------------------------------------------------------------------------------------------- //
+
+#[cfg(test)]
+mod tests;

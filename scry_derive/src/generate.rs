@@ -1,5 +1,7 @@
 //! Code generation for derive macros: FromNode, ToNode, Describe, Config.
 
+use std::collections::HashSet;
+
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
 use syn::DeriveInput;
@@ -224,16 +226,16 @@ fn generate_field_value_parser(field: &FieldInfo, parent: &TokenStream) -> Token
     let missing = match &field.attrs.fallback {
         FieldFallback::Expression(expr) => quote! { #expr },
         FieldFallback::FromDefaults => quote! {
-            <#ty as #scry::FromDefaults>::from_defaults_at(&#parent.full_path(#key)?)?
+            <#ty as #scry::FromDefaults>::from_defaults_at(&#parent.path.push_key(#key))?
         },
         FieldFallback::Unspecified if is_option_type(ty) => quote! { None },
         FieldFallback::Unspecified => quote! {
-            return Err(#scry::NodeError::missing_required(&#parent.full_path(#key)?))
+            return Err(#scry::NodeError::missing_required(&#parent.path.push_key(#key)))
         },
     };
 
     quote! {
-        match #parent.opt_node(#key)? {
+        match #parent.opt_node(#scry::KeyPath::from_keys([#key]))? {
             Some(#input) => #present,
             None => #missing,
         }
@@ -285,20 +287,29 @@ fn generate_enum_from_node(info: &EnumInfo) -> syn::Result<TokenStream> {
 
     // Generate error arms for payload variants used as strings
     // Use lowercased keys for matching, original keys for error messages
+    let mut string_spellings: HashSet<String> = unit_variants
+        .iter()
+        .flat_map(|(key, _)| parse::variant_spellings(key))
+        .map(|name| name.to_ascii_lowercase())
+        .collect();
     let payload_string_error_arms: Vec<TokenStream> = payload_variants
         .iter()
-        .map(|(key, _, _)| {
+        .filter_map(|(key, _, _)| {
             let spellings: Vec<String> = parse::variant_spellings(key)
                 .into_iter()
                 .map(|name| name.to_ascii_lowercase())
+                .filter(|name| string_spellings.insert(name.clone()))
                 .collect();
+            if spellings.is_empty() {
+                return None;
+            }
             let msg = format!(
                 "variant '{}' requires a payload - use {{\"{}\": <value>}} syntax",
                 key, key
             );
-            quote! {
+            Some(quote! {
                 #(#spellings)|* => return Err(#scry::NodeError::invalid_value(&node.path, #msg))
-            }
+            })
         })
         .collect();
 
@@ -371,17 +382,25 @@ fn generate_enum_from_node(info: &EnumInfo) -> syn::Result<TokenStream> {
         .collect();
 
     // Generate error arms for unit variants used as map keys
+    let mut map_spellings: HashSet<String> =
+        payload_variants.iter().flat_map(|(key, _, _)| parse::variant_spellings(key)).collect();
     let unit_map_error_arms: Vec<TokenStream> = unit_variants
         .iter()
-        .map(|(key, _)| {
-            let spellings = parse::variant_spellings(key);
+        .filter_map(|(key, _)| {
+            let spellings: Vec<String> = parse::variant_spellings(key)
+                .into_iter()
+                .filter(|name| map_spellings.insert(name.clone()))
+                .collect();
+            if spellings.is_empty() {
+                return None;
+            }
             let msg = format!(
                 "unit variant '{}' must be written as a string \"{}\", not as {{\"{}\":...}}",
                 key, key, key
             );
-            quote! {
+            Some(quote! {
                 #(#spellings)|* => return Err(#scry::NodeError::invalid_value(&node.path, #msg))
-            }
+            })
         })
         .collect();
 

@@ -233,6 +233,16 @@ struct DatabaseConfig {
 
 This struct expects `{ "host": "...", "db": "..." }` in the config, but uses `hostname` and `database_name` as Rust field names. The rename applies throughout the generated config behavior.
 
+A field name is always one literal map key. For example, `#[scry(rename = "server.port")]`
+matches `{ "server.port": 9000 }`. It does not navigate into `{ "server": { "port": 9000 } }`.
+Use a nested config type to represent nested objects. Ordinary Node and CLI query paths still
+use path syntax, so `["server.port"]` selects the literal dotted key and `server.port` selects
+the nested value.
+
+Derived named objects reject duplicate effective field keys. A renamed field must not collide
+with another renamed or ordinary field. Enum variant names must also be unique, and their
+accepted spellings must not overlap within the same input form.
+
 ### Enums
 
 Scry supports all Rust enum variant types: unit, tuple, and struct. For unit variants, the variant name as a string is used. For tuple and struct variants, a map with the variant name as the key is used. Single-field "newtype" tuple variants are special-cased to allow direct value representation without an extra array:
