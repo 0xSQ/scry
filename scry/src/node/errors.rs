@@ -25,9 +25,22 @@ pub enum NodeError {
         source: Option<BoxedError>,
     },
 
-    /// Generic message for an invalid value at a given path.
+    /// A logical configuration location attached to an otherwise locationless error.
+    #[error("error for {}: {source}", fmt_path(path))]
+    AtPath {
+        path: KeyPath,
+        #[source]
+        source: BoxedError,
+    },
+
+    /// A message for an invalid value at a given path, with an optional original cause.
     #[error("invalid value for {}: {}", fmt_path(path), message)]
-    InvalidValue { path: KeyPath, message: String },
+    InvalidValue {
+        path: KeyPath,
+        message: String,
+        #[source]
+        source: Option<BoxedError>,
+    },
 
     /// Required key is missing at the given path.
     #[error("missing value for {}", fmt_path(path))]
@@ -59,6 +72,8 @@ pub enum NodeError {
         to: String,
         from: String,
         value: String,
+        #[source]
+        source: Option<BoxedError>,
     },
 
     /// Array length does not match the expected size.
@@ -228,6 +243,20 @@ impl NodeError {
         NodeError::InvalidValue {
             path: path.clone(),
             message: message.into(),
+            source: None,
+        }
+    }
+
+    /// Creates a located value error that retains its original cause.
+    pub fn invalid_value_with_source(
+        path: &KeyPath,
+        message: impl Into<String>,
+        source: impl Into<BoxedError>,
+    ) -> Self {
+        NodeError::InvalidValue {
+            path: path.clone(),
+            message: message.into(),
+            source: Some(source.into()),
         }
     }
 
@@ -257,6 +286,24 @@ impl NodeError {
             to: to.to_string(),
             from: from.to_string(),
             value: value.to_string(),
+            source: None,
+        }
+    }
+
+    /// Creates a conversion error that retains its original cause.
+    pub fn invalid_conversion_with_source(
+        path: &KeyPath,
+        to: &str,
+        from: &str,
+        value: &str,
+        source: impl Into<BoxedError>,
+    ) -> Self {
+        NodeError::InvalidConversion {
+            path: path.clone(),
+            to: to.to_string(),
+            from: from.to_string(),
+            value: value.to_string(),
+            source: Some(source.into()),
         }
     }
 
@@ -361,6 +408,76 @@ impl NodeError {
             source: Box::new(source),
         }
     }
+
+    // ------------------------------------------------------------------------------------------ //
+    // Logical Configuration Locations
+
+    /// Returns the logical configuration path carried by this error, if it has one.
+    ///
+    /// Filesystem paths retain their own meaning and are not returned here. Aggregated unknown-key
+    /// errors carry several locations in their `paths` field instead.
+    pub fn path(&self) -> Option<&KeyPath> {
+        match self {
+            Self::AtPath { path, .. }
+            | Self::InvalidValue { path, .. }
+            | Self::MissingRequired { path }
+            | Self::TypeMismatch { path, .. }
+            | Self::InvalidConversion { path, .. }
+            | Self::ArrayLength { path, .. }
+            | Self::KeyOnArray { path, .. }
+            | Self::IndexOnMap { path, .. }
+            | Self::IndexOutOfBounds { path, .. }
+            | Self::DescendIntoLeaf { path, .. } => Some(path),
+            _ => None,
+        }
+    }
+
+    /// Attaches an input location only when the error has no logical configuration location.
+    ///
+    /// Input Nodes already carry their full logical path. Existing locations, including an empty
+    /// root path and aggregated unknown-key paths, are preserved. The original error stays in the
+    /// source chain, including any filesystem path or parser cause it contains.
+    pub fn at_path(self, path: &KeyPath) -> Self {
+        if self.path().is_some() || matches!(self, Self::UnknownKeys { .. }) {
+            self
+        } else {
+            Self::AtPath {
+                path: path.clone(),
+                source: Box::new(self),
+            }
+        }
+    }
+
+    /// Prepends an enclosing output location to this error's relative logical path.
+    ///
+    /// Each structured serializer adds the key or index through which it called its child.
+    /// Existing relative segments are retained. Locationless errors gain an enclosing location
+    /// without changing their original error or cause. Input decoding uses [`Self::at_path`]
+    /// instead because input paths are already absolute within the logical configuration.
+    pub fn prepend_path(mut self, prefix: &KeyPath) -> Self {
+        if prefix.is_empty() {
+            return self;
+        }
+        match &mut self {
+            Self::AtPath { path, .. }
+            | Self::InvalidValue { path, .. }
+            | Self::MissingRequired { path }
+            | Self::TypeMismatch { path, .. }
+            | Self::InvalidConversion { path, .. }
+            | Self::ArrayLength { path, .. }
+            | Self::KeyOnArray { path, .. }
+            | Self::IndexOnMap { path, .. }
+            | Self::IndexOutOfBounds { path, .. }
+            | Self::DescendIntoLeaf { path, .. } => *path = prefix.join(path),
+            Self::UnknownKeys { paths } => {
+                for path in paths {
+                    *path = prefix.join(path);
+                }
+            }
+            _ => return self.at_path(prefix),
+        }
+        self
+    }
 }
 
 // ---------------------------------------------------------------------------------------------- //
@@ -395,224 +512,4 @@ fn kind_name(kind: &Kind) -> &str {
 // Tests
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::node::{Node, Value};
-
-    fn path(s: &str) -> KeyPath {
-        s.parse().unwrap()
-    }
-
-    // ------------------------------------------------------------------------------------------ //
-    // Display - with path
-
-    #[test]
-    fn display_message() {
-        let err = NodeError::new("something went wrong");
-        assert_eq!(err.to_string(), "something went wrong");
-    }
-
-    #[test]
-    fn display_invalid_value() {
-        let err = NodeError::invalid_value(&path("server.port"), "must be between 1 and 65535");
-        assert_eq!(err.to_string(), "invalid value for 'server.port': must be between 1 and 65535");
-    }
-
-    #[test]
-    fn display_missing_required() {
-        let err = NodeError::missing_required(&path("database.host"));
-        assert_eq!(err.to_string(), "missing value for 'database.host'");
-    }
-
-    #[test]
-    fn display_type_mismatch() {
-        let err = NodeError::type_mismatch(&path("server.port"), "string", "i64");
-        assert_eq!(err.to_string(), "expected string for 'server.port', found type i64");
-    }
-
-    #[test]
-    fn display_kind_mismatch() {
-        let map_node = Node::new_map(KeyPath::new(), indexmap::IndexMap::new());
-        let err = NodeError::kind_mismatch(&path("server"), "array", &map_node.kind);
-        assert_eq!(err.to_string(), "expected array for 'server', found type map");
-    }
-
-    #[test]
-    fn display_invalid_conversion() {
-        let err = NodeError::invalid_conversion(&path("timeout"), "u16", "i64", "-5");
-        assert_eq!(err.to_string(), "cannot convert 'timeout' to u16 (from i64 '-5')");
-    }
-
-    #[test]
-    fn display_array_length() {
-        let err = NodeError::array_length(&path("color"), 3, 2);
-        assert_eq!(err.to_string(), "expected 'color' to be an array of length 3, found 2");
-    }
-
-    #[test]
-    fn display_key_on_array() {
-        let err = NodeError::key_on_array(&path("items"), "name");
-        assert_eq!(err.to_string(), "'items' is an array, cannot look up key 'name'");
-    }
-
-    #[test]
-    fn display_index_on_map() {
-        let err = NodeError::index_on_map(&path("server"), 0);
-        assert_eq!(err.to_string(), "'server' is a map, cannot look up index 0");
-    }
-
-    #[test]
-    fn display_index_out_of_bounds() {
-        let err = NodeError::index_out_of_bounds(&path("items"), 5, 3);
-        assert_eq!(err.to_string(), "index 5 is out of bounds, 'items' has 3 elements");
-    }
-
-    #[test]
-    fn display_descend_into_leaf() {
-        let err = NodeError::descend_into_leaf(&path("server.port"), "i64");
-        assert_eq!(err.to_string(), "'server.port' has type i64, cannot descend into it");
-    }
-
-    #[test]
-    fn display_cannot_remove_root() {
-        let err = NodeError::cannot_remove_root();
-        assert_eq!(err.to_string(), "cannot remove root node");
-    }
-
-    #[test]
-    fn display_unknown_keys() {
-        let err = NodeError::unknown_keys(&[path("server.foo"), path("server.bar")]);
-        assert_eq!(err.to_string(), "unknown config keys:\n  server.foo\n  server.bar");
-    }
-
-    #[test]
-    fn display_missing_file_extension() {
-        let err = NodeError::from(FormatError::missing_file_extension(Path::new("config")));
-        assert_eq!(
-            err.to_string(),
-            "cannot determine config format: file has no extension: config"
-        );
-    }
-
-    #[test]
-    fn display_unknown_file_extension() {
-        let err = NodeError::from(FormatError::unknown_file_extension(
-            Path::new("config.yml"),
-            "yml",
-            &["json", "json5", "rhai"],
-        ));
-        assert_eq!(
-            err.to_string(),
-            "unknown file extension '.yml' for file: config.yml (supported: json, json5, rhai)"
-        );
-    }
-
-    #[test]
-    fn display_unknown_output_format_id() {
-        let err = NodeError::from(FormatError::unknown_format_id(
-            crate::node::FormatUsage::Output,
-            "yaml",
-            &["json", "rhai"],
-        ));
-        assert_eq!(err.to_string(), "unknown output format 'yaml' (supported: json, rhai)");
-    }
-
-    #[test]
-    fn display_invalid_path() {
-        let source = "server..port".parse::<KeyPath>().unwrap_err();
-        let err = NodeError::invalid_path(source);
-        assert_eq!(err.to_string(), "invalid path");
-    }
-
-    #[test]
-    fn display_read_file() {
-        let source = std::io::Error::new(std::io::ErrorKind::NotFound, "missing");
-        let err = NodeError::read_file(Path::new("config.toml"), source);
-        assert_eq!(err.to_string(), "failed to read file: config.toml");
-    }
-
-    #[test]
-    fn display_parse_format() {
-        let source = std::io::Error::new(std::io::ErrorKind::InvalidData, "bad");
-        let err = NodeError::parse_format("JSON", source);
-        assert_eq!(err.to_string(), "failed to parse JSON");
-    }
-
-    #[test]
-    fn display_serialize_format() {
-        let source = std::io::Error::other("boom");
-        let err = NodeError::serialize_format("Rhai", source);
-        assert_eq!(err.to_string(), "failed to serialize as Rhai");
-    }
-
-    // ------------------------------------------------------------------------------------------ //
-    // Display - empty path (root)
-
-    #[test]
-    fn display_invalid_value_at_root() {
-        let err = NodeError::invalid_value(&KeyPath::new(), "expected a map");
-        assert_eq!(err.to_string(), "invalid value for config: expected a map");
-    }
-
-    #[test]
-    fn display_missing_required_at_root() {
-        let err = NodeError::missing_required(&KeyPath::new());
-        assert_eq!(err.to_string(), "missing value for config");
-    }
-
-    #[test]
-    fn display_type_mismatch_at_root() {
-        let err = NodeError::type_mismatch(&KeyPath::new(), "map", "array");
-        assert_eq!(err.to_string(), "expected map for config, found type array");
-    }
-
-    #[test]
-    fn display_array_length_at_root() {
-        let err = NodeError::array_length(&KeyPath::new(), 3, 2);
-        assert_eq!(err.to_string(), "expected config to be an array of length 3, found 2");
-    }
-
-    #[test]
-    fn display_index_out_of_bounds_at_root() {
-        let err = NodeError::index_out_of_bounds(&KeyPath::new(), 5, 3);
-        assert_eq!(err.to_string(), "index 5 is out of bounds, config has 3 elements");
-    }
-
-    // ------------------------------------------------------------------------------------------ //
-    // Debug - error chain rendering
-
-    #[test]
-    fn debug_without_source() {
-        let err = NodeError::new("top-level error");
-        assert_eq!(format!("{err:?}"), "top-level error");
-    }
-
-    #[test]
-    fn debug_with_single_cause() {
-        let inner = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
-        let err = NodeError::with_context("failed to load config", inner);
-        assert_eq!(format!("{err:?}"), "failed to load config\n\nCaused by:\n    file not found");
-    }
-
-    #[test]
-    fn debug_with_multiple_causes() {
-        let innermost =
-            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "permission denied");
-        let middle = NodeError::with_context("failed to read file", innermost);
-        let outer = NodeError::with_context_boxed("failed to load config", Box::new(middle));
-        assert_eq!(
-            format!("{outer:?}"),
-            "failed to load config\n\nCaused by:\n    0: failed to read file\n    1: permission denied"
-        );
-    }
-
-    // ------------------------------------------------------------------------------------------ //
-    // kind_name
-
-    #[test]
-    fn kind_name_reports_leaf_type() {
-        let node = Node::new_leaf(KeyPath::new(), Value::Bool(true));
-        let err = NodeError::kind_mismatch(&KeyPath::new(), "string", &node.kind);
-        assert_eq!(err.to_string(), "expected string for config, found type bool");
-    }
-}
+mod tests;

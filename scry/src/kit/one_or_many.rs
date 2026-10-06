@@ -6,8 +6,7 @@
 use std::ops::Deref;
 
 use crate::desc::Desc;
-use crate::key_path::KeyPath;
-use crate::node::{Kind, Node, NodeError};
+use crate::node::{Node, NodeError};
 use crate::traits::{Describe, FromNode, ToNode};
 
 // ---------------------------------------------------------------------------------------------- //
@@ -139,7 +138,7 @@ impl<T: FromNode> FromNode for OneOrMany<T> {
             Ok(OneOrMany::new(Vec::<T>::from_node(node)?))
         } else {
             // Non-array (scalar, map, etc.): parse as single T.
-            Ok(OneOrMany::one(T::from_node(node)?))
+            Ok(OneOrMany::one(node.as_type::<T>()?))
         }
     }
 }
@@ -155,12 +154,7 @@ impl<T: Describe> Describe for OneOrMany<T> {
 impl<T: ToNode> ToNode for OneOrMany<T> {
     fn to_node(&self) -> Result<Node, NodeError> {
         // Always emit as array for canonical output.
-        let items: Vec<Node> =
-            self.0.iter().map(|item| item.to_node()).collect::<Result<_, _>>()?;
-        Ok(Node {
-            path: KeyPath::new(),
-            kind: Kind::Vec(items),
-        })
+        self.0.to_node()
     }
 }
 

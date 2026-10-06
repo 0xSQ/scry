@@ -14,21 +14,11 @@ use crate::node::{Kind, Node, NodeError, Value};
 /// including on direct trait calls, so [`Node::ensure_no_unknown_keys`] can detect unread input.
 /// A strict map decoder validates its immediate keys with [`Node::ensure_only_keys`]. Parent
 /// decoders validate their own keys and do not inspect the interiors of accepted child values.
+/// Errors with a logical configuration path use the Node's full path, including inside containers.
+/// [`Node::as_type`] attaches that path to errors that have no logical location.
 pub trait FromNode: Sized {
     /// Parses a Node into this type.
     fn from_node(node: &Node) -> Result<Self, NodeError>;
-}
-
-// ---------------------------------------------------------------------------------------------- //
-
-/// Creates a conversion error for invalid values.
-fn conversion_error(node: &Node, target_type: &str, source_value: &Value) -> NodeError {
-    NodeError::invalid_conversion(
-        &node.path,
-        target_type,
-        source_value.type_name(),
-        &source_value.to_string(),
-    )
 }
 
 // ---------------------------------------------------------------------------------------------- //
@@ -72,7 +62,7 @@ macro_rules! impl_from_node_float {
                     let value = node.read_leaf(stringify!($t))?;
                     let result = match value {
                         Value::String(s) => s.parse::<$t>()
-                            .map_err(|_| conversion_error(node, stringify!($t), value))?,
+                            .map_err(|error| conversion_error_with_source(node, stringify!($t), value, error))?,
                         Value::I8(v) => *v as $t,
                         Value::I16(v) => *v as $t,
                         Value::I32(v) => *v as $t,
@@ -105,23 +95,23 @@ macro_rules! impl_from_node_int {
                     let value = node.read_leaf(stringify!($t))?;
                     let result = match value {
                         Value::String(s) => s.parse::<$t>()
-                            .map_err(|_| conversion_error(node, stringify!($t), value))?,
+                            .map_err(|error| conversion_error_with_source(node, stringify!($t), value, error))?,
                         Value::I8(v) => <$t>::try_from(*v)
-                            .map_err(|_| conversion_error(node, stringify!($t), value))?,
+                            .map_err(|error| conversion_error_with_source(node, stringify!($t), value, error))?,
                         Value::I16(v) => <$t>::try_from(*v)
-                            .map_err(|_| conversion_error(node, stringify!($t), value))?,
+                            .map_err(|error| conversion_error_with_source(node, stringify!($t), value, error))?,
                         Value::I32(v) => <$t>::try_from(*v)
-                            .map_err(|_| conversion_error(node, stringify!($t), value))?,
+                            .map_err(|error| conversion_error_with_source(node, stringify!($t), value, error))?,
                         Value::I64(v) => <$t>::try_from(*v)
-                            .map_err(|_| conversion_error(node, stringify!($t), value))?,
+                            .map_err(|error| conversion_error_with_source(node, stringify!($t), value, error))?,
                         Value::U8(v) => <$t>::try_from(*v)
-                            .map_err(|_| conversion_error(node, stringify!($t), value))?,
+                            .map_err(|error| conversion_error_with_source(node, stringify!($t), value, error))?,
                         Value::U16(v) => <$t>::try_from(*v)
-                            .map_err(|_| conversion_error(node, stringify!($t), value))?,
+                            .map_err(|error| conversion_error_with_source(node, stringify!($t), value, error))?,
                         Value::U32(v) => <$t>::try_from(*v)
-                            .map_err(|_| conversion_error(node, stringify!($t), value))?,
+                            .map_err(|error| conversion_error_with_source(node, stringify!($t), value, error))?,
                         Value::U64(v) => <$t>::try_from(*v)
-                            .map_err(|_| conversion_error(node, stringify!($t), value))?,
+                            .map_err(|error| conversion_error_with_source(node, stringify!($t), value, error))?,
                         _ => return Err(conversion_error(node, stringify!($t), value)),
                     };
                     Ok(result)
@@ -142,9 +132,9 @@ impl FromNode for bool {
         let value = node.read_leaf("bool")?;
         match value {
             Value::Bool(v) => Ok(*v),
-            Value::String(s) => {
-                s.parse::<bool>().map_err(|_| conversion_error(node, "bool", value))
-            }
+            Value::String(s) => s
+                .parse::<bool>()
+                .map_err(|error| conversion_error_with_source(node, "bool", value, error)),
             _ => Err(conversion_error(node, "bool", value)),
         }
     }
@@ -179,7 +169,7 @@ impl<T: FromNode> FromNode for Option<T> {
             }
         }
         // Otherwise parse as T.
-        T::from_node(node).map(Some)
+        node.as_type().map(Some)
     }
 }
 
@@ -202,7 +192,7 @@ impl<T: FromNode, const N: usize> FromNode for [T; N] {
         }
         let mut values = Vec::with_capacity(N);
         for entry in entries {
-            values.push(T::from_node(entry)?);
+            values.push(entry.as_type()?);
         }
         // This cannot fail since we checked the length above
         Ok(values.try_into().ok().unwrap())
@@ -240,4 +230,33 @@ impl<A: FromNode, B: FromNode, C: FromNode, D: FromNode> FromNode for (A, B, C, 
         }
         Ok((vec[0].as_type()?, vec[1].as_type()?, vec[2].as_type()?, vec[3].as_type()?))
     }
+}
+
+// ---------------------------------------------------------------------------------------------- //
+// Conversion Failures
+
+/// Creates a conversion error for invalid values.
+fn conversion_error(node: &Node, target_type: &str, source_value: &Value) -> NodeError {
+    NodeError::invalid_conversion(
+        &node.path,
+        target_type,
+        source_value.type_name(),
+        &source_value.to_string(),
+    )
+}
+
+/// Creates a conversion error while preserving the underlying parser or range failure.
+fn conversion_error_with_source(
+    node: &Node,
+    target_type: &str,
+    source_value: &Value,
+    source: impl Into<crate::BoxedError>,
+) -> NodeError {
+    NodeError::invalid_conversion_with_source(
+        &node.path,
+        target_type,
+        source_value.type_name(),
+        &source_value.to_string(),
+        source,
+    )
 }

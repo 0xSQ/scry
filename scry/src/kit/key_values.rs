@@ -83,7 +83,6 @@ impl<V> FromIterator<(String, V)> for KeyValues<V> {
 // Scry trait implementations
 
 use crate::desc::Desc;
-use crate::key_path::KeyPath;
 use crate::node::{Kind, Node, NodeError};
 use crate::traits::{Describe, FromNode, ToNode};
 
@@ -94,7 +93,7 @@ impl<V: FromNode> FromNode for KeyValues<V> {
             Kind::Map(map) => {
                 let mut entries = Vec::with_capacity(map.len());
                 for (key, child) in map {
-                    let value = V::from_node(child)?;
+                    let value = child.as_type::<V>()?;
                     entries.push((key.clone(), value));
                 }
                 Ok(KeyValues::new(entries))
@@ -109,8 +108,8 @@ impl<V: FromNode> FromNode for KeyValues<V> {
                     if pair.len() != 2 {
                         return Err(NodeError::array_length(&elem_path, 2, pair.len()));
                     }
-                    let key = String::from_node(&pair[0])?;
-                    let value = V::from_node(&pair[1])?;
+                    let key = pair[0].as_type::<String>()?;
+                    let value = pair[1].as_type::<V>()?;
                     entries.push((key, value));
                 }
                 Ok(KeyValues::new(entries))
@@ -134,17 +133,6 @@ impl<V: Describe> Describe for KeyValues<V> {
 // Emits as list-of-pairs (preserves duplicates and ordering)
 impl<V: ToNode> ToNode for KeyValues<V> {
     fn to_node(&self) -> Result<Node, NodeError> {
-        let mut pairs = Vec::with_capacity(self.len());
-        for (key, value) in self.iter() {
-            let pair = Node {
-                path: KeyPath::new(),
-                kind: Kind::Vec(vec![key.to_node()?, value.to_node()?]),
-            };
-            pairs.push(pair);
-        }
-        Ok(Node {
-            path: KeyPath::new(),
-            kind: Kind::Vec(pairs),
-        })
+        self.0.to_node()
     }
 }

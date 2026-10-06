@@ -224,11 +224,14 @@ impl Node {
     // Type Conversion
 
     /// Parses this node as type T, marking the leaf as visited.
+    ///
+    /// Locationless errors gain this Node's full logical path. Existing locations and causes
+    /// are preserved.
     pub fn as_type<T: crate::FromNode>(&self) -> Result<T, NodeError> {
         if let Kind::Leaf(leaf) = &self.kind {
             leaf.mark_visited();
         }
-        T::from_node(self)
+        T::from_node(self).map_err(|error| error.at_path(&self.path))
     }
 
     /// Returns a required value by path.

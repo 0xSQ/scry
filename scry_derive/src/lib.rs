@@ -21,6 +21,8 @@ mod parse;
 /// use `Node::read_leaf` or typed decoding to consume input for explicit unread-input audits.
 /// A strict map hook should validate its own keys with `Node::ensure_only_keys` or delegate to
 /// a derived strict type.
+/// Input errors use the Node's full logical path. Locationless hook errors gain that path without
+/// changing their original cause. Errors that already carry a logical location are preserved.
 #[proc_macro_derive(FromNode, attributes(scry))]
 pub fn derive_from_node(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -51,6 +53,8 @@ pub fn derive_from_defaults(input: TokenStream) -> TokenStream {
 /// null rather than omitting the key, preserving the value when a missing field has a default.
 /// `#[scry(to_node_with(write))]` calls `write(&FieldType)` and expects `Result<Node, NodeError>`.
 /// For `Option<T>`, the hook receives `&Option<T>` even when the value is `None`.
+/// Error paths are relative to the value being serialized. Each field and enum payload prepends
+/// its serialized key or index, including for hooks. Transparent newtypes preserve child paths.
 #[proc_macro_derive(ToNode, attributes(scry))]
 pub fn derive_to_node(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);

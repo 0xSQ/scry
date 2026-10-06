@@ -13,6 +13,11 @@ use crate::node::{Kind, Leaf, Node, NodeError, Value};
 ///
 /// Implementations can construct nodes with empty paths. Inserting the result through
 /// [`Node::set_node`] anchors the subtree at its destination.
+///
+/// Error paths are relative to the value being serialized. An implementation that nests a child
+/// beneath a key or index uses [`NodeError::prepend_path`] to add that location to the child's
+/// error path. Transparent wrappers return child errors unchanged. Successful nodes follow the
+/// anchoring contract above.
 pub trait ToNode {
     /// Converts this value to a Node.
     fn to_node(&self) -> Result<Node, NodeError>;
@@ -136,8 +141,10 @@ impl<T: ToNode> ToNode for Option<T> {
 impl<T: ToNode> ToNode for Vec<T> {
     fn to_node(&self) -> Result<Node, NodeError> {
         let mut children = Vec::with_capacity(self.len());
-        for item in self {
-            children.push(item.to_node()?);
+        for (index, item) in self.iter().enumerate() {
+            children.push(
+                item.to_node().map_err(|error| error.prepend_path(&KeyPath::from_index(index)))?,
+            );
         }
         Ok(Node {
             path: KeyPath::new(),
@@ -149,8 +156,10 @@ impl<T: ToNode> ToNode for Vec<T> {
 impl<T: ToNode, const N: usize> ToNode for [T; N] {
     fn to_node(&self) -> Result<Node, NodeError> {
         let mut children = Vec::with_capacity(N);
-        for item in self {
-            children.push(item.to_node()?);
+        for (index, item) in self.iter().enumerate() {
+            children.push(
+                item.to_node().map_err(|error| error.prepend_path(&KeyPath::from_index(index)))?,
+            );
         }
         Ok(Node {
             path: KeyPath::new(),
@@ -166,7 +175,10 @@ impl<A: ToNode, B: ToNode> ToNode for (A, B) {
     fn to_node(&self) -> Result<Node, NodeError> {
         Ok(Node {
             path: KeyPath::new(),
-            kind: Kind::Vec(vec![self.0.to_node()?, self.1.to_node()?]),
+            kind: Kind::Vec(vec![
+                self.0.to_node().map_err(|error| error.prepend_path(&KeyPath::from_index(0)))?,
+                self.1.to_node().map_err(|error| error.prepend_path(&KeyPath::from_index(1)))?,
+            ]),
         })
     }
 }
@@ -175,7 +187,11 @@ impl<A: ToNode, B: ToNode, C: ToNode> ToNode for (A, B, C) {
     fn to_node(&self) -> Result<Node, NodeError> {
         Ok(Node {
             path: KeyPath::new(),
-            kind: Kind::Vec(vec![self.0.to_node()?, self.1.to_node()?, self.2.to_node()?]),
+            kind: Kind::Vec(vec![
+                self.0.to_node().map_err(|error| error.prepend_path(&KeyPath::from_index(0)))?,
+                self.1.to_node().map_err(|error| error.prepend_path(&KeyPath::from_index(1)))?,
+                self.2.to_node().map_err(|error| error.prepend_path(&KeyPath::from_index(2)))?,
+            ]),
         })
     }
 }
@@ -185,10 +201,10 @@ impl<A: ToNode, B: ToNode, C: ToNode, D: ToNode> ToNode for (A, B, C, D) {
         Ok(Node {
             path: KeyPath::new(),
             kind: Kind::Vec(vec![
-                self.0.to_node()?,
-                self.1.to_node()?,
-                self.2.to_node()?,
-                self.3.to_node()?,
+                self.0.to_node().map_err(|error| error.prepend_path(&KeyPath::from_index(0)))?,
+                self.1.to_node().map_err(|error| error.prepend_path(&KeyPath::from_index(1)))?,
+                self.2.to_node().map_err(|error| error.prepend_path(&KeyPath::from_index(2)))?,
+                self.3.to_node().map_err(|error| error.prepend_path(&KeyPath::from_index(3)))?,
             ]),
         })
     }

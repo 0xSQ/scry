@@ -63,7 +63,10 @@ impl ToNode for Rectangle {
     fn to_node(&self) -> Result<Node, NodeError> {
         if self.width == self.height {
             // Build { side: n }
-            let side_node = self.width.to_node()?;
+            let side_node = self
+                .width
+                .to_node()
+                .map_err(|error| error.prepend_path(&KeyPath::from_keys(["side"])))?;
             let mut map = IndexMap::new();
             map.insert("side".to_string(), side_node);
             Ok(Node::new_map(KeyPath::default(), map))

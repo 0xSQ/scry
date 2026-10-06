@@ -183,7 +183,7 @@ fn generate_struct_from_node(info: &StructInfo) -> syn::Result<TokenStream> {
                 Ok(quote! {
                     impl #scry::FromNode for #struct_name {
                         fn from_node(node: &#scry::Node) -> Result<Self, #scry::NodeError> {
-                            Ok(Self(#scry::FromNode::from_node(node)?))
+                            Ok(Self(node.as_type()?))
                         }
                     }
                 })
@@ -200,7 +200,7 @@ fn generate_struct_from_node(info: &StructInfo) -> syn::Result<TokenStream> {
                                 return Err(#scry::NodeError::array_length(&node.path, #field_count, arr.len()));
                             }
                             Ok(Self(
-                                #(#scry::FromNode::from_node(&arr[#field_indices])?),*
+                                #(arr[#field_indices].as_type()?),*
                             ))
                         }
                     }
@@ -226,7 +226,9 @@ fn generate_field_value_parser(field: &FieldInfo, parent: &TokenStream) -> Token
     let key = field.attrs.rename.clone().unwrap_or_else(|| field.ident.to_string());
     let input = Ident::new("__scry_field_node", Span::mixed_site());
     let present = match &field.attrs.from_node_with {
-        Some(func_path) => quote! { #func_path(#input)? },
+        Some(func_path) => quote! {
+            #func_path(#input).map_err(|error| error.at_path(&#input.path))?
+        },
         None => quote! { #input.as_type::<#ty>()? },
     };
     let missing = match &field.attrs.fallback {
@@ -334,15 +336,16 @@ fn generate_enum_from_node(info: &EnumInfo) -> syn::Result<TokenStream> {
                         key, key
                     );
                     quote! {
-                        match #scry::FromNode::from_node(payload) {
+                        match payload.as_type() {
                             Ok(v) => Ok(#enum_name::#v_ident(v)),
                             Err(e) => {
                                 // Add hint for common "accidental brackets" mistake
                                 if let Some(arr) = payload.as_opt_vec() {
                                     if arr.len() == 1 {
-                                        return Err(#scry::NodeError::invalid_value(
+                                        return Err(#scry::NodeError::invalid_value_with_source(
                                             &payload.path,
                                             format!("failed to parse variant '{}': {} ({})", #key, e, #hint_msg),
+                                            e,
                                         ));
                                     }
                                 }
@@ -355,7 +358,7 @@ fn generate_enum_from_node(info: &EnumInfo) -> syn::Result<TokenStream> {
                     // Multi-field tuple: payload is an array
                     let field_count = types.len();
                     let field_parsers: Vec<TokenStream> =
-                        (0..field_count).map(|i| quote! { #scry::FromNode::from_node(&arr[#i])? }).collect();
+                        (0..field_count).map(|i| quote! { arr[#i].as_type()? }).collect();
 
                     quote! {
                         let arr = payload.as_vec()?;
@@ -538,12 +541,20 @@ fn generate_struct_to_node(info: &StructInfo) -> syn::Result<TokenStream> {
                 // Tuple: serialize as array
                 let field_indices: Vec<syn::Index> =
                     (0..types.len()).map(syn::Index::from).collect();
+                let field_serializers: Vec<TokenStream> = field_indices
+                    .iter()
+                    .enumerate()
+                    .map(|(index, field)| quote! {
+                        #scry::ToNode::to_node(&self.#field)
+                            .map_err(|error| error.prepend_path(&#scry::KeyPath::from_index(#index)))?
+                    })
+                    .collect();
 
                 Ok(quote! {
                     impl #scry::ToNode for #struct_name {
                         fn to_node(&self) -> Result<#scry::Node, #scry::NodeError> {
                             let children = vec![
-                                #(#scry::ToNode::to_node(&self.#field_indices)?),*
+                                #(#field_serializers),*
                             ];
                             Ok(#scry::Node {
                                 path: #scry::KeyPath::new(),
@@ -562,12 +573,15 @@ fn generate_field_serializer(field: &FieldInfo, scry: &TokenStream) -> TokenStre
     let key = field.attrs.rename.clone().unwrap_or_else(|| field_name.to_string());
 
     let value = match &field.attrs.to_node_with {
-        Some(func_path) => quote! { #func_path(&self.#field_name)? },
-        None => quote! { #scry::ToNode::to_node(&self.#field_name)? },
+        Some(func_path) => quote! { #func_path(&self.#field_name) },
+        None => quote! { #scry::ToNode::to_node(&self.#field_name) },
     };
 
     quote! {
-        map.insert(#key.to_string(), #value);
+        map.insert(
+            #key.to_string(),
+            #value.map_err(|error| error.prepend_path(&#scry::KeyPath::from_keys([#key])))?,
+        );
     }
 }
 
@@ -575,17 +589,26 @@ fn generate_field_serializer(field: &FieldInfo, scry: &TokenStream) -> TokenStre
 ///
 /// Similar to `generate_field_serializer` but uses bound variable names
 /// and inserts into `inner_map` instead of `map`.
-fn generate_struct_variant_field_serializer(field: &FieldInfo, scry: &TokenStream) -> TokenStream {
+fn generate_struct_variant_field_serializer(
+    field: &FieldInfo,
+    scry: &TokenStream,
+    variant_key: &str,
+) -> TokenStream {
     let field_name = &field.ident;
     let key = field.attrs.rename.clone().unwrap_or_else(|| field_name.to_string());
 
     let value = match &field.attrs.to_node_with {
-        Some(func_path) => quote! { #func_path(#field_name)? },
-        None => quote! { #scry::ToNode::to_node(#field_name)? },
+        Some(func_path) => quote! { #func_path(#field_name) },
+        None => quote! { #scry::ToNode::to_node(#field_name) },
     };
 
     quote! {
-        inner_map.insert(#key.to_string(), #value);
+        inner_map.insert(
+            #key.to_string(),
+            #value.map_err(|error| {
+                error.prepend_path(&#scry::KeyPath::from_keys([#variant_key, #key]))
+            })?,
+        );
     }
 }
 
@@ -620,7 +643,12 @@ fn generate_enum_to_node(info: &EnumInfo) -> syn::Result<TokenStream> {
                 match_arms.push(quote! {
                     #enum_name::#v_ident(inner) => {
                         let mut map = #scry::_private::IndexMap::new();
-                        map.insert(#key.to_string(), #scry::ToNode::to_node(inner)?);
+                        map.insert(
+                            #key.to_string(),
+                            #scry::ToNode::to_node(inner).map_err(|error| {
+                                error.prepend_path(&#scry::KeyPath::from_keys([#key]))
+                            })?,
+                        );
                         Ok(#scry::Node {
                             path: #scry::KeyPath::new(),
                             kind: #scry::node::Kind::Map(map),
@@ -636,7 +664,12 @@ fn generate_enum_to_node(info: &EnumInfo) -> syn::Result<TokenStream> {
                     .collect();
                 let field_serializers: Vec<TokenStream> = field_bindings
                     .iter()
-                    .map(|binding| quote! { #scry::ToNode::to_node(#binding)? })
+                    .enumerate()
+                    .map(|(index, binding)| quote! {
+                        #scry::ToNode::to_node(#binding).map_err(|error| {
+                            error.prepend_path(&#scry::KeyPath::from_keys([#key]).push_index(#index))
+                        })?
+                    })
                     .collect();
 
                 match_arms.push(quote! {
@@ -660,7 +693,7 @@ fn generate_enum_to_node(info: &EnumInfo) -> syn::Result<TokenStream> {
                 let field_names: Vec<&syn::Ident> = fields.iter().map(|f| &f.ident).collect();
                 let field_serializers: Vec<TokenStream> = fields
                     .iter()
-                    .map(|f| generate_struct_variant_field_serializer(f, &scry))
+                    .map(|f| generate_struct_variant_field_serializer(f, &scry, &key))
                     .collect();
 
                 match_arms.push(quote! {

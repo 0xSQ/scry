@@ -496,6 +496,23 @@ If you use the same external type in many places, consider creating a newtype wr
 The hook returns the complete field type, including `Option<T>`. Missing fields use their
 fallback without calling it. See the [derive docs](../scry_derive/src/lib.rs) for the contract.
 
+Input errors use the full logical path already carried by the `Node`. `Node::as_type` and derived
+field hooks attach that path to errors without a logical location. They preserve existing error
+paths, so enclosing decoders do not repeat field names or indices.
+
+When a domain parser returns an error, keep both its original cause and the input location:
+
+```rust
+let value = parse_domain_value(&text).map_err(|error| {
+    NodeError::invalid_value_with_source(&node.path, "invalid domain value", error)
+})?;
+```
+
+`NodeError::path()` exposes a single logical configuration location. `Error::source()` retains the
+original concrete cause and its own error chain. Primitive string conversions also preserve their
+integer, float, or boolean parser errors. A locationless filesystem or format error can carry an
+enclosing configuration location without changing its original filesystem path or cause.
+
 ## FromDefaults
 
 `FromDefaults` constructs a config value by applying its Scry field policies at a logical config
@@ -595,7 +612,9 @@ impl ToNode for Rectangle {
     fn to_node(&self) -> Result<Node, NodeError> {
         if self.width == self.height {
             let mut map = IndexMap::new();
-            map.insert("side".to_string(), self.width.to_node()?);
+            let side = self.width.to_node()
+                .map_err(|error| error.prepend_path(&KeyPath::from_keys(["side"])))?;
+            map.insert("side".to_string(), side);
             Ok(Node::new_map(KeyPath::default(), map))
         } else {
             (self.width, self.height).to_node()
@@ -625,6 +644,22 @@ fn color_to_node(color: &Color) -> Result<Node, NodeError> {
 
 Like the parsing hook, the serializer handles the complete field type. For an optional color,
 it takes `&Option<Color>`, including `None`.
+
+Serialization errors carry paths relative to the value being serialized. A leaf serializer can
+report an empty path with `NodeError::invalid_value_with_source(&KeyPath::new(), message, cause)`.
+Each enclosing serializer prepends the exact key or index through which it called that child, using
+`NodeError::prepend_path`. Existing relative segments and original causes remain intact.
+
+For example, if the second job in `jobs: Vec<Job>` fails while serializing its `limit` field, the
+error identifies `jobs[1].limit`. Derived named fields, hooks, tuples, arrays, and enum payloads add
+their serialized locations automatically. Renamed keys remain literal. Transparent newtypes,
+`Option`, and references preserve the child's relative path. `KeyValues` emits a list of pairs, so
+a value failure uses its output position such as `[1][1]`, including when keys repeat.
+
+Manual structured serializers apply the same rule, as shown for the `side` key above. Input decoding
+uses `NodeError::at_path` to attach only a missing location because input paths are already complete.
+Successful output Nodes can still have empty paths. `Node::set_node` anchors their subtrees at the
+destination as before.
 
 ## Describe
 
