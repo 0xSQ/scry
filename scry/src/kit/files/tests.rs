@@ -594,6 +594,55 @@ fn files_empty_map_is_single_implicit_source() {
 }
 
 #[test]
+fn file_map_decoders_reject_unknown_empty_values() {
+    for extra in ["#{}", "[]"] {
+        assert_unknown_file_key::<Files>("#{ sources: [] }", extra);
+        assert_unknown_file_key::<Files>("#{}", extra);
+        assert_unknown_file_key::<SourceSpec>("#{}", extra);
+        assert_unknown_file_key::<FromSpec>("#{}", extra);
+        assert_unknown_file_key::<PathPatternSpec>(r#"#{ path: "src" }"#, extra);
+        assert_unknown_file_key::<WhereSpec>("#{}", extra);
+        assert_unknown_file_key::<AttrRuleSpec>("#{}", extra);
+        assert_unknown_file_key::<TextPatternSpec>(r#"#{ pattern: "*.rs" }"#, extra);
+    }
+}
+
+fn assert_unknown_file_key<T: FromNode>(source: &str, extra: &str) {
+    let mut node = Node::parse_str(source, Format::Rhai).unwrap();
+    node.set_node("typo", Node::parse_str(extra, Format::Rhai).unwrap()).unwrap();
+
+    let error = node.as_type::<T>().err().expect("unknown empty value should be rejected");
+    assert!(matches!(error, NodeError::UnknownKeys { ref paths }
+        if *paths == [crate::KeyPath::from_keys(["typo"])]));
+}
+
+#[test]
+fn files_sources_wrapper_rejects_source_fields_at_its_own_level() {
+    let node = Node::parse_str("#{ sources: [], from: #{} }", Format::Rhai).unwrap();
+    let error = node.as_type::<Files>().unwrap_err();
+
+    assert!(matches!(error, NodeError::UnknownKeys { ref paths }
+        if *paths == [crate::KeyPath::from_keys(["from"])]));
+}
+
+#[test]
+fn nested_file_patterns_check_their_own_map_keys() {
+    let node = Node::parse_str(
+        r#"#{ sources: [#{ from: #{ root: #{ path: "src", typo: #{} } } }] }"#,
+        Format::Rhai,
+    )
+    .unwrap();
+    let error = node.as_type::<Files>().unwrap_err();
+    let path = crate::KeyPath::from_keys(["sources"])
+        .push_index(0)
+        .push_key("from")
+        .push_key("root")
+        .push_key("typo");
+
+    assert!(matches!(error, NodeError::UnknownKeys { ref paths } if *paths == [path]));
+}
+
+#[test]
 fn source_spec_parses_explicit_lexicographic_sort() {
     let node =
         Node::parse_str(r#"#{ from: "generated", sort: "lexicographic" }"#, Format::Rhai).unwrap();

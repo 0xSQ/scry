@@ -12,6 +12,8 @@ use crate::node::{Kind, Node, NodeError, Value};
 ///
 /// Implementations must consume accepted leaves through [`Node::read_leaf`] or typed decoding,
 /// including on direct trait calls, so [`Node::ensure_no_unknown_keys`] can detect unread input.
+/// A strict map decoder validates its immediate keys with [`Node::ensure_only_keys`]. Parent
+/// decoders validate their own keys and do not inspect the interiors of accepted child values.
 pub trait FromNode: Sized {
     /// Parses a Node into this type.
     fn from_node(node: &Node) -> Result<Self, NodeError>;
@@ -34,8 +36,7 @@ fn conversion_error(node: &Node, target_type: &str, source_value: &Value) -> Nod
 
 impl FromNode for Node {
     fn from_node(node: &Node) -> Result<Self, NodeError> {
-        // Raw Node fields are passthrough subtrees, but they still need to mark every nested
-        // entry as visited so derived containers keep their normal unknown-key checks.
+        // Raw Node fields accept their whole subtree. Mark its leaves for explicit input audits.
         mark_node_visited(node)?;
         Ok(node.clone())
     }

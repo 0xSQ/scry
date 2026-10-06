@@ -2,7 +2,7 @@
 #![cfg(feature = "format-json")]
 
 use scry::node::Format;
-use scry::{FromNode, Node, ToNode};
+use scry::{FromNode, KeyPath, Node, NodeError, ToNode};
 
 // ---------------------------------------------------------------------------------------------- //
 // Test Types
@@ -119,5 +119,8 @@ fn unknown_keys_still_fail_without_raw_node_field() {
 
     let err = n.as_type::<StrictConfig>().unwrap_err();
 
-    assert!(err.to_string().contains("raw.anything"));
+    let NodeError::UnknownKeys { paths } = err else {
+        panic!("expected unknown keys, got {err:?}");
+    };
+    assert_eq!(paths, vec![KeyPath::from_keys(["raw"])]);
 }

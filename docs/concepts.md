@@ -119,16 +119,30 @@ let rhai_string = node.to_string_as(Format::Rhai)?;
 
 ### Unknown Key Detection
 
-By default, Scry tracks which keys are actually read from a node. If any keys remain unread after parsing, `ensure_no_unknown_keys()` will error:
+Derived named structs and named enum payloads reject keys outside their declared fields. Each
+decoder checks its own immediate map keys, including keys containing empty objects or arrays.
+Child decoders apply their own policies. Earlier reads, failed conversions, and reads through
+Node clones do not change which keys the current type permits.
 
 ```rust
-let config: MyConfig = node.as_type()?;
-node.ensure_no_unknown_keys()?;  // Error if config.json had keys we didn't read
+struct Settings {
+    timeout: u32,
+}
+
+impl FromNode for Settings {
+    fn from_node(node: &Node) -> Result<Self, NodeError> {
+        let result = Self { timeout: node.req("timeout")? };
+        node.ensure_only_keys(&["timeout"])?;
+        Ok(result)
+    }
+}
 ```
 
-Call `ensure_no_unknown_keys()` when the node represents the complete definition of your type. This catches typos and stale keys. Skip it when your type intentionally reads only some keys from a larger structure (e.g., reading shared settings from a config that other types also read from).
+Manual strict map decoders and map hooks own the same responsibility. They can call
+`ensure_only_keys` or delegate to a derived strict type. The accepted names are literal map keys.
+Unknown-key errors identify the rejected immediate entries, rather than all leaves below them.
 
-When using derive macros, this check is included by default. To disable it for a particular struct:
+To allow extra keys in a particular derived struct:
 
 ```rust
 use scry::Config;
@@ -136,10 +150,26 @@ use scry::Config;
 #[derive(Config)]
 #[scry(allow_unknown_keys)]
 struct LooseConfig {
-    // Only these fields are read; extra keys are ignored
+    // Extra keys in this object are ignored.
     name: String,
 }
 ```
+
+A strict parent accepts extras inside a declared permissive child. A permissive parent still
+delegates its declared child fields to their own decoders, which can be strict.
+
+Scry also retains a separate cumulative unread-input audit:
+
+```rust
+let shared_timeout: u32 = node.req("timeout")?;
+let shared_name: String = node.req("name")?;
+node.ensure_no_unknown_keys()?;
+```
+
+This audit recursively reports unread leaves after intentional partial reads. It observes shared
+read state, including reads through clones and some failed conversion attempts. Empty containers
+have no leaves and are not reported. Use it when the accumulated reads should account for the
+whole input. It is separate from structural validation of one configuration type.
 
 ## The Core Traits
 
@@ -420,12 +450,13 @@ impl FromNode for Rectangle {
             }
             (arr[0].as_type()?, arr[1].as_type()?)
         } else if let Some(side) = node.opt::<u32>("side")? {
+            node.ensure_only_keys(&["side"])?;
             (side, side)
         } else {
-            (node.req("width")?, node.req("height")?)
+            let dimensions = (node.req("width")?, node.req("height")?);
+            node.ensure_only_keys(&["width", "height"])?;
+            dimensions
         };
-
-        node.ensure_no_unknown_keys()?;
 
         if width == 0 {
             return Err(NodeError::invalid_value(&node.path, "width must be positive"));

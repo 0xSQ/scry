@@ -99,7 +99,7 @@ pub enum NodeError {
     #[error("cannot remove root node")]
     CannotRemoveRoot,
 
-    /// Unknown (unvisited) keys found in the config.
+    /// Keys rejected by structural validation or an unread-input audit.
     #[error("unknown config keys:\n{}", fmt_unknown_keys(paths))]
     UnknownKeys { paths: Vec<KeyPath> },
 

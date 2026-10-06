@@ -586,11 +586,34 @@ impl Node {
     // ------------------------------------------------------------------------------------------ //
     // Validation
 
-    /// Fails if the node contains unknown config keys.
+    /// Rejects immediate map keys outside the accepted set.
     ///
-    /// "Unknown" means leaf values present in the parsed config that were never read (visited)
-    /// while converting the node into a typed config (e.g., via `FromNode` / `Config` derive).
-    /// This catches typos and stale keys early.
+    /// Keys are literal and case-sensitive. Every unknown key is reported once, including keys
+    /// whose values are empty containers. Child decoders validate their own shapes. This check
+    /// neither consults nor changes leaf visit state.
+    ///
+    /// Derived named structs and named enum payloads use this check after decoding known fields.
+    /// Manual map decoders can use it to enforce the shape they own.
+    pub fn ensure_only_keys(&self, accepted: &[&str]) -> Result<(), NodeError> {
+        let paths: Vec<KeyPath> = self
+            .as_map()?
+            .keys()
+            .filter(|key| !accepted.contains(&key.as_str()))
+            .map(|key| self.path.push_key(key))
+            .collect();
+
+        if paths.is_empty() {
+            Ok(())
+        } else {
+            Err(NodeError::unknown_keys(&paths))
+        }
+    }
+
+    /// Rejects unread leaf values in a cumulative input audit.
+    ///
+    /// This recursively inspects shared visit state, including reads through Node clones. Empty
+    /// containers have no leaves and are not reported. Prior conversion attempts can mark a leaf
+    /// even when decoding fails. Use [`Self::ensure_only_keys`] for structural map validation.
     pub fn ensure_no_unknown_keys(&self) -> Result<(), NodeError> {
         let mut paths = Vec::new();
         self.collect_unknown_keys(&mut paths);

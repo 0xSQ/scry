@@ -323,7 +323,7 @@ impl FromNode for Files {
         if let Some(map) = node.as_opt_map() {
             if map.contains_key("sources") {
                 let sources = node.req::<Vec<SourceSpec>>("sources")?;
-                node.ensure_no_unknown_keys()?;
+                node.ensure_only_keys(&["sources"])?;
                 return Ok(Files { sources });
             }
 
@@ -374,7 +374,7 @@ impl FromNode for SourceSpec {
             let where_ = node.opt::<Option<WhereSpec>>("where")?.flatten();
             let sort: PathSort = node.opt("sort")?.unwrap_or_default();
 
-            node.ensure_no_unknown_keys()?;
+            node.ensure_only_keys(&["from", "where", "sort"])?;
             return Ok(SourceSpec { from, where_, sort });
         }
 
@@ -444,7 +444,7 @@ impl FromNode for FromSpec {
         if node.kind.is_map() {
             let root: OneOrMany<PathPatternSpec> = node.opt("root")?.unwrap_or_default();
             let prune: OneOrMany<PathPatternSpec> = node.opt("prune")?.unwrap_or_default();
-            node.ensure_no_unknown_keys()?;
+            node.ensure_only_keys(&["root", "prune"])?;
             return Ok(FromSpec { root, prune });
         }
 
@@ -479,7 +479,7 @@ impl FromNode for PathPatternSpec {
             let default_must_exist = syntax == PatternSyntax::Exact;
             let must_exist: bool = node.opt("must_exist")?.unwrap_or(default_must_exist);
             let recursive: bool = node.opt("recursive")?.unwrap_or(true);
-            node.ensure_no_unknown_keys()?;
+            node.ensure_only_keys(&["path", "syntax", "must_exist", "recursive"])?;
             return Ok(PathPatternSpec {
                 path,
                 syntax,
@@ -524,7 +524,7 @@ impl FromNode for WhereSpec {
         let stem = node.opt::<Option<AttrRuleSpec>>("stem")?.flatten();
         let ext = node.opt::<Option<AttrRuleSpec>>("ext")?.flatten();
 
-        node.ensure_no_unknown_keys()?;
+        node.ensure_only_keys(&["case", "path", "name", "stem", "ext"])?;
         Ok(WhereSpec {
             case,
             path,
@@ -585,7 +585,7 @@ impl FromNode for AttrRuleSpec {
         if node.kind.is_map() {
             let include: OneOrMany<TextPatternSpec> = node.opt("include")?.unwrap_or_default();
             let exclude: OneOrMany<TextPatternSpec> = node.opt("exclude")?.unwrap_or_default();
-            node.ensure_no_unknown_keys()?;
+            node.ensure_only_keys(&["include", "exclude"])?;
             return Ok(AttrRuleSpec { include, exclude });
         }
 
@@ -617,7 +617,7 @@ impl FromNode for TextPatternSpec {
                 Some(syntax) => syntax,
                 None => auto_detect_text_syntax(&pattern),
             };
-            node.ensure_no_unknown_keys()?;
+            node.ensure_only_keys(&["pattern", "syntax"])?;
             return Ok(TextPatternSpec { pattern, syntax });
         }
 

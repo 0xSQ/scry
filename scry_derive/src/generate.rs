@@ -152,10 +152,16 @@ fn generate_struct_from_node(info: &StructInfo) -> syn::Result<TokenStream> {
             let field_parsers: Vec<TokenStream> =
                 fields.iter().map(generate_field_parser).collect();
 
-            let ensure_no_unknown_keys = if info.allow_unknown_keys {
+            let validate_keys = if info.allow_unknown_keys {
                 quote! {}
             } else {
-                quote! { node.ensure_no_unknown_keys()?; }
+                let keys: Vec<String> = fields
+                    .iter()
+                    .map(|field| {
+                        field.attrs.rename.clone().unwrap_or_else(|| field.ident.to_string())
+                    })
+                    .collect();
+                quote! { node.ensure_only_keys(&[#(#keys),*])?; }
             };
 
             Ok(quote! {
@@ -165,7 +171,7 @@ fn generate_struct_from_node(info: &StructInfo) -> syn::Result<TokenStream> {
                         let result = Self {
                             #(#field_parsers),*
                         };
-                        #ensure_no_unknown_keys
+                        #validate_keys
                         Ok(result)
                     }
                 }
@@ -364,13 +370,19 @@ fn generate_enum_from_node(info: &EnumInfo) -> syn::Result<TokenStream> {
                     let field_parsers: Vec<TokenStream> =
                         fields.iter().map(generate_struct_variant_field_parser).collect();
                     let field_names: Vec<&syn::Ident> = fields.iter().map(|f| &f.ident).collect();
+                    let field_keys: Vec<String> = fields
+                        .iter()
+                        .map(|field| {
+                            field.attrs.rename.clone().unwrap_or_else(|| field.ident.to_string())
+                        })
+                        .collect();
 
                     quote! {
                         payload.as_map()?;
                         let result = #enum_name::#v_ident {
                             #(#field_names: #field_parsers),*
                         };
-                        payload.ensure_no_unknown_keys()?;
+                        payload.ensure_only_keys(&[#(#field_keys),*])?;
                         Ok(result)
                     }
                 }
