@@ -88,10 +88,6 @@ pub fn from_defaults<T: FromDefaults>() -> Result<T, NodeError> {
     T::from_defaults_at(&KeyPath::new())
 }
 
-// Re-export probe machinery for derive macro (hidden from docs).
-#[doc(hidden)]
-pub use desc::{make_desc_probe, DescFallback};
-
 // Re-export third-party types needed by derive macro expansions (hidden from docs).
 #[doc(hidden)]
 pub mod _private {

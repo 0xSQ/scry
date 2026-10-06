@@ -504,54 +504,12 @@ fn parse_named_fields(fields: &syn::FieldsNamed) -> Result<Vec<FieldInfo>> {
 
 /// Checks if the type is Option<T>.
 pub fn is_option_type(ty: &Type) -> bool {
-    get_wrapper_kind(ty) == Some("Option")
-}
-
-/// Checks if the type is Vec<T>.
-pub fn is_vec_type(ty: &Type) -> bool {
-    get_wrapper_kind(ty) == Some("Vec")
-}
-
-/// Returns the wrapper kind if the type is Option, Vec, or Arc.
-pub fn get_wrapper_kind(ty: &Type) -> Option<&'static str> {
     if let Type::Path(type_path) = ty {
         if let Some(segment) = type_path.path.segments.last() {
-            return match segment.ident.to_string().as_str() {
-                "Option" => Some("Option"),
-                "Vec" => Some("Vec"),
-                "Arc" => Some("Arc"),
-                _ => None,
-            };
+            return segment.ident == "Option";
         }
     }
-    None
-}
-
-/// Extracts inner type from Option<T>, Vec<T>, or Arc<T>.
-///
-/// Returns None if not a wrapper type.
-pub fn unwrap_inner_type(ty: &Type) -> Option<&Type> {
-    if let Type::Path(type_path) = ty {
-        if let Some(segment) = type_path.path.segments.last() {
-            if segment.ident == "Option" || segment.ident == "Vec" || segment.ident == "Arc" {
-                if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
-                    if let Some(syn::GenericArgument::Type(inner)) = args.args.first() {
-                        return Some(inner);
-                    }
-                }
-            }
-        }
-    }
-    None
-}
-
-/// Recursively unwraps through Arc, Option, Vec to get the base type.
-pub fn unwrap_to_base_type(ty: &Type) -> &Type {
-    if let Some(inner) = unwrap_inner_type(ty) {
-        unwrap_to_base_type(inner)
-    } else {
-        ty
-    }
+    false
 }
 
 // ---------------------------------------------------------------------------------------------- //

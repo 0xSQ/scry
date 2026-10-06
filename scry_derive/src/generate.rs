@@ -7,8 +7,8 @@ use quote::quote;
 use syn::DeriveInput;
 
 use crate::parse::{
-    self, is_option_type, is_vec_type, rename_all_variant, unwrap_inner_type, unwrap_to_base_type,
-    DeriveTarget, EnumInfo, FieldFallback, FieldInfo, StructFields, StructInfo, VariantData,
+    self, is_option_type, rename_all_variant, DeriveTarget, EnumInfo, FieldFallback, FieldInfo,
+    StructFields, StructInfo, VariantData,
 };
 
 // ---------------------------------------------------------------------------------------------- //
@@ -782,8 +782,7 @@ fn generate_struct_describe(info: &StructInfo) -> syn::Result<TokenStream> {
                 Ok(quote! {
                     impl #scry::Describe for #struct_name {
                         fn describe() -> #scry::Desc {
-                            use #scry::DescFallback;
-                            #scry::make_desc_probe::<#ty>().describe().unwrap_or_else(#scry::Desc::default)
+                            <#ty as #scry::Describe>::describe()
                         }
                     }
                 })
@@ -793,10 +792,7 @@ fn generate_struct_describe(info: &StructInfo) -> syn::Result<TokenStream> {
                     .iter()
                     .map(|ty| {
                         quote! {
-                            {
-                                use #scry::DescFallback;
-                                #scry::make_desc_probe::<#ty>().describe().unwrap_or_else(#scry::Desc::default)
-                            }
+                            <#ty as #scry::Describe>::describe()
                         }
                     })
                     .collect();
@@ -843,36 +839,7 @@ fn generate_field_desc(field: &FieldInfo, scry: &TokenStream) -> TokenStream {
     let value_expr = if let Some(ref desc_fn) = field.attrs.describe_with {
         quote! { #desc_fn() }
     } else {
-        // Unwrap Option<T> to get the inner type for desc generation
-        let desc_ty = if is_option_type(ty) {
-            unwrap_inner_type(ty).unwrap_or(ty).clone()
-        } else {
-            ty.clone()
-        };
-
-        // Check if this is a Vec type
-        let is_list = is_vec_type(&desc_ty);
-
-        // Get the base type for desc lookup (fully unwrapped)
-        let base_ty = unwrap_to_base_type(&desc_ty);
-
-        // Generate the value Desc
-        if is_list {
-            quote! {
-                {
-                    use #scry::DescFallback;
-                    let inner = #scry::make_desc_probe::<#base_ty>().describe().unwrap_or_else(#scry::Desc::default);
-                    #scry::Desc::list(inner)
-                }
-            }
-        } else {
-            quote! {
-                {
-                    use #scry::DescFallback;
-                    #scry::make_desc_probe::<#base_ty>().describe().unwrap_or_else(#scry::Desc::default)
-                }
-            }
-        }
+        quote! { <#ty as #scry::Describe>::describe() }
     };
     let value_expr = if matches!(field.attrs.fallback, FieldFallback::FromDefaults) {
         value_expr
@@ -954,10 +921,7 @@ fn generate_enum_describe(info: &EnumInfo) -> syn::Result<TokenStream> {
                     #scry::desc::VariantDesc::payload(
                         #key,
                         #is_default,
-                        {
-                            use #scry::DescFallback;
-                            #scry::make_desc_probe::<#ty>().describe().unwrap_or_else(#scry::Desc::default)
-                        }
+                        <#ty as #scry::Describe>::describe()
                     ).with_doc(#variant_doc)
                 });
             }
@@ -967,10 +931,7 @@ fn generate_enum_describe(info: &EnumInfo) -> syn::Result<TokenStream> {
                     .iter()
                     .map(|ty| {
                         quote! {
-                            {
-                                use #scry::DescFallback;
-                                #scry::make_desc_probe::<#ty>().describe().unwrap_or_else(#scry::Desc::default)
-                            }
+                            <#ty as #scry::Describe>::describe()
                         }
                     })
                     .collect();

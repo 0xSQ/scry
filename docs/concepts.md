@@ -654,6 +654,44 @@ println!("{}", ServerConfig::describe().display());
 
 Doc comments on fields become descriptions in the output.
 
+Descriptions compose through the complete Rust type. `Vec<Vec<u32>>` and a type alias for it both
+produce `list[list[u32]]`, and paths such as `samples[0][1]` can select the inner element description.
+References, `Box`, `Rc`, and `Arc` forward the inner description. Raw `Node` fields have an opaque
+`value | null` description because their contents can have any shape.
+
+Nullability belongs to the value description and is separate from field omission:
+
+```rust
+use scry::Describe;
+
+#[derive(Describe)]
+struct Samples {
+    values: Vec<Option<u32>>,
+    limit: Option<u32>,
+    #[scry(default = 0)]
+    retries: u32,
+}
+```
+
+The resulting field labels are:
+
+```text
+◆ values: list[u32 | null]
+◇ limit: u32 | null
+◇ retries: u32 → 0
+```
+
+`values` is required and its elements accept null. `limit` can be omitted and accepts a present null.
+`retries` can be omitted but rejects a present null. `FieldDesc.optional` records omission, while
+`Desc.nullable` records acceptance of null alongside the described shape. A nullable structured
+value retains its children and enum choices. Repeated `Option` layers share one nullable shape.
+This does not change how missing keys select defaults. A type alias hiding `Option<T>` still needs
+an explicit fallback to permit omission.
+
+Every field described by a derive needs `Describe` or a `describe_with` hook. A missing
+implementation is a compiler error. Use a labelled plain description for an intentionally opaque
+custom value.
+
 ### Implementing Describe Manually
 
 For simple types, return a plain description:
@@ -692,3 +730,8 @@ fn color_desc() -> Desc {
     Desc::plain("hex color")
 }
 ```
+
+The hook describes the complete field value and replaces native delegation. For a nullable custom
+value, return a description such as `Desc::plain("hex color").nullable()`. The derive does not infer
+nullability or container shape for a custom hook. Field documentation, omission policy, and displayed
+defaults still apply separately.

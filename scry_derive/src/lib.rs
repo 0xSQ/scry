@@ -73,6 +73,11 @@ pub fn derive_string_enum(input: TokenStream) -> TokenStream {
 }
 
 /// Derives `Describe` for generating configuration descriptions.
+///
+/// Delegates to each complete field type, preserving nested containers and nullable values.
+/// Named fields can replace that delegation with `#[scry(describe_with(function))]`. The function
+/// returns a `Desc` for the complete value, including its nullability. Every other field type must
+/// implement `Describe`. Missing implementations are compile-time errors.
 #[proc_macro_derive(Describe, attributes(scry))]
 pub fn derive_describe(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
