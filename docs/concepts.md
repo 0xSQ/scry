@@ -192,6 +192,37 @@ string conversion when requested with `#[scry(from_str)]`.
 individual fields without implementing the full trait. `FromDefaults` is selected explicitly with
 the `#[scry(from_defaults)]` field policy described below.
 
+### Generic Configuration Types
+
+Derives preserve type and const parameters, lifetimes, parameter defaults, and user-written
+`where` clauses. Each generated operation adds the bounds needed by the complete field types it
+uses. For example, `FromNode` requires `[T; N]: FromNode` for this field, while `Describe` and
+`ToNode` require their own corresponding operations:
+
+```rust
+use scry::{Config, ToNode};
+
+#[derive(Config, ToNode)]
+struct Samples<T = u16, const N: usize = 2> {
+    values: [T; N],
+}
+```
+
+A field of type `T::Value` places its Scry requirement on the associated value type, rather than
+requiring the owner `T` to implement that operation. A `*_with` hook replaces only its corresponding
+native requirement. Hooks and arbitrary default expressions may need additional constraints that
+the caller supplies. An explicit default expression does not require Rust's `Default` trait.
+Named `FromDefaults` implementations delegate to the type's `FromNode` implementation. A unit enum
+default can be constructed without requiring the enum's payload types to support decoding.
+
+Derives avoid inferring circular bounds for fields that mention `Self`, the unqualified enclosing
+type name, or `self::TypeName`. Finite recursive input and output through supported containers such
+as `Vec<Self>` use the current implementation and the other field bounds. Use these local spellings
+for recursive references because a derive cannot resolve aliases or arbitrary module paths.
+Unusual recursive shapes may need caller-written constraints. Descriptions build an ordinary tree,
+so recursive descriptions need a custom hook that returns a finite shape. Preserving a lifetime
+parameter does not make `FromNode` a borrowing deserializer.
+
 ## FromNode
 
 `FromNode` defines how to parse a `Node` into a Rust type:
@@ -513,6 +544,33 @@ original concrete cause and its own error chain. Primitive string conversions al
 integer, float, or boolean parser errors. A locationless filesystem or format error can carry an
 enclosing configuration location without changing its original filesystem path or cause.
 
+### Hooks on Positional Fields
+
+The three field hooks also work on transparent newtypes, tuple structs, and positional enum
+payloads. Their functions receive or return the complete field type, including `Option<T>`:
+
+```rust
+use scry::{FromNode, Node, NodeError};
+
+#[derive(FromNode)]
+struct Positive(#[scry(from_node_with(read_positive))] u32);
+
+fn read_positive(node: &Node) -> Result<u32, NodeError> {
+    let value = node.as_type::<u32>()?;
+    if value == 0 {
+        return Err(NodeError::invalid_value(&node.path, "must be positive"));
+    }
+    Ok(value)
+}
+```
+
+`Positive` still decodes directly from a scalar. A multi-field tuple still requires an array of
+exactly its declared length, and an enum payload retains its variant key. Positional hooks use
+those same input locations and serialization error prefixes as native operations.
+
+Positional fields reject `rename`, `default = EXPR`, and `from_defaults`. They have no named key to
+rename or omit. A present null still goes through the complete field's parser or hook.
+
 ## FromDefaults
 
 `FromDefaults` constructs a config value by applying its Scry field policies at a logical config
@@ -688,6 +746,13 @@ println!("{}", ServerConfig::describe().display());
 ```
 
 Doc comments on fields become descriptions in the output.
+
+The first paragraph of a type's documentation becomes the root description. Named fields keep
+their own prose separately from the value's type description. A positional field's nonempty prose
+overrides its delegated value prose. On a transparent newtype, nonempty type prose takes priority
+over positional field prose, which takes priority over the inner type or hook's prose. An absent
+override preserves the delegated prose. Enum variant prose and positional payload prose remain
+separate.
 
 Descriptions compose through the complete Rust type. `Vec<Vec<u32>>` and a type alias for it both
 produce `list[list[u32]]`, and paths such as `samples[0][1]` can select the inner element description.

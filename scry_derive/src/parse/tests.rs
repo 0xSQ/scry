@@ -369,6 +369,244 @@ fn rust_default_marker_is_unrelated() {
     assert!(info.variants.iter().all(|variant| !variant.attrs.is_default));
 }
 
+#[test]
+fn generic_declarations_defaults_and_where_clauses_are_preserved() {
+    let inputs: [DeriveInput; 2] = [
+        syn::parse_quote! {
+            struct Container<'a, T: Clone = String, const N: usize = 2>
+            where
+                T: 'a,
+            {
+                values: &'a [T; N],
+            }
+        },
+        syn::parse_quote! {
+            enum Container<'a, T: Clone = String, const N: usize = 2>
+            where
+                T: 'a,
+            {
+                Values(&'a [T; N]),
+            }
+        },
+    ];
+
+    for input in inputs {
+        let parsed = parse_input(&input).unwrap();
+        let generics = match &parsed {
+            DeriveTarget::Struct(info) => &info.generics,
+            DeriveTarget::Enum(info) => &info.generics,
+        };
+        let original = &input.generics;
+        let where_clause = &generics.where_clause;
+        let original_where_clause = &original.where_clause;
+
+        assert_eq!(quote::quote!(#generics).to_string(), quote::quote!(#original).to_string());
+        assert_eq!(
+            quote::quote!(#where_clause).to_string(),
+            quote::quote!(#original_where_clause).to_string(),
+        );
+        assert!(generics.type_params().next().unwrap().default.is_some());
+        assert!(generics.const_params().next().unwrap().default.is_some());
+    }
+}
+
+#[test]
+fn container_variant_and_field_doc_summaries_are_preserved_for_all_shapes() {
+    let named: DeriveInput = syn::parse_quote! {
+        /// Named container.
+        ///
+        /// Additional explanation.
+        struct Named {
+            /// Named value.
+            /// More summary text.
+            value: u16,
+        }
+    };
+    let DeriveTarget::Struct(info) = parse_input(&named).unwrap() else {
+        panic!("expected a struct");
+    };
+    let StructFields::Named(fields) = info.fields else {
+        panic!("expected named fields");
+    };
+    assert_eq!(info.doc, "Named container.");
+    assert_eq!(fields[0].doc, "Named value. More summary text.");
+
+    let tuple: DeriveInput = syn::parse_quote! {
+        /// Positional container.
+        struct Tuple(
+            /// First value.
+            u16,
+            /// Second value.
+            String,
+        );
+    };
+    let DeriveTarget::Struct(info) = parse_input(&tuple).unwrap() else {
+        panic!("expected a struct");
+    };
+    let StructFields::Tuple(fields) = info.fields else {
+        panic!("expected positional fields");
+    };
+    assert_eq!(info.doc, "Positional container.");
+    assert_eq!(fields[0].doc, "First value.");
+    assert_eq!(fields[1].doc, "Second value.");
+    assert!(matches!(fields[0].member, Member::Unnamed(syn::Index { index: 0, .. })));
+    assert!(matches!(fields[1].member, Member::Unnamed(syn::Index { index: 1, .. })));
+
+    let variants: DeriveInput = syn::parse_quote! {
+        /// Enum container.
+        enum Container {
+            /// Unit variant.
+            Empty,
+            /// Positional variant.
+            Values(
+                /// Variant value.
+                u16,
+            ),
+            /// Named variant.
+            Named {
+                /// Variant field.
+                value: u16,
+            },
+        }
+    };
+    let DeriveTarget::Enum(info) = parse_input(&variants).unwrap() else {
+        panic!("expected an enum");
+    };
+    assert_eq!(info.doc, "Enum container.");
+    assert_eq!(info.variants[0].doc, "Unit variant.");
+    assert_eq!(info.variants[1].doc, "Positional variant.");
+    assert_eq!(info.variants[2].doc, "Named variant.");
+    let VariantData::Tuple(fields) = &info.variants[1].data else {
+        panic!("expected positional variant fields");
+    };
+    assert_eq!(fields[0].doc, "Variant value.");
+    let VariantData::Struct(fields) = &info.variants[2].data else {
+        panic!("expected named variant fields");
+    };
+    assert_eq!(fields[0].doc, "Variant field.");
+}
+
+#[test]
+fn positional_fields_accept_all_three_hooks() {
+    let inputs: [DeriveInput; 2] = [
+        syn::parse_quote! {
+            struct Value(
+                #[scry(from_node_with(adapter::read), to_node_with(adapter::write),
+                       describe_with(adapter::describe))]
+                Foreign,
+            );
+        },
+        syn::parse_quote! {
+            enum Value {
+                Payload(
+                    u16,
+                    #[scry(from_node_with(adapter::read), to_node_with(adapter::write),
+                           describe_with(adapter::describe))]
+                    Foreign,
+                ),
+            }
+        },
+    ];
+
+    for input in inputs {
+        let parsed = parse_input(&input).unwrap();
+        let fields = match &parsed {
+            DeriveTarget::Struct(StructInfo {
+                fields: StructFields::Tuple(fields),
+                ..
+            }) => fields,
+            DeriveTarget::Enum(info) => match &info.variants[0].data {
+                VariantData::Tuple(fields) => fields,
+                _ => panic!("expected positional variant fields"),
+            },
+            _ => panic!("expected positional fields"),
+        };
+        let attrs = &fields.last().unwrap().attrs;
+        let from = &attrs.from_node_with;
+        let to = &attrs.to_node_with;
+        let describe = &attrs.describe_with;
+        assert_eq!(quote::quote!(#from).to_string(), "adapter :: read");
+        assert_eq!(quote::quote!(#to).to_string(), "adapter :: write");
+        assert_eq!(quote::quote!(#describe).to_string(), "adapter :: describe");
+    }
+}
+
+#[test]
+fn positional_rename_and_fallbacks_have_targeted_errors() {
+    let inputs: [(DeriveInput, &str); 6] = [
+        (syn::parse_quote! { struct Value(#[scry(rename = "key")] u16); }, "rename"),
+        (syn::parse_quote! { enum Value { Payload(#[scry(rename = "key")] u16) } }, "rename"),
+        (syn::parse_quote! { struct Value(#[scry(default = 0)] u16); }, "default = EXPR"),
+        (syn::parse_quote! { enum Value { Payload(#[scry(default = 0)] u16) } }, "default = EXPR"),
+        (syn::parse_quote! { struct Value(#[scry(from_defaults)] Option<u16>); }, "from_defaults"),
+        (
+            syn::parse_quote! { enum Value { Payload(#[scry(from_defaults)] Option<u16>) } },
+            "from_defaults",
+        ),
+    ];
+
+    for (input, attribute) in inputs {
+        let error = parse_input_error(&input);
+        assert!(error.contains(&format!("`{attribute}` is not supported on positional fields")));
+        if attribute == "rename" {
+            assert!(error.contains("positional fields use indices"));
+        } else {
+            assert!(error.contains("positional fields must be present"));
+        }
+    }
+}
+
+#[test]
+fn named_member_and_literal_configuration_key_are_distinct() {
+    let input: DeriveInput = syn::parse_quote! {
+        struct Value {
+            #[scry(rename = "server.port")]
+            port: u16,
+            name: String,
+        }
+    };
+    let DeriveTarget::Struct(info) = parse_input(&input).unwrap() else {
+        panic!("expected a struct");
+    };
+    let StructFields::Named(fields) = info.fields else {
+        panic!("expected named fields");
+    };
+
+    assert!(matches!(&fields[0].member, Member::Named(ident) if ident == "port"));
+    assert_eq!(fields[0].config_key(), "server.port");
+    assert_eq!(fields[1].config_key(), "name");
+}
+
+#[test]
+fn option_detection_requires_one_written_type_argument() {
+    let options: [Type; 2] = [
+        syn::parse_quote! { Option<u16> },
+        syn::parse_quote! { std::option::Option<u16> },
+    ];
+    let other_types: [Type; 5] = [
+        syn::parse_quote! { Option },
+        syn::parse_quote! { Option<> },
+        syn::parse_quote! { Option<u16, u32> },
+        syn::parse_quote! { Option<'a> },
+        syn::parse_quote! { Option<2> },
+    ];
+
+    assert!(options.iter().all(is_option_type));
+    assert!(other_types.iter().all(|ty| !is_option_type(ty)));
+}
+
+#[test]
+fn generic_parameter_named_option_can_use_scry_defaults() {
+    let input: DeriveInput = syn::parse_quote! {
+        struct Container<Option> {
+            #[scry(from_defaults)]
+            value: Option,
+        }
+    };
+
+    assert!(parse_input(&input).is_ok());
+}
+
 fn field_attrs_error(field: &syn::Field) -> String {
     match FieldAttrs::from_attrs(&field.attrs) {
         Ok(_) => panic!("expected field attributes to be rejected"),

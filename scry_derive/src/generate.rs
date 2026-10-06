@@ -3,8 +3,10 @@
 use std::collections::HashSet;
 
 use proc_macro2::{Ident, Span, TokenStream};
-use quote::quote;
-use syn::DeriveInput;
+use quote::{quote, ToTokens};
+use syn::spanned::Spanned;
+use syn::visit::{self, Visit};
+use syn::{DeriveInput, Generics, Member};
 
 use crate::parse::{
     self, is_option_type, rename_all_variant, DeriveTarget, EnumInfo, FieldFallback, FieldInfo,
@@ -61,11 +63,19 @@ pub fn derive_describe_impl(input: &DeriveInput) -> syn::Result<TokenStream> {
 /// Produces `FromNode` for parsing and `Describe` for documentation.
 /// This is the recommended derive for config types.
 pub fn derive_config_impl(input: &DeriveInput) -> syn::Result<TokenStream> {
-    let from_node = derive_from_node_impl(input)?;
-    let desc = derive_describe_impl(input)?;
-    let (from_defaults, string_enum) = match parse::parse_input(input)? {
-        DeriveTarget::Struct(info) if matches!(&info.fields, StructFields::Named(_)) => {
-            (generate_struct_from_defaults(&info)?, quote! {})
+    let (from_node, desc, from_defaults, string_enum) = match parse::parse_input(input)? {
+        DeriveTarget::Struct(info) => {
+            let defaults = if matches!(&info.fields, StructFields::Named(_)) {
+                generate_struct_from_defaults(&info)?
+            } else {
+                quote! {}
+            };
+            (
+                generate_struct_from_node(&info)?,
+                generate_struct_describe(&info)?,
+                defaults,
+                quote! {},
+            )
         }
         DeriveTarget::Enum(info) => {
             let from_defaults = generate_enum_from_defaults(&info, false)?;
@@ -74,9 +84,13 @@ pub fn derive_config_impl(input: &DeriveInput) -> syn::Result<TokenStream> {
             } else {
                 quote! {}
             };
-            (from_defaults, string_enum)
+            (
+                generate_enum_from_node(&info)?,
+                generate_enum_describe(&info)?,
+                from_defaults,
+                string_enum,
+            )
         }
-        _ => (quote! {}, quote! {}),
     };
     Ok(quote! {
         #from_node
@@ -100,12 +114,15 @@ fn generate_struct_from_defaults(info: &StructInfo) -> syn::Result<TokenStream> 
     }
 
     let scry = scry_crate_path();
+    let mut generics = info.generics.clone();
+    generics.make_where_clause().predicates.push(syn::parse_quote!(Self: #scry::FromNode));
+    let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
 
     Ok(quote! {
-        impl #scry::FromDefaults for #struct_name {
+        impl #impl_generics #scry::FromDefaults for #struct_name #type_generics #where_clause {
             fn from_defaults_at(
                 path: &#scry::KeyPath,
-            ) -> Result<Self, #scry::NodeError> {
+            ) -> ::core::result::Result<Self, #scry::NodeError> {
                 <Self as #scry::FromNode>::from_node(
                     &#scry::Node::empty_map_at(path.clone()),
                 )
@@ -131,12 +148,13 @@ fn generate_enum_from_defaults(info: &EnumInfo, require_default: bool) -> syn::R
 
     let scry = scry_crate_path();
     let variant_name = &default_variant.ident;
+    let (impl_generics, type_generics, where_clause) = info.generics.split_for_impl();
 
     Ok(quote! {
-        impl #scry::FromDefaults for #enum_name {
+        impl #impl_generics #scry::FromDefaults for #enum_name #type_generics #where_clause {
             fn from_defaults_at(
                 _path: &#scry::KeyPath,
-            ) -> Result<Self, #scry::NodeError> {
+            ) -> ::core::result::Result<Self, #scry::NodeError> {
                 Ok(Self::#variant_name)
             }
         }
@@ -146,28 +164,29 @@ fn generate_enum_from_defaults(info: &EnumInfo, require_default: bool) -> syn::R
 fn generate_struct_from_node(info: &StructInfo) -> syn::Result<TokenStream> {
     let scry = scry_crate_path();
     let struct_name = &info.ident;
+    let node = private_ident("node");
+    let arr = private_ident("array");
+    let generics = struct_generics(info, Operation::FromNode, &scry);
+    let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
 
     match &info.fields {
         StructFields::Named(fields) => {
-            let field_parsers: Vec<TokenStream> =
-                fields.iter().map(generate_field_parser).collect();
+            let field_parsers: Vec<TokenStream> = fields
+                .iter()
+                .map(|field| generate_field_parser(field, &quote! { #node }))
+                .collect();
 
             let validate_keys = if info.allow_unknown_keys {
                 quote! {}
             } else {
-                let keys: Vec<String> = fields
-                    .iter()
-                    .map(|field| {
-                        field.attrs.rename.clone().unwrap_or_else(|| field.ident.to_string())
-                    })
-                    .collect();
-                quote! { node.ensure_only_keys(&[#(#keys),*])?; }
+                let keys: Vec<String> = fields.iter().map(FieldInfo::config_key).collect();
+                quote! { #node.ensure_only_keys(&[#(#keys),*])?; }
             };
 
             Ok(quote! {
-                impl #scry::FromNode for #struct_name {
-                    fn from_node(node: &#scry::Node) -> Result<Self, #scry::NodeError> {
-                        node.as_map()?;
+                impl #impl_generics #scry::FromNode for #struct_name #type_generics #where_clause {
+                    fn from_node(#node: &#scry::Node) -> ::core::result::Result<Self, #scry::NodeError> {
+                        #node.as_map()?;
                         let result = Self {
                             #(#field_parsers),*
                         };
@@ -177,30 +196,39 @@ fn generate_struct_from_node(info: &StructInfo) -> syn::Result<TokenStream> {
                 }
             })
         }
-        StructFields::Tuple(types) => {
-            if types.len() == 1 {
+        StructFields::Tuple(fields) => {
+            if fields.len() == 1 {
                 // Newtype: parse as inner type directly
+                let value = generate_present_field_parser(&fields[0], &quote! { #node });
                 Ok(quote! {
-                    impl #scry::FromNode for #struct_name {
-                        fn from_node(node: &#scry::Node) -> Result<Self, #scry::NodeError> {
-                            Ok(Self(node.as_type()?))
+                    impl #impl_generics #scry::FromNode for #struct_name #type_generics #where_clause {
+                        fn from_node(#node: &#scry::Node) -> ::core::result::Result<Self, #scry::NodeError> {
+                            Ok(Self(#value?))
                         }
                     }
                 })
             } else {
                 // Tuple: parse from array
-                let field_count = types.len();
-                let field_indices: Vec<usize> = (0..field_count).collect();
+                let field_count = fields.len();
+                let field_parsers: Vec<TokenStream> = fields
+                    .iter()
+                    .enumerate()
+                    .map(|(index, field)| {
+                        let input = quote! { &#arr[#index] };
+                        let value = generate_present_field_parser(field, &input);
+                        quote! { #value? }
+                    })
+                    .collect();
 
                 Ok(quote! {
-                    impl #scry::FromNode for #struct_name {
-                        fn from_node(node: &#scry::Node) -> Result<Self, #scry::NodeError> {
-                            let arr = node.as_vec()?;
-                            if arr.len() != #field_count {
-                                return Err(#scry::NodeError::array_length(&node.path, #field_count, arr.len()));
+                    impl #impl_generics #scry::FromNode for #struct_name #type_generics #where_clause {
+                        fn from_node(#node: &#scry::Node) -> ::core::result::Result<Self, #scry::NodeError> {
+                            let #arr = #node.as_vec()?;
+                            if #arr.len() != #field_count {
+                                return Err(#scry::NodeError::array_length(&#node.path, #field_count, #arr.len()));
                             }
                             Ok(Self(
-                                #(arr[#field_indices].as_type()?),*
+                                #(#field_parsers),*
                             ))
                         }
                     }
@@ -210,9 +238,9 @@ fn generate_struct_from_node(info: &StructInfo) -> syn::Result<TokenStream> {
     }
 }
 
-fn generate_field_parser(field: &FieldInfo) -> TokenStream {
-    let field_name = &field.ident;
-    let value = generate_field_value_parser(field, &quote! { node });
+fn generate_field_parser(field: &FieldInfo, parent: &TokenStream) -> TokenStream {
+    let field_name = &field.member;
+    let value = generate_field_value_parser(field, parent);
 
     quote! {
         #field_name: #value
@@ -223,14 +251,9 @@ fn generate_field_parser(field: &FieldInfo) -> TokenStream {
 fn generate_field_value_parser(field: &FieldInfo, parent: &TokenStream) -> TokenStream {
     let scry = scry_crate_path();
     let ty = &field.ty;
-    let key = field.attrs.rename.clone().unwrap_or_else(|| field.ident.to_string());
+    let key = field.config_key();
     let input = Ident::new("__scry_field_node", Span::mixed_site());
-    let present = match &field.attrs.from_node_with {
-        Some(func_path) => quote! {
-            #func_path(#input).map_err(|error| error.at_path(&#input.path))?
-        },
-        None => quote! { #input.as_type::<#ty>()? },
-    };
+    let present = generate_present_field_parser(field, &quote! { #input });
     let missing = match &field.attrs.fallback {
         FieldFallback::Expression(expr) => quote! { #expr },
         FieldFallback::FromDefaults => quote! {
@@ -244,7 +267,7 @@ fn generate_field_value_parser(field: &FieldInfo, parent: &TokenStream) -> Token
 
     quote! {
         match #parent.opt_node(#scry::KeyPath::from_keys([#key]))? {
-            Some(#input) => #present,
+            Some(#input) => #present?,
             None => #missing,
         }
     }
@@ -253,6 +276,13 @@ fn generate_field_value_parser(field: &FieldInfo, parent: &TokenStream) -> Token
 fn generate_enum_from_node(info: &EnumInfo) -> syn::Result<TokenStream> {
     let scry = scry_crate_path();
     let enum_name = &info.ident;
+    let node = private_ident("node");
+    let payload = private_ident("payload");
+    let arr = private_ident("array");
+    let map = private_ident("input_map");
+    let variant_key = private_ident("variant_key");
+    let generics = enum_generics(info, Operation::FromNode, &scry);
+    let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
 
     // Collect variant info
     let mut unit_variants: Vec<(String, &syn::Ident)> = Vec::new();
@@ -316,7 +346,7 @@ fn generate_enum_from_node(info: &EnumInfo) -> syn::Result<TokenStream> {
                 key, key
             );
             Some(quote! {
-                #(#spellings)|* => return Err(#scry::NodeError::invalid_value(&node.path, #msg))
+                #(#spellings)|* => return Err(#scry::NodeError::invalid_value(&#node.path, #msg))
             })
         })
         .collect();
@@ -327,7 +357,7 @@ fn generate_enum_from_node(info: &EnumInfo) -> syn::Result<TokenStream> {
         .map(|(key, v_ident, data)| {
             let parse_payload = match data {
                 VariantData::Unit => unreachable!(),
-                VariantData::Tuple(types) if types.len() == 1 => {
+                VariantData::Tuple(fields) if fields.len() == 1 => {
                     // Single-field tuple: payload is the value directly
                     // Parse first, then add helpful hint if it fails on a 1-element array
                     let hint_msg = format!(
@@ -335,15 +365,16 @@ fn generate_enum_from_node(info: &EnumInfo) -> syn::Result<TokenStream> {
                         use {{\"{}\": <value>}} instead of {{\"{}\": [<value>]}}",
                         key, key
                     );
+                    let value = generate_present_field_parser(&fields[0], &quote! { #payload });
                     quote! {
-                        match payload.as_type() {
+                        match #value {
                             Ok(v) => Ok(#enum_name::#v_ident(v)),
                             Err(e) => {
                                 // Add hint for common "accidental brackets" mistake
-                                if let Some(arr) = payload.as_opt_vec() {
-                                    if arr.len() == 1 {
+                                if let Some(#arr) = #payload.as_opt_vec() {
+                                    if #arr.len() == 1 {
                                         return Err(#scry::NodeError::invalid_value_with_source(
-                                            &payload.path,
+                                            &#payload.path,
                                             format!("failed to parse variant '{}': {} ({})", #key, e, #hint_msg),
                                             e,
                                         ));
@@ -354,16 +385,18 @@ fn generate_enum_from_node(info: &EnumInfo) -> syn::Result<TokenStream> {
                         }
                     }
                 }
-                VariantData::Tuple(types) => {
+                VariantData::Tuple(fields) => {
                     // Multi-field tuple: payload is an array
-                    let field_count = types.len();
-                    let field_parsers: Vec<TokenStream> =
-                        (0..field_count).map(|i| quote! { arr[#i].as_type()? }).collect();
+                    let field_count = fields.len();
+                    let field_parsers: Vec<TokenStream> = fields.iter().enumerate().map(|(index, field)| {
+                        let value = generate_present_field_parser(field, &quote! { &#arr[#index] });
+                        quote! { #value? }
+                    }).collect();
 
                     quote! {
-                        let arr = payload.as_vec()?;
-                        if arr.len() != #field_count {
-                            return Err(#scry::NodeError::array_length(&payload.path, #field_count, arr.len()));
+                        let #arr = #payload.as_vec()?;
+                        if #arr.len() != #field_count {
+                            return Err(#scry::NodeError::array_length(&#payload.path, #field_count, #arr.len()));
                         }
                         Ok(#enum_name::#v_ident(#(#field_parsers),*))
                     }
@@ -371,21 +404,19 @@ fn generate_enum_from_node(info: &EnumInfo) -> syn::Result<TokenStream> {
                 VariantData::Struct(fields) => {
                     // Struct variant: payload is a map with field semantics
                     let field_parsers: Vec<TokenStream> =
-                        fields.iter().map(generate_struct_variant_field_parser).collect();
-                    let field_names: Vec<&syn::Ident> = fields.iter().map(|f| &f.ident).collect();
+                        fields.iter().map(|field| generate_field_value_parser(field, &quote! { #payload })).collect();
+                    let field_names: Vec<&Member> = fields.iter().map(|f| &f.member).collect();
                     let field_keys: Vec<String> = fields
                         .iter()
-                        .map(|field| {
-                            field.attrs.rename.clone().unwrap_or_else(|| field.ident.to_string())
-                        })
+                        .map(FieldInfo::config_key)
                         .collect();
 
                     quote! {
-                        payload.as_map()?;
+                        #payload.as_map()?;
                         let result = #enum_name::#v_ident {
                             #(#field_names: #field_parsers),*
                         };
-                        payload.ensure_only_keys(&[#(#field_keys),*])?;
+                        #payload.ensure_only_keys(&[#(#field_keys),*])?;
                         Ok(result)
                     }
                 }
@@ -414,26 +445,26 @@ fn generate_enum_from_node(info: &EnumInfo) -> syn::Result<TokenStream> {
                 key, key, key
             );
             Some(quote! {
-                #(#spellings)|* => return Err(#scry::NodeError::invalid_value(&node.path, #msg))
+                #(#spellings)|* => return Err(#scry::NodeError::invalid_value(&#node.path, #msg))
             })
         })
         .collect();
 
     Ok(quote! {
-        impl #scry::FromNode for #enum_name {
-            fn from_node(node: &#scry::Node) -> Result<Self, #scry::NodeError> {
-                use #scry::node::Kind;
+        impl #impl_generics #scry::FromNode for #enum_name #type_generics #where_clause {
+            fn from_node(#node: &#scry::Node) -> ::core::result::Result<Self, #scry::NodeError> {
 
-                match &node.kind {
+
+                match &#node.kind {
                     // String form: only unit variants allowed
-                    Kind::Leaf(_) => {
-                        let value = node.read_leaf("string or map")?;
+                    #scry::node::Kind::Leaf(_) => {
+                        let value = #node.read_leaf("string or map")?;
                         if let #scry::node::Value::String(s) = value {
                             match s.to_ascii_lowercase().as_str() {
                                 #(#unit_string_arms,)*
                                 #(#payload_string_error_arms,)*
                                 other => return Err(#scry::NodeError::invalid_value(
-                                    &node.path,
+                                    &#node.path,
                                     format!(
                                         "unknown variant '{}' - expected one of: {}",
                                         other,
@@ -443,7 +474,7 @@ fn generate_enum_from_node(info: &EnumInfo) -> syn::Result<TokenStream> {
                             }
                         } else {
                             return Err(#scry::NodeError::type_mismatch(
-                                &node.path,
+                                &#node.path,
                                 "string or map",
                                 value.type_name(),
                             ));
@@ -451,27 +482,27 @@ fn generate_enum_from_node(info: &EnumInfo) -> syn::Result<TokenStream> {
                     }
 
                     // Map form: exactly one key required
-                    Kind::Map(map) => {
-                        if map.is_empty() {
+                    #scry::node::Kind::Map(#map) => {
+                        if #map.is_empty() {
                             return Err(#scry::NodeError::invalid_value(
-                                &node.path,
+                                &#node.path,
                                 format!("expected exactly one variant key, found empty map - expected one of: {}", #expected_str),
                             ));
                         }
-                        if map.len() > 1 {
-                            let keys: Vec<&str> = map.keys().map(|s| s.as_str()).collect();
+                        if #map.len() > 1 {
+                            let keys: ::std::vec::Vec<&str> = #map.keys().map(|s| s.as_str()).collect();
                             return Err(#scry::NodeError::invalid_value(
-                                &node.path,
-                                format!("expected exactly one variant key, found {}: {}", map.len(), keys.join(", ")),
+                                &#node.path,
+                                format!("expected exactly one variant key, found {}: {}", #map.len(), keys.join(", ")),
                             ));
                         }
 
-                        let (variant_key, payload) = map.iter().next().unwrap();
-                        match variant_key.as_str() {
+                        let (#variant_key, #payload) = #map.iter().next().unwrap();
+                        match #variant_key.as_str() {
                             #(#payload_map_arms,)*
                             #(#unit_map_error_arms,)*
                             other => return Err(#scry::NodeError::invalid_value(
-                                &node.path,
+                                &#node.path,
                                 format!(
                                     "unknown variant '{}' - expected one of: {}",
                                     other,
@@ -482,9 +513,9 @@ fn generate_enum_from_node(info: &EnumInfo) -> syn::Result<TokenStream> {
                     }
 
                     // Array form: not valid for enums
-                    Kind::Vec(_) => {
+                    #scry::node::Kind::Vec(_) => {
                         return Err(#scry::NodeError::type_mismatch(
-                            &node.path,
+                            &#node.path,
                             "string or map",
                             "array",
                         ));
@@ -495,64 +526,62 @@ fn generate_enum_from_node(info: &EnumInfo) -> syn::Result<TokenStream> {
     })
 }
 
-/// Generates field parsing code for a struct variant field.
-///
-/// Similar to `generate_field_parser` but uses `payload` as the node variable.
-fn generate_struct_variant_field_parser(field: &FieldInfo) -> TokenStream {
-    generate_field_value_parser(field, &quote! { payload })
-}
-
 // ---------------------------------------------------------------------------------------------- //
 // ToNode Generation
 
 fn generate_struct_to_node(info: &StructInfo) -> syn::Result<TokenStream> {
     let scry = scry_crate_path();
     let struct_name = &info.ident;
+    let map = private_ident("output_map");
+    let generics = struct_generics(info, Operation::ToNode, &scry);
+    let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
 
     match &info.fields {
         StructFields::Named(fields) => {
             let field_serializers: Vec<TokenStream> =
-                fields.iter().map(|f| generate_field_serializer(f, &scry)).collect();
+                fields.iter().map(|f| generate_field_serializer(f, &scry, &map)).collect();
 
             Ok(quote! {
-                impl #scry::ToNode for #struct_name {
-                    fn to_node(&self) -> Result<#scry::Node, #scry::NodeError> {
-                        let mut map = #scry::_private::IndexMap::new();
+                impl #impl_generics #scry::ToNode for #struct_name #type_generics #where_clause {
+                    fn to_node(&self) -> ::core::result::Result<#scry::Node, #scry::NodeError> {
+                        let mut #map = #scry::_private::IndexMap::new();
                         #(#field_serializers)*
                         Ok(#scry::Node {
                             path: #scry::KeyPath::new(),
-                            kind: #scry::node::Kind::Map(map),
+                            kind: #scry::node::Kind::Map(#map),
                         })
                     }
                 }
             })
         }
-        StructFields::Tuple(types) => {
-            if types.len() == 1 {
+        StructFields::Tuple(fields) => {
+            if fields.len() == 1 {
                 // Newtype: delegate to inner
+                let value = generate_field_output(&fields[0], &quote! { &self.0 }, &scry);
                 Ok(quote! {
-                    impl #scry::ToNode for #struct_name {
-                        fn to_node(&self) -> Result<#scry::Node, #scry::NodeError> {
-                            #scry::ToNode::to_node(&self.0)
+                    impl #impl_generics #scry::ToNode for #struct_name #type_generics #where_clause {
+                        fn to_node(&self) -> ::core::result::Result<#scry::Node, #scry::NodeError> {
+                            #value
                         }
                     }
                 })
             } else {
                 // Tuple: serialize as array
-                let field_indices: Vec<syn::Index> =
-                    (0..types.len()).map(syn::Index::from).collect();
-                let field_serializers: Vec<TokenStream> = field_indices
+                let field_serializers: Vec<TokenStream> = fields
                     .iter()
                     .enumerate()
-                    .map(|(index, field)| quote! {
-                        #scry::ToNode::to_node(&self.#field)
-                            .map_err(|error| error.prepend_path(&#scry::KeyPath::from_index(#index)))?
+                    .map(|(index, field)| {
+                        let member = &field.member;
+                        let value = generate_field_output(field, &quote! { &self.#member }, &scry);
+                        quote! {
+                            #value.map_err(|error| error.prepend_path(&#scry::KeyPath::from_index(#index)))?
+                        }
                     })
                     .collect();
 
                 Ok(quote! {
-                    impl #scry::ToNode for #struct_name {
-                        fn to_node(&self) -> Result<#scry::Node, #scry::NodeError> {
+                    impl #impl_generics #scry::ToNode for #struct_name #type_generics #where_clause {
+                        fn to_node(&self) -> ::core::result::Result<#scry::Node, #scry::NodeError> {
                             let children = vec![
                                 #(#field_serializers),*
                             ];
@@ -568,17 +597,13 @@ fn generate_struct_to_node(info: &StructInfo) -> syn::Result<TokenStream> {
     }
 }
 
-fn generate_field_serializer(field: &FieldInfo, scry: &TokenStream) -> TokenStream {
-    let field_name = &field.ident;
-    let key = field.attrs.rename.clone().unwrap_or_else(|| field_name.to_string());
-
-    let value = match &field.attrs.to_node_with {
-        Some(func_path) => quote! { #func_path(&self.#field_name) },
-        None => quote! { #scry::ToNode::to_node(&self.#field_name) },
-    };
+fn generate_field_serializer(field: &FieldInfo, scry: &TokenStream, map: &Ident) -> TokenStream {
+    let field_name = &field.member;
+    let key = field.config_key();
+    let value = generate_field_output(field, &quote! { &self.#field_name }, scry);
 
     quote! {
-        map.insert(
+        #map.insert(
             #key.to_string(),
             #value.map_err(|error| error.prepend_path(&#scry::KeyPath::from_keys([#key])))?,
         );
@@ -593,17 +618,14 @@ fn generate_struct_variant_field_serializer(
     field: &FieldInfo,
     scry: &TokenStream,
     variant_key: &str,
+    binding: &Ident,
+    map: &Ident,
 ) -> TokenStream {
-    let field_name = &field.ident;
-    let key = field.attrs.rename.clone().unwrap_or_else(|| field_name.to_string());
-
-    let value = match &field.attrs.to_node_with {
-        Some(func_path) => quote! { #func_path(#field_name) },
-        None => quote! { #scry::ToNode::to_node(#field_name) },
-    };
+    let key = field.config_key();
+    let value = generate_field_output(field, &quote! { #binding }, scry);
 
     quote! {
-        inner_map.insert(
+        #map.insert(
             #key.to_string(),
             #value.map_err(|error| {
                 error.prepend_path(&#scry::KeyPath::from_keys([#variant_key, #key]))
@@ -615,6 +637,11 @@ fn generate_struct_variant_field_serializer(
 fn generate_enum_to_node(info: &EnumInfo) -> syn::Result<TokenStream> {
     let scry = scry_crate_path();
     let enum_name = &info.ident;
+    let map = private_ident("output_map");
+    let inner_map = private_ident("payload_map");
+    let inner = private_ident("inner");
+    let generics = enum_generics(info, Operation::ToNode, &scry);
+    let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
 
     let mut match_arms = Vec::new();
 
@@ -638,51 +665,55 @@ fn generate_enum_to_node(info: &EnumInfo) -> syn::Result<TokenStream> {
                     }
                 });
             }
-            VariantData::Tuple(types) if types.len() == 1 => {
+            VariantData::Tuple(fields) if fields.len() == 1 => {
                 // Single-field tuple: serialize as {"name": value}
+                let value = generate_field_output(&fields[0], &quote! { #inner }, &scry);
                 match_arms.push(quote! {
-                    #enum_name::#v_ident(inner) => {
-                        let mut map = #scry::_private::IndexMap::new();
-                        map.insert(
+                    #enum_name::#v_ident(#inner) => {
+                        let mut #map = #scry::_private::IndexMap::new();
+                        #map.insert(
                             #key.to_string(),
-                            #scry::ToNode::to_node(inner).map_err(|error| {
+                            #value.map_err(|error| {
                                 error.prepend_path(&#scry::KeyPath::from_keys([#key]))
                             })?,
                         );
                         Ok(#scry::Node {
                             path: #scry::KeyPath::new(),
-                            kind: #scry::node::Kind::Map(map),
+                            kind: #scry::node::Kind::Map(#map),
                         })
                     }
                 });
             }
-            VariantData::Tuple(types) => {
+            VariantData::Tuple(fields) => {
                 // Multi-field tuple: serialize as {"name": [v1, v2, ...]}
-                let field_count = types.len();
-                let field_bindings: Vec<syn::Ident> = (0..field_count)
-                    .map(|i| syn::Ident::new(&format!("f{}", i), proc_macro2::Span::call_site()))
-                    .collect();
-                let field_serializers: Vec<TokenStream> = field_bindings
+                let field_count = fields.len();
+                let field_bindings: Vec<syn::Ident> =
+                    (0..field_count).map(|i| private_ident(&format!("field_{i}"))).collect();
+                let field_serializers: Vec<TokenStream> = fields
                     .iter()
+                    .zip(&field_bindings)
                     .enumerate()
-                    .map(|(index, binding)| quote! {
-                        #scry::ToNode::to_node(#binding).map_err(|error| {
-                            error.prepend_path(&#scry::KeyPath::from_keys([#key]).push_index(#index))
-                        })?
+                    .map(|(index, (field, binding))| {
+                        let value = generate_field_output(field, &quote! { #binding }, &scry);
+                        quote! {
+                            #value.map_err(|error| {
+                                error.prepend_path(&#scry::KeyPath::from_keys([#key]).push_index(#index))
+                            })?
+                        }
                     })
                     .collect();
 
                 match_arms.push(quote! {
                     #enum_name::#v_ident(#(#field_bindings),*) => {
-                        let mut map = #scry::_private::IndexMap::new();
+                        let mut #map = #scry::_private::IndexMap::new();
                         let inner_vec = vec![#(#field_serializers),*];
-                        map.insert(#key.to_string(), #scry::Node {
+                        #map.insert(#key.to_string(), #scry::Node {
                             path: #scry::KeyPath::new(),
                             kind: #scry::node::Kind::Vec(inner_vec),
                         });
                         Ok(#scry::Node {
                             path: #scry::KeyPath::new(),
-                            kind: #scry::node::Kind::Map(map),
+                            kind: #scry::node::Kind::Map(#map),
                         })
                     }
                 });
@@ -690,24 +721,31 @@ fn generate_enum_to_node(info: &EnumInfo) -> syn::Result<TokenStream> {
             VariantData::Struct(fields) => {
                 // Struct variant: serialize as {"name": {"f1": v1, "f2": v2}}
                 // Serializes every complete field value and respects field renaming.
-                let field_names: Vec<&syn::Ident> = fields.iter().map(|f| &f.ident).collect();
+                let field_names: Vec<&Member> = fields.iter().map(|f| &f.member).collect();
+                let bindings: Vec<Ident> =
+                    (0..fields.len()).map(|i| private_ident(&format!("field_{i}"))).collect();
                 let field_serializers: Vec<TokenStream> = fields
                     .iter()
-                    .map(|f| generate_struct_variant_field_serializer(f, &scry, &key))
+                    .zip(&bindings)
+                    .map(|(field, binding)| {
+                        generate_struct_variant_field_serializer(
+                            field, &scry, &key, binding, &inner_map,
+                        )
+                    })
                     .collect();
 
                 match_arms.push(quote! {
-                    #enum_name::#v_ident { #(#field_names),* } => {
-                        let mut inner_map = #scry::_private::IndexMap::new();
+                    #enum_name::#v_ident { #(#field_names: #bindings),* } => {
+                        let mut #inner_map = #scry::_private::IndexMap::new();
                         #(#field_serializers)*
-                        let mut map = #scry::_private::IndexMap::new();
-                        map.insert(#key.to_string(), #scry::Node {
+                        let mut #map = #scry::_private::IndexMap::new();
+                        #map.insert(#key.to_string(), #scry::Node {
                             path: #scry::KeyPath::new(),
-                            kind: #scry::node::Kind::Map(inner_map),
+                            kind: #scry::node::Kind::Map(#inner_map),
                         });
                         Ok(#scry::Node {
                             path: #scry::KeyPath::new(),
-                            kind: #scry::node::Kind::Map(map),
+                            kind: #scry::node::Kind::Map(#map),
                         })
                     }
                 });
@@ -716,8 +754,8 @@ fn generate_enum_to_node(info: &EnumInfo) -> syn::Result<TokenStream> {
     }
 
     Ok(quote! {
-        impl #scry::ToNode for #enum_name {
-            fn to_node(&self) -> Result<#scry::Node, #scry::NodeError> {
+        impl #impl_generics #scry::ToNode for #enum_name #type_generics #where_clause {
+            fn to_node(&self) -> ::core::result::Result<#scry::Node, #scry::NodeError> {
                 match self {
                     #(#match_arms)*
                 }
@@ -729,6 +767,7 @@ fn generate_enum_to_node(info: &EnumInfo) -> syn::Result<TokenStream> {
 fn generate_enum_string_enum(info: &EnumInfo) -> syn::Result<TokenStream> {
     let scry = scry_crate_path();
     let enum_name = &info.ident;
+    let (impl_generics, type_generics, where_clause) = info.generics.split_for_impl();
     let mut display_arms = Vec::new();
     let mut parse_arms = Vec::new();
     let mut expected = Vec::new();
@@ -765,10 +804,10 @@ fn generate_enum_string_enum(info: &EnumInfo) -> syn::Result<TokenStream> {
     let expected_str = expected.join(", ");
 
     Ok(quote! {
-        impl std::str::FromStr for #enum_name {
+        impl #impl_generics std::str::FromStr for #enum_name #type_generics #where_clause {
             type Err = #scry::StringEnumError;
 
-            fn from_str(s: &str) -> Result<Self, Self::Err> {
+            fn from_str(s: &str) -> ::core::result::Result<Self, Self::Err> {
                 match s.to_ascii_lowercase().as_str() {
                     #(#parse_arms,)*
                     _ => Err(#scry::StringEnumError::new(stringify!(#enum_name), s, #expected_str)),
@@ -776,7 +815,7 @@ fn generate_enum_string_enum(info: &EnumInfo) -> syn::Result<TokenStream> {
             }
         }
 
-        impl std::fmt::Display for #enum_name {
+        impl #impl_generics std::fmt::Display for #enum_name #type_generics #where_clause {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 match self {
                     #(#display_arms,)*
@@ -792,6 +831,9 @@ fn generate_enum_string_enum(info: &EnumInfo) -> syn::Result<TokenStream> {
 fn generate_struct_describe(info: &StructInfo) -> syn::Result<TokenStream> {
     let scry = scry_crate_path();
     let struct_name = &info.ident;
+    let generics = struct_generics(info, Operation::Describe, &scry);
+    let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
+    let doc = doc_override(&info.doc);
 
     match &info.fields {
         StructFields::Named(fields) => {
@@ -799,40 +841,34 @@ fn generate_struct_describe(info: &StructInfo) -> syn::Result<TokenStream> {
                 fields.iter().map(|f| generate_field_desc(f, &scry)).collect();
 
             Ok(quote! {
-                impl #scry::Describe for #struct_name {
+                impl #impl_generics #scry::Describe for #struct_name #type_generics #where_clause {
                     fn describe() -> #scry::Desc {
                         #scry::Desc::structure(vec![
                             #(#field_descs),*
-                        ])
+                        ]) #doc
                     }
                 }
             })
         }
-        StructFields::Tuple(types) => {
-            if types.len() == 1 {
+        StructFields::Tuple(fields) => {
+            if fields.len() == 1 {
                 // Newtype: desc of the inner type
-                let ty = &types[0];
+                let value = generate_positional_desc(&fields[0], &scry);
                 Ok(quote! {
-                    impl #scry::Describe for #struct_name {
+                    impl #impl_generics #scry::Describe for #struct_name #type_generics #where_clause {
                         fn describe() -> #scry::Desc {
-                            <#ty as #scry::Describe>::describe()
+                            (#value) #doc
                         }
                     }
                 })
             } else {
                 // Tuple: desc of each element
-                let elem_descs: Vec<TokenStream> = types
-                    .iter()
-                    .map(|ty| {
-                        quote! {
-                            <#ty as #scry::Describe>::describe()
-                        }
-                    })
-                    .collect();
+                let elem_descs: Vec<TokenStream> =
+                    fields.iter().map(|field| generate_positional_desc(field, &scry)).collect();
                 Ok(quote! {
-                    impl #scry::Describe for #struct_name {
+                    impl #impl_generics #scry::Describe for #struct_name #type_generics #where_clause {
                         fn describe() -> #scry::Desc {
-                            #scry::Desc::tuple(vec![#(#elem_descs),*])
+                            #scry::Desc::tuple(vec![#(#elem_descs),*]) #doc
                         }
                     }
                 })
@@ -842,7 +878,7 @@ fn generate_struct_describe(info: &StructInfo) -> syn::Result<TokenStream> {
 }
 
 fn generate_field_desc(field: &FieldInfo, scry: &TokenStream) -> TokenStream {
-    let field_name = field.attrs.rename.clone().unwrap_or_else(|| field.ident.to_string());
+    let field_name = field.config_key();
     let doc = &field.doc;
     let ty = &field.ty;
 
@@ -869,11 +905,7 @@ fn generate_field_desc(field: &FieldInfo, scry: &TokenStream) -> TokenStream {
     };
 
     // Custom desc function overrides normal type-based desc generation
-    let value_expr = if let Some(ref desc_fn) = field.attrs.describe_with {
-        quote! { #desc_fn() }
-    } else {
-        quote! { <#ty as #scry::Describe>::describe() }
-    };
+    let value_expr = generate_value_desc(field, scry);
     let value_expr = if matches!(field.attrs.fallback, FieldFallback::FromDefaults) {
         value_expr
     } else {
@@ -927,6 +959,9 @@ fn numeric_literal_display(expr: &syn::Expr) -> Option<String> {
 fn generate_enum_describe(info: &EnumInfo) -> syn::Result<TokenStream> {
     let scry = scry_crate_path();
     let enum_name = &info.ident;
+    let generics = enum_generics(info, Operation::Describe, &scry);
+    let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
+    let doc = doc_override(&info.doc);
 
     let mut variant_descs = Vec::new();
 
@@ -947,27 +982,21 @@ fn generate_enum_describe(info: &EnumInfo) -> syn::Result<TokenStream> {
                         .with_doc(#variant_doc)
                 });
             }
-            VariantData::Tuple(types) if types.len() == 1 => {
+            VariantData::Tuple(fields) if fields.len() == 1 => {
                 // Single-field tuple: payload is the inner type's desc
-                let ty = &types[0];
+                let value = generate_positional_desc(&fields[0], &scry);
                 variant_descs.push(quote! {
                     #scry::desc::VariantDesc::payload(
                         #key,
                         #is_default,
-                        <#ty as #scry::Describe>::describe()
+                        #value
                     ).with_doc(#variant_doc)
                 });
             }
-            VariantData::Tuple(types) => {
+            VariantData::Tuple(fields) => {
                 // Multi-field tuple: desc of each element
-                let elem_descs: Vec<TokenStream> = types
-                    .iter()
-                    .map(|ty| {
-                        quote! {
-                            <#ty as #scry::Describe>::describe()
-                        }
-                    })
-                    .collect();
+                let elem_descs: Vec<TokenStream> =
+                    fields.iter().map(|field| generate_positional_desc(field, &scry)).collect();
                 variant_descs.push(quote! {
                     #scry::desc::VariantDesc::payload(
                         #key,
@@ -992,12 +1021,199 @@ fn generate_enum_describe(info: &EnumInfo) -> syn::Result<TokenStream> {
     }
 
     Ok(quote! {
-        impl #scry::Describe for #enum_name {
+        impl #impl_generics #scry::Describe for #enum_name #type_generics #where_clause {
             fn describe() -> #scry::Desc {
-                #scry::Desc::enumeration(vec![#(#variant_descs),*])
+                #scry::Desc::enumeration(vec![#(#variant_descs),*]) #doc
             }
         }
     })
+}
+
+// ---------------------------------------------------------------------------------------------- //
+// Shared Field Operations
+
+/// Creates a private binding that cannot shadow a hook's identifiers.
+fn private_ident(name: &str) -> Ident {
+    Ident::new(&format!("__scry_{name}"), Span::mixed_site())
+}
+
+/// Selects complete-field input conversion without changing its container shape.
+fn generate_present_field_parser(field: &FieldInfo, input: &TokenStream) -> TokenStream {
+    let ty = &field.ty;
+    match &field.attrs.from_node_with {
+        Some(func_path) => quote! {
+            #func_path(#input).map_err(|error| error.at_path(&(#input).path))
+        },
+        None => quote! { (#input).as_type::<#ty>() },
+    }
+}
+
+/// Selects complete-field output conversion before the container adds its relative location.
+fn generate_field_output(
+    field: &FieldInfo,
+    value: &TokenStream,
+    scry: &TokenStream,
+) -> TokenStream {
+    match &field.attrs.to_node_with {
+        Some(func_path) => quote! { #func_path(#value) },
+        None => quote! { #scry::ToNode::to_node(#value) },
+    }
+}
+
+/// Selects the complete value description independently of named-field omission policy.
+fn generate_value_desc(field: &FieldInfo, scry: &TokenStream) -> TokenStream {
+    let ty = &field.ty;
+    match &field.attrs.describe_with {
+        Some(func_path) => quote! { #func_path() },
+        None => quote! { <#ty as #scry::Describe>::describe() },
+    }
+}
+
+/// Adds positional field prose without erasing an inherited description when it is absent.
+fn generate_positional_desc(field: &FieldInfo, scry: &TokenStream) -> TokenStream {
+    let value = generate_value_desc(field, scry);
+    let doc = doc_override(&field.doc);
+    quote! { (#value) #doc }
+}
+
+/// Overrides delegated prose only when the enclosing declaration supplies its own summary.
+fn doc_override(doc: &str) -> TokenStream {
+    if doc.is_empty() {
+        quote! {}
+    } else {
+        quote! { .with_doc(#doc) }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------- //
+// Generic Requirements
+
+#[derive(Clone, Copy)]
+enum Operation {
+    FromNode,
+    ToNode,
+    Describe,
+}
+
+fn struct_generics(info: &StructInfo, operation: Operation, scry: &TokenStream) -> Generics {
+    let fields = match &info.fields {
+        StructFields::Named(fields) | StructFields::Tuple(fields) => fields,
+    };
+    operation_generics(&info.generics, &info.ident, fields.iter(), operation, scry)
+}
+
+fn enum_generics(info: &EnumInfo, operation: Operation, scry: &TokenStream) -> Generics {
+    let fields = info.variants.iter().flat_map(|variant| {
+        let fields: &[FieldInfo] = match &variant.data {
+            VariantData::Unit => &[],
+            VariantData::Tuple(fields) | VariantData::Struct(fields) => fields,
+        };
+        fields.iter()
+    });
+    operation_generics(&info.generics, &info.ident, fields, operation, scry)
+}
+
+/// Adds only the complete-field requirements needed by one generated operation.
+fn operation_generics<'a>(
+    original: &Generics,
+    target: &Ident,
+    fields: impl Iterator<Item = &'a FieldInfo>,
+    operation: Operation,
+    scry: &TokenStream,
+) -> Generics {
+    let mut generics = original.clone();
+    let generic_names: HashSet<String> = original
+        .params
+        .iter()
+        .map(|parameter| match parameter {
+            syn::GenericParam::Type(parameter) => parameter.ident.to_string(),
+            syn::GenericParam::Const(parameter) => parameter.ident.to_string(),
+            syn::GenericParam::Lifetime(parameter) => parameter.lifetime.ident.to_string(),
+        })
+        .collect();
+    let mut existing: HashSet<String> = original
+        .where_clause
+        .iter()
+        .flat_map(|clause| clause.predicates.iter())
+        .map(|predicate| predicate.to_token_stream().to_string())
+        .collect();
+
+    for field in fields {
+        let mut usage = TypeUsage {
+            generic_names: &generic_names,
+            target,
+            generic: false,
+            recursive: false,
+        };
+        usage.visit_type(&field.ty);
+        // A complete recursive-field predicate would require the impl being defined to prove
+        // itself. Its body can use the current impl, plus the caller's explicit constraints.
+        if !usage.generic || usage.recursive {
+            continue;
+        }
+        let mut traits = Vec::new();
+        match operation {
+            Operation::FromNode => {
+                if field.attrs.from_node_with.is_none() {
+                    traits.push(quote! { #scry::FromNode });
+                }
+                if matches!(field.attrs.fallback, FieldFallback::FromDefaults) {
+                    traits.push(quote! { #scry::FromDefaults });
+                }
+            }
+            Operation::ToNode if field.attrs.to_node_with.is_none() => {
+                traits.push(quote! { #scry::ToNode })
+            }
+            Operation::Describe if field.attrs.describe_with.is_none() => {
+                traits.push(quote! { #scry::Describe })
+            }
+            Operation::ToNode | Operation::Describe => {}
+        }
+        let ty = &field.ty;
+        for required in traits {
+            let predicate: syn::WherePredicate =
+                syn::parse_quote_spanned!(ty.span()=> #ty: #required);
+            if existing.insert(predicate.to_token_stream().to_string()) {
+                generics.make_where_clause().predicates.push(predicate);
+            }
+        }
+    }
+    generics
+}
+
+/// Finds generic dependencies and explicit recursion within a complete field type.
+struct TypeUsage<'a> {
+    generic_names: &'a HashSet<String>,
+    target: &'a Ident,
+    generic: bool,
+    recursive: bool,
+}
+
+impl<'ast> Visit<'ast> for TypeUsage<'_> {
+    fn visit_path(&mut self, path: &'ast syn::Path) {
+        if let Some(first) = path.segments.first() {
+            self.generic |= self.generic_names.contains(&first.ident.to_string());
+        }
+        visit::visit_path(self, path);
+    }
+
+    fn visit_type_path(&mut self, ty: &'ast syn::TypePath) {
+        if ty.qself.is_none() {
+            if let (Some(first), Some(last)) = (ty.path.segments.first(), ty.path.segments.last()) {
+                let generic_root = self.generic_names.contains(&first.ident.to_string());
+                let local_target = last.ident == *self.target
+                    && (ty.path.segments.len() == 1
+                        || (ty.path.segments.len() == 2 && first.ident == "self"));
+                self.recursive |= !generic_root
+                    && ((first.ident == "Self" && ty.path.segments.len() == 1) || local_target);
+            }
+        }
+        visit::visit_type_path(self, ty);
+    }
+
+    fn visit_lifetime(&mut self, lifetime: &'ast syn::Lifetime) {
+        self.generic |= self.generic_names.contains(&lifetime.ident.to_string());
+    }
 }
 
 // ---------------------------------------------------------------------------------------------- //

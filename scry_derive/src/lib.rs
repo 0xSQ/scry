@@ -23,6 +23,10 @@ mod parse;
 /// a derived strict type.
 /// Input errors use the Node's full logical path. Locationless hook errors gain that path without
 /// changing their original cause. Errors that already carry a logical location are preserved.
+/// Hooks also work on positional fields. Transparent newtypes decode their one complete field
+/// directly, while tuples retain exact array arity. Positional renames and fallbacks are rejected.
+/// Generic declarations and user constraints are preserved. Native generic field operations add
+/// bounds on their complete types, while hooks replace the corresponding native requirements.
 #[proc_macro_derive(FromNode, attributes(scry))]
 pub fn derive_from_node(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -55,6 +59,8 @@ pub fn derive_from_defaults(input: TokenStream) -> TokenStream {
 /// For `Option<T>`, the hook receives `&Option<T>` even when the value is `None`.
 /// Error paths are relative to the value being serialized. Each field and enum payload prepends
 /// its serialized key or index, including for hooks. Transparent newtypes preserve child paths.
+/// Positional hooks receive references to the complete field type. Generic declarations and user
+/// constraints are preserved, adding complete-field `ToNode` bounds only for native operations.
 #[proc_macro_derive(ToNode, attributes(scry))]
 pub fn derive_to_node(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -79,9 +85,12 @@ pub fn derive_string_enum(input: TokenStream) -> TokenStream {
 /// Derives `Describe` for generating configuration descriptions.
 ///
 /// Delegates to each complete field type, preserving nested containers and nullable values.
-/// Named fields can replace that delegation with `#[scry(describe_with(function))]`. The function
+/// Fields can replace that delegation with `#[scry(describe_with(function))]`. The function
 /// returns a `Desc` for the complete value, including its nullability. Every other field type must
 /// implement `Describe`. Missing implementations are compile-time errors.
+/// Generic declarations and user constraints are preserved, adding complete-field `Describe`
+/// bounds for native operations. Type and positional field prose override delegated prose only
+/// when nonempty. Named field prose remains separate from its value's description.
 #[proc_macro_derive(Describe, attributes(scry))]
 pub fn derive_describe(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);

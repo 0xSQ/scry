@@ -3,7 +3,65 @@ use std::collections::HashMap;
 use heck::{ToKebabCase, ToSnakeCase};
 use proc_macro2::Span;
 use syn::spanned::Spanned;
-use syn::{Attribute, DeriveInput, Expr, Fields, Ident, LitStr, Result, Type};
+use syn::{Attribute, DeriveInput, Expr, Fields, Generics, Ident, LitStr, Member, Result, Type};
+
+// ---------------------------------------------------------------------------------------------- //
+
+pub enum DeriveTarget {
+    Struct(StructInfo),
+    Enum(EnumInfo),
+}
+
+pub struct StructInfo {
+    pub ident: Ident,
+    pub generics: Generics,
+    pub fields: StructFields,
+    pub allow_unknown_keys: bool,
+    pub doc: String,
+}
+
+pub enum StructFields {
+    Named(Vec<FieldInfo>),
+    Tuple(Vec<FieldInfo>),
+}
+
+pub struct EnumInfo {
+    pub ident: Ident,
+    pub generics: Generics,
+    pub attrs: EnumAttrs,
+    pub variants: Vec<VariantInfo>,
+    pub doc: String,
+}
+
+pub struct VariantInfo {
+    pub ident: Ident,
+    pub attrs: VariantAttrs,
+    pub data: VariantData,
+    pub doc: String,
+}
+
+pub enum VariantData {
+    Unit,
+    Tuple(Vec<FieldInfo>),
+    Struct(Vec<FieldInfo>),
+}
+
+pub struct FieldInfo {
+    pub member: Member,
+    pub ty: Type,
+    pub attrs: FieldAttrs,
+    pub doc: String,
+}
+
+impl FieldInfo {
+    /// Returns the literal configuration key of a named field.
+    pub fn config_key(&self) -> String {
+        let Member::Named(ident) = &self.member else {
+            unreachable!("positional fields do not have configuration keys");
+        };
+        self.attrs.rename.clone().unwrap_or_else(|| ident.to_string())
+    }
+}
 
 // ---------------------------------------------------------------------------------------------- //
 // Field Attributes
@@ -31,11 +89,6 @@ pub enum FieldFallback {
 }
 
 impl FieldAttrs {
-    /// Checks if any `#[scry(...)]` attribute is present.
-    pub fn has_scry_attr(attrs: &[Attribute]) -> bool {
-        attrs.iter().any(|attr| attr.path().is_ident("scry"))
-    }
-
     pub fn from_attrs(attrs: &[Attribute]) -> Result<Self> {
         let mut result = FieldAttrs::default();
 
@@ -110,6 +163,28 @@ impl FieldAttrs {
         }
 
         Ok(())
+    }
+
+    fn validate_for_positional(&self) -> Result<()> {
+        if let Some(span) = self.rename_span {
+            return Err(syn::Error::new(
+                span,
+                "`rename` is not supported on positional fields; positional fields use indices",
+            ));
+        }
+
+        let message = match self.fallback {
+            FieldFallback::Unspecified => return Ok(()),
+            FieldFallback::Expression(_) => {
+                "`default = EXPR` is not supported on positional fields; positional fields must \
+                 be present"
+            }
+            FieldFallback::FromDefaults => {
+                "`from_defaults` is not supported on positional fields; positional fields must \
+                 be present"
+            }
+        };
+        Err(syn::Error::new(self.fallback_span.unwrap_or_else(Span::call_site), message))
     }
 
     fn set_fallback(&mut self, fallback: FieldFallback, span: Span) -> Result<()> {
@@ -270,57 +345,6 @@ impl EnumAttrs {
 }
 
 // ---------------------------------------------------------------------------------------------- //
-// Struct Info
-
-pub struct FieldInfo {
-    pub ident: Ident,
-    pub ty: Type,
-    pub attrs: FieldAttrs,
-    pub doc: String,
-}
-
-pub enum StructFields {
-    Named(Vec<FieldInfo>),
-    Tuple(Vec<Type>),
-}
-
-pub struct StructInfo {
-    pub ident: Ident,
-    pub fields: StructFields,
-    pub allow_unknown_keys: bool,
-}
-
-// ---------------------------------------------------------------------------------------------- //
-// Enum Info
-
-pub struct VariantInfo {
-    pub ident: Ident,
-    pub attrs: VariantAttrs,
-    pub data: VariantData,
-    pub doc: String,
-}
-
-pub enum VariantData {
-    Unit,
-    Tuple(Vec<Type>),
-    Struct(Vec<FieldInfo>),
-}
-
-pub struct EnumInfo {
-    pub ident: Ident,
-    pub attrs: EnumAttrs,
-    pub variants: Vec<VariantInfo>,
-}
-
-// ---------------------------------------------------------------------------------------------- //
-// Top-level Parse Target
-
-pub enum DeriveTarget {
-    Struct(StructInfo),
-    Enum(EnumInfo),
-}
-
-// ---------------------------------------------------------------------------------------------- //
 // Parsing Functions
 
 pub fn parse_input(input: &DeriveInput) -> Result<DeriveTarget> {
@@ -338,19 +362,7 @@ fn parse_struct(input: &DeriveInput, data: &syn::DataStruct) -> Result<StructInf
 
     let fields = match &data.fields {
         Fields::Named(fields) => StructFields::Named(parse_named_fields(fields)?),
-        Fields::Unnamed(fields) => {
-            // Check for #[scry(...)] on unnamed fields - not supported
-            for field in &fields.unnamed {
-                if FieldAttrs::has_scry_attr(&field.attrs) {
-                    return Err(syn::Error::new_spanned(
-                        field,
-                        "#[scry(...)] attributes are not supported on tuple struct fields",
-                    ));
-                }
-            }
-            let types: Vec<Type> = fields.unnamed.iter().map(|f| f.ty.clone()).collect();
-            StructFields::Tuple(types)
-        }
+        Fields::Unnamed(fields) => StructFields::Tuple(parse_positional_fields(fields)?),
         Fields::Unit => {
             return Err(syn::Error::new_spanned(input, "Scry cannot be derived for unit structs"))
         }
@@ -358,8 +370,10 @@ fn parse_struct(input: &DeriveInput, data: &syn::DataStruct) -> Result<StructInf
 
     Ok(StructInfo {
         ident: input.ident.clone(),
+        generics: input.generics.clone(),
         fields,
         allow_unknown_keys: struct_attrs.allow_unknown_keys,
+        doc: extract_doc(&input.attrs),
     })
 }
 
@@ -371,19 +385,7 @@ fn parse_enum(input: &DeriveInput, data: &syn::DataEnum) -> Result<EnumInfo> {
     for variant in &data.variants {
         let data = match &variant.fields {
             Fields::Unit => VariantData::Unit,
-            Fields::Unnamed(fields) => {
-                // Check for #[scry(...)] on unnamed fields - not supported
-                for field in &fields.unnamed {
-                    if FieldAttrs::has_scry_attr(&field.attrs) {
-                        return Err(syn::Error::new_spanned(
-                            field,
-                            "#[scry(...)] attributes are not supported on tuple variant fields",
-                        ));
-                    }
-                }
-                let types: Vec<Type> = fields.unnamed.iter().map(|f| f.ty.clone()).collect();
-                VariantData::Tuple(types)
-            }
+            Fields::Unnamed(fields) => VariantData::Tuple(parse_positional_fields(fields)?),
             Fields::Named(fields) => VariantData::Struct(parse_named_fields(fields)?),
         };
 
@@ -416,8 +418,10 @@ fn parse_enum(input: &DeriveInput, data: &syn::DataEnum) -> Result<EnumInfo> {
 
     Ok(EnumInfo {
         ident: input.ident.clone(),
+        generics: input.generics.clone(),
         attrs: enum_attrs,
         variants,
+        doc: extract_doc(&input.attrs),
     })
 }
 
@@ -468,12 +472,15 @@ fn validate_variant_names(variants: &[VariantInfo], rename_all: Option<RenameAll
     Ok(())
 }
 
-fn parse_field(field: &syn::Field) -> Result<FieldInfo> {
+fn parse_field(field: &syn::Field, member: Member) -> Result<FieldInfo> {
     let attrs = FieldAttrs::from_attrs(&field.attrs)?;
+    if matches!(member, Member::Unnamed(_)) {
+        attrs.validate_for_positional()?;
+    }
     attrs.validate_for_type(&field.ty)?;
 
     Ok(FieldInfo {
-        ident: field.ident.clone().expect("named fields have identifiers"),
+        member,
         ty: field.ty.clone(),
         attrs,
         doc: extract_doc(&field.attrs),
@@ -481,12 +488,19 @@ fn parse_field(field: &syn::Field) -> Result<FieldInfo> {
 }
 
 fn parse_named_fields(fields: &syn::FieldsNamed) -> Result<Vec<FieldInfo>> {
-    let fields = fields.named.iter().map(parse_field).collect::<Result<Vec<_>>>()?;
+    let fields = fields
+        .named
+        .iter()
+        .map(|field| {
+            let member = Member::Named(field.ident.clone().expect("named fields have identifiers"));
+            parse_field(field, member)
+        })
+        .collect::<Result<Vec<_>>>()?;
     let mut keys = HashMap::new();
 
     for field in &fields {
-        let key = field.attrs.rename.clone().unwrap_or_else(|| field.ident.to_string());
-        let span = field.attrs.rename_span.unwrap_or_else(|| field.ident.span());
+        let key = field.config_key();
+        let span = field.attrs.rename_span.unwrap_or_else(|| field.member.span());
         if let Some(first_span) = keys.insert(key.clone(), span) {
             return Err(conflicting_declaration_error(
                 span,
@@ -499,14 +513,35 @@ fn parse_named_fields(fields: &syn::FieldsNamed) -> Result<Vec<FieldInfo>> {
     Ok(fields)
 }
 
+fn parse_positional_fields(fields: &syn::FieldsUnnamed) -> Result<Vec<FieldInfo>> {
+    fields
+        .unnamed
+        .iter()
+        .enumerate()
+        .map(|(index, field)| {
+            let member = Member::Unnamed(syn::Index {
+                index: index as u32,
+                span: field.span(),
+            });
+            parse_field(field, member)
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------------------------- //
 // Type Utilities
 
-/// Checks if the type is Option<T>.
+/// Checks whether a type is written as `Option<T>`.
 pub fn is_option_type(ty: &Type) -> bool {
     if let Type::Path(type_path) = ty {
         if let Some(segment) = type_path.path.segments.last() {
-            return segment.ident == "Option";
+            return segment.ident == "Option"
+                && matches!(
+                    &segment.arguments,
+                    syn::PathArguments::AngleBracketed(arguments)
+                        if arguments.args.len() == 1
+                            && matches!(arguments.args.first(), Some(syn::GenericArgument::Type(_)))
+                );
         }
     }
     false
