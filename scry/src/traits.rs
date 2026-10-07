@@ -14,3 +14,6 @@ pub use describe::Describe;
 pub use from_defaults::FromDefaults;
 pub use from_node::FromNode;
 pub use to_node::ToNode;
+
+pub(crate) use from_node::parse_vec;
+pub(crate) use to_node::serialize_vec;

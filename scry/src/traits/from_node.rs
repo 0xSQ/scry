@@ -175,12 +175,7 @@ impl<T: FromNode> FromNode for Option<T> {
 
 impl<T: FromNode> FromNode for Vec<T> {
     fn from_node(node: &Node) -> Result<Self, NodeError> {
-        let entries = node.as_vec()?;
-        let mut result = Vec::with_capacity(entries.len());
-        for entry in entries {
-            result.push(entry.as_type()?);
-        }
-        Ok(result)
+        parse_vec(node, Node::as_type)
     }
 }
 
@@ -230,6 +225,22 @@ impl<A: FromNode, B: FromNode, C: FromNode, D: FromNode> FromNode for (A, B, C, 
         }
         Ok((vec[0].as_type()?, vec[1].as_type()?, vec[2].as_type()?, vec[3].as_type()?))
     }
+}
+
+// ---------------------------------------------------------------------------------------------- //
+// Sequence Traversal
+
+/// Parses each array element directly into the final target vector.
+pub(crate) fn parse_vec<T>(
+    node: &Node,
+    mut parse_element: impl FnMut(&Node) -> Result<T, NodeError>,
+) -> Result<Vec<T>, NodeError> {
+    let entries = node.as_vec()?;
+    let mut result = Vec::with_capacity(entries.len());
+    for entry in entries {
+        result.push(parse_element(entry).map_err(|error| error.at_path(&entry.path))?);
+    }
+    Ok(result)
 }
 
 // ---------------------------------------------------------------------------------------------- //

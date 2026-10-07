@@ -33,8 +33,51 @@
 //! Missing keys retain their ordinary field fallback. Present values, including null, reach the
 //! policy as the complete field type. Via cannot be combined with operation hooks on that field.
 //! Input and description suffice for `Config`. Output remains independently selectable.
+//!
+//! Container policies compose explicitly. `Option<A>` adapts an `Option<T>` and uses null for
+//! `None`. `Vec<A>` adapts each element of a `Vec<T>` from an array. A direct policy can instead
+//! adapt an entire vector, such as expanding one expression into many values. [`Native`] delegates
+//! to the target's ordinary capability and is available under `scry::via`.
+//!
+//! ```
+//! use scry::{Config, ToNode};
+//! use scry::via::Native;
+//!
+//! #[derive(Config, ToNode)]
+//! struct Levels {
+//!     #[scry(via(Vec<Option<Native>>))]
+//!     values: Vec<Option<u16>>,
+//! }
+//! ```
+//!
+//! Each container requires only the corresponding inner capability. Missing support remains a
+//! compile-time error through nested composition:
+//!
+//! ```compile_fail,E0277
+//! use scry::FromNode;
+//! struct Missing;
+//! #[derive(FromNode)]
+//! struct Values(#[scry(via(Vec<Option<Missing>>))] Vec<Option<u16>>);
+//! ```
+//!
+//! ```compile_fail,E0277
+//! use scry::ToNode;
+//! struct Missing;
+//! #[derive(ToNode)]
+//! struct Values(#[scry(via(Vec<Option<Missing>>))] Vec<Option<u16>>);
+//! ```
+//!
+//! ```compile_fail,E0277
+//! use scry::Describe;
+//! struct Missing;
+//! #[derive(Describe)]
+//! struct Values(#[scry(via(Vec<Option<Missing>>))] Vec<Option<u16>>);
+//! ```
 
-use crate::{Desc, Node, NodeError};
+use std::marker::PhantomData;
+
+use crate::traits::{parse_vec, serialize_vec};
+use crate::{Desc, Describe, FromNode, Node, NodeError, ToNode};
 
 // ---------------------------------------------------------------------------------------------- //
 
@@ -98,4 +141,95 @@ pub trait ToNodeVia<T: ?Sized> {
 pub trait DescribeVia<T: ?Sized> {
     /// Describes the configuration value represented by this policy.
     fn describe() -> Desc;
+}
+
+/// Delegates each requested capability to the target's ordinary Scry implementation.
+///
+/// This explicit policy composes with `Option<Native>` and `Vec<Native>`. Input requires native
+/// [`FromNode`], output requires native [`ToNode`], and description requires native [`Describe`].
+/// Each requirement is independent. Output and description also support unsized targets.
+pub struct Native;
+
+impl<T: FromNode> FromNodeVia<T> for Native {
+    fn from_node(node: &Node) -> Result<T, NodeError> {
+        node.as_type()
+    }
+}
+
+impl<T: ToNode + ?Sized> ToNodeVia<T> for Native {
+    fn to_node(value: &T) -> Result<Node, NodeError> {
+        value.to_node()
+    }
+}
+
+impl<T: Describe + ?Sized> DescribeVia<T> for Native {
+    fn describe() -> Desc {
+        T::describe()
+    }
+}
+
+// ---------------------------------------------------------------------------------------------- //
+// Container Policies
+
+impl<T, A: FromNodeVia<T>> FromNodeVia<Option<T>> for Option<A> {
+    fn from_node(node: &Node) -> Result<Option<T>, NodeError> {
+        <Option<Adapted<T, A>>>::from_node(node).map(|value| value.map(|adapted| adapted.0))
+    }
+}
+
+impl<T, A: ToNodeVia<T>> ToNodeVia<Option<T>> for Option<A> {
+    fn to_node(value: &Option<T>) -> Result<Node, NodeError> {
+        value.as_ref().map(|value| AdaptedRef::<T, A>(value, PhantomData)).to_node()
+    }
+}
+
+impl<T, A: DescribeVia<T>> DescribeVia<Option<T>> for Option<A> {
+    fn describe() -> Desc {
+        <Option<Adapted<T, A>>>::describe()
+    }
+}
+
+impl<T, A: FromNodeVia<T>> FromNodeVia<Vec<T>> for Vec<A> {
+    fn from_node(node: &Node) -> Result<Vec<T>, NodeError> {
+        parse_vec(node, A::from_node)
+    }
+}
+
+impl<T, A: ToNodeVia<T>> ToNodeVia<Vec<T>> for Vec<A> {
+    fn to_node(value: &Vec<T>) -> Result<Node, NodeError> {
+        serialize_vec(value, A::to_node)
+    }
+}
+
+impl<T, A: DescribeVia<T>> DescribeVia<Vec<T>> for Vec<A> {
+    fn describe() -> Desc {
+        <Vec<Adapted<T, A>>>::describe()
+    }
+}
+
+// ---------------------------------------------------------------------------------------------- //
+// Native Operation Bridges
+
+/// Reuses native input and description containers with an adapted inner value.
+struct Adapted<T, A>(T, PhantomData<A>);
+
+impl<T, A: FromNodeVia<T>> FromNode for Adapted<T, A> {
+    fn from_node(node: &Node) -> Result<Self, NodeError> {
+        A::from_node(node).map(|value| Self(value, PhantomData))
+    }
+}
+
+impl<T, A: DescribeVia<T>> Describe for Adapted<T, A> {
+    fn describe() -> Desc {
+        A::describe()
+    }
+}
+
+/// Reuses native output containers while borrowing the adapted inner value.
+struct AdaptedRef<'a, T: ?Sized, A>(&'a T, PhantomData<A>);
+
+impl<T: ?Sized, A: ToNodeVia<T>> ToNode for AdaptedRef<'_, T, A> {
+    fn to_node(&self) -> Result<Node, NodeError> {
+        A::to_node(self.0)
+    }
 }

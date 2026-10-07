@@ -601,6 +601,32 @@ Generic requirements inspect both the policy type and target type. Recognizable 
 retain the existing inferred-bound exception and can require explicit caller constraints. Input
 narrows potentially unsized targets to `Sized`. Output and description retain unsized support.
 
+Compose element policies explicitly with `Option<Policy>` and `Vec<Policy>`. Each container
+requires only the requested capability of its inner policy. `scry::via::Native` delegates to the
+target's ordinary Scry implementation, allowing native operations to participate in composition.
+
+| Policy | Complete field type | Configuration value |
+| --- | --- | --- |
+| `Native` | `u16` | An ordinary integer. |
+| `Option<AddressText>` | `Option<IpAddr>` | A textual address or null. |
+| `Vec<Option<AddressText>>` | `Vec<Option<IpAddr>>` | An array of textual addresses and nulls. |
+| `Option<Vec<AddressText>>` | `Option<Vec<IpAddr>>` | An address array or null. |
+
+`Option<Policy>` consumes null as `None` without invoking the inner policy. Non-null input delegates
+to that policy. Missing-key handling still belongs to the field. `None` output remains explicit
+null, and description preserves the inner shape and choices while marking it nullable.
+
+`Vec<Policy>` requires an array and converts each element directly into the target vector. Output
+borrows each element and builds the resulting Node array. Inner errors retain their causes and
+gain the appropriate input location or relative output index. Descriptions retain their element
+structure, including nested nullable values.
+
+A direct policy can still adapt an entire vector, such as expanding one expression into many
+values. `Vec<WholeSequence>` over `Vec<Vec<u16>>` applies that policy to each complete inner vector.
+The policy type determines composition. The derive does not infer it from the stored field type.
+Define a local marker for custom whole-container behavior. Scry supplies the standard container
+policy implementations, while application markers can reuse ordinary representations internally.
+
 ## FromDefaults
 
 `FromDefaults` constructs a config value by applying its Scry field policies at a logical config

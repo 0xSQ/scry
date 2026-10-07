@@ -140,16 +140,7 @@ impl<T: ToNode> ToNode for Option<T> {
 
 impl<T: ToNode> ToNode for Vec<T> {
     fn to_node(&self) -> Result<Node, NodeError> {
-        let mut children = Vec::with_capacity(self.len());
-        for (index, item) in self.iter().enumerate() {
-            children.push(
-                item.to_node().map_err(|error| error.prepend_path(&KeyPath::from_index(index)))?,
-            );
-        }
-        Ok(Node {
-            path: KeyPath::new(),
-            kind: Kind::Vec(children),
-        })
+        serialize_vec(self, ToNode::to_node)
     }
 }
 
@@ -223,4 +214,22 @@ impl<T: ToNode + ?Sized> ToNode for &mut T {
     fn to_node(&self) -> Result<Node, NodeError> {
         (**self).to_node()
     }
+}
+
+// ---------------------------------------------------------------------------------------------- //
+// Sequence Traversal
+
+/// Serializes borrowed elements into the final child vector with relative index locations.
+pub(crate) fn serialize_vec<T>(
+    values: &[T],
+    mut serialize_element: impl FnMut(&T) -> Result<Node, NodeError>,
+) -> Result<Node, NodeError> {
+    let mut children = Vec::with_capacity(values.len());
+    for (index, item) in values.iter().enumerate() {
+        children.push(
+            serialize_element(item)
+                .map_err(|error| error.prepend_path(&KeyPath::from_index(index)))?,
+        );
+    }
+    Ok(Node::new_vec(KeyPath::new(), children))
 }
