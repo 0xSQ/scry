@@ -199,7 +199,7 @@ fn generate_struct_from_node(info: &StructInfo) -> syn::Result<TokenStream> {
         StructFields::Tuple(fields) => {
             if fields.len() == 1 {
                 // Newtype: parse as inner type directly
-                let value = generate_present_field_parser(&fields[0], &quote! { #node });
+                let value = generate_present_field_parser(&fields[0], &quote! { #node }, &scry);
                 Ok(quote! {
                     impl #impl_generics #scry::FromNode for #struct_name #type_generics #where_clause {
                         fn from_node(#node: &#scry::Node) -> ::core::result::Result<Self, #scry::NodeError> {
@@ -215,7 +215,7 @@ fn generate_struct_from_node(info: &StructInfo) -> syn::Result<TokenStream> {
                     .enumerate()
                     .map(|(index, field)| {
                         let input = quote! { &#arr[#index] };
-                        let value = generate_present_field_parser(field, &input);
+                        let value = generate_present_field_parser(field, &input, &scry);
                         quote! { #value? }
                     })
                     .collect();
@@ -253,7 +253,7 @@ fn generate_field_value_parser(field: &FieldInfo, parent: &TokenStream) -> Token
     let ty = &field.ty;
     let key = field.config_key();
     let input = Ident::new("__scry_field_node", Span::mixed_site());
-    let present = generate_present_field_parser(field, &quote! { #input });
+    let present = generate_present_field_parser(field, &quote! { #input }, &scry);
     let missing = match &field.attrs.fallback {
         FieldFallback::Expression(expr) => quote! { #expr },
         FieldFallback::FromDefaults => quote! {
@@ -365,7 +365,7 @@ fn generate_enum_from_node(info: &EnumInfo) -> syn::Result<TokenStream> {
                         use {{\"{}\": <value>}} instead of {{\"{}\": [<value>]}}",
                         key, key
                     );
-                    let value = generate_present_field_parser(&fields[0], &quote! { #payload });
+                    let value = generate_present_field_parser(&fields[0], &quote! { #payload }, &scry);
                     quote! {
                         match #value {
                             Ok(v) => Ok(#enum_name::#v_ident(v)),
@@ -389,7 +389,7 @@ fn generate_enum_from_node(info: &EnumInfo) -> syn::Result<TokenStream> {
                     // Multi-field tuple: payload is an array
                     let field_count = fields.len();
                     let field_parsers: Vec<TokenStream> = fields.iter().enumerate().map(|(index, field)| {
-                        let value = generate_present_field_parser(field, &quote! { &#arr[#index] });
+                        let value = generate_present_field_parser(field, &quote! { &#arr[#index] }, &scry);
                         quote! { #value? }
                     }).collect();
 
@@ -891,6 +891,7 @@ fn generate_field_desc(field: &FieldInfo, scry: &TokenStream) -> TokenStream {
     // Only simple literals are honest config-oriented display values. Arbitrary Rust syntax is
     // construction machinery rather than user-facing configuration documentation.
     let default_display = match &field.attrs.fallback {
+        _ if field.attrs.via.is_some() => quote! {},
         FieldFallback::Expression(expr) => literal_default_display(expr)
             .map(|display| quote! { .with_default(#display) })
             .unwrap_or_default(),
@@ -906,7 +907,9 @@ fn generate_field_desc(field: &FieldInfo, scry: &TokenStream) -> TokenStream {
 
     // Custom desc function overrides normal type-based desc generation
     let value_expr = generate_value_desc(field, scry);
-    let value_expr = if matches!(field.attrs.fallback, FieldFallback::FromDefaults) {
+    let value_expr = if field.attrs.via.is_none()
+        && matches!(field.attrs.fallback, FieldFallback::FromDefaults)
+    {
         value_expr
     } else {
         quote! { (#value_expr).without_default_variant() }
@@ -1038,13 +1041,21 @@ fn private_ident(name: &str) -> Ident {
 }
 
 /// Selects complete-field input conversion without changing its container shape.
-fn generate_present_field_parser(field: &FieldInfo, input: &TokenStream) -> TokenStream {
+fn generate_present_field_parser(
+    field: &FieldInfo,
+    input: &TokenStream,
+    scry: &TokenStream,
+) -> TokenStream {
     let ty = &field.ty;
-    match &field.attrs.from_node_with {
-        Some(func_path) => quote! {
+    match Operation::FromNode.select(field) {
+        FieldOperation::Via(policy) => quote! {
+            <#policy as #scry::FromNodeVia<#ty>>::from_node(#input)
+                .map_err(|error| error.at_path(&(#input).path))
+        },
+        FieldOperation::Hook(func_path) => quote! {
             #func_path(#input).map_err(|error| error.at_path(&(#input).path))
         },
-        None => quote! { (#input).as_type::<#ty>() },
+        FieldOperation::Native => quote! { (#input).as_type::<#ty>() },
     }
 }
 
@@ -1054,18 +1065,25 @@ fn generate_field_output(
     value: &TokenStream,
     scry: &TokenStream,
 ) -> TokenStream {
-    match &field.attrs.to_node_with {
-        Some(func_path) => quote! { #func_path(#value) },
-        None => quote! { #scry::ToNode::to_node(#value) },
+    let ty = &field.ty;
+    match Operation::ToNode.select(field) {
+        FieldOperation::Via(policy) => {
+            quote! { <#policy as #scry::ToNodeVia<#ty>>::to_node(#value) }
+        }
+        FieldOperation::Hook(func_path) => quote! { #func_path(#value) },
+        FieldOperation::Native => quote! { #scry::ToNode::to_node(#value) },
     }
 }
 
 /// Selects the complete value description independently of named-field omission policy.
 fn generate_value_desc(field: &FieldInfo, scry: &TokenStream) -> TokenStream {
     let ty = &field.ty;
-    match &field.attrs.describe_with {
-        Some(func_path) => quote! { #func_path() },
-        None => quote! { <#ty as #scry::Describe>::describe() },
+    match Operation::Describe.select(field) {
+        FieldOperation::Via(policy) => {
+            quote! { <#policy as #scry::DescribeVia<#ty>>::describe() }
+        }
+        FieldOperation::Hook(func_path) => quote! { #func_path() },
+        FieldOperation::Native => quote! { <#ty as #scry::Describe>::describe() },
     }
 }
 
@@ -1093,6 +1111,47 @@ enum Operation {
     FromNode,
     ToNode,
     Describe,
+}
+
+impl Operation {
+    /// Selects the same field operation for emitted calls and inferred requirements.
+    fn select(self, field: &FieldInfo) -> FieldOperation<'_> {
+        if let Some(policy) = &field.attrs.via {
+            return FieldOperation::Via(policy);
+        }
+        let hook = match self {
+            Self::FromNode => &field.attrs.from_node_with,
+            Self::ToNode => &field.attrs.to_node_with,
+            Self::Describe => &field.attrs.describe_with,
+        };
+        match hook {
+            Some(path) => FieldOperation::Hook(path),
+            None => FieldOperation::Native,
+        }
+    }
+
+    fn native_trait(self, scry: &TokenStream) -> TokenStream {
+        match self {
+            Self::FromNode => quote! { #scry::FromNode },
+            Self::ToNode => quote! { #scry::ToNode },
+            Self::Describe => quote! { #scry::Describe },
+        }
+    }
+
+    fn via_trait(self, scry: &TokenStream) -> TokenStream {
+        match self {
+            Self::FromNode => quote! { #scry::FromNodeVia },
+            Self::ToNode => quote! { #scry::ToNodeVia },
+            Self::Describe => quote! { #scry::DescribeVia },
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum FieldOperation<'a> {
+    Native,
+    Hook(&'a syn::Path),
+    Via(&'a syn::Type),
 }
 
 fn struct_generics(info: &StructInfo, operation: Operation, scry: &TokenStream) -> Generics {
@@ -1146,33 +1205,46 @@ fn operation_generics<'a>(
             recursive: false,
         };
         usage.visit_type(&field.ty);
+        let selected = operation.select(field);
+        let mut policy_generic = false;
+        if let FieldOperation::Via(policy) = selected {
+            let mut policy_usage = TypeUsage {
+                generic_names: &generic_names,
+                target,
+                generic: false,
+                recursive: false,
+            };
+            policy_usage.visit_type(policy);
+            policy_generic = policy_usage.generic;
+        }
         // A complete recursive-field predicate would require the impl being defined to prove
         // itself. Its body can use the current impl, plus the caller's explicit constraints.
-        if !usage.generic || usage.recursive {
+        if (!usage.generic && !policy_generic) || usage.recursive {
             continue;
         }
-        let mut traits = Vec::new();
-        match operation {
-            Operation::FromNode => {
-                if field.attrs.from_node_with.is_none() {
-                    traits.push(quote! { #scry::FromNode });
-                }
-                if matches!(field.attrs.fallback, FieldFallback::FromDefaults) {
-                    traits.push(quote! { #scry::FromDefaults });
-                }
-            }
-            Operation::ToNode if field.attrs.to_node_with.is_none() => {
-                traits.push(quote! { #scry::ToNode })
-            }
-            Operation::Describe if field.attrs.describe_with.is_none() => {
-                traits.push(quote! { #scry::Describe })
-            }
-            Operation::ToNode | Operation::Describe => {}
-        }
         let ty = &field.ty;
-        for required in traits {
-            let predicate: syn::WherePredicate =
-                syn::parse_quote_spanned!(ty.span()=> #ty: #required);
+        let mut predicates: Vec<syn::WherePredicate> = Vec::new();
+        match selected {
+            FieldOperation::Native => {
+                let required = operation.native_trait(scry);
+                predicates.push(syn::parse_quote_spanned!(ty.span()=> #ty: #required));
+            }
+            FieldOperation::Via(policy) => {
+                let required = operation.via_trait(scry);
+                if matches!(operation, Operation::FromNode) {
+                    predicates
+                        .push(syn::parse_quote_spanned!(ty.span()=> #ty: ::core::marker::Sized));
+                }
+                predicates.push(syn::parse_quote_spanned!(policy.span()=> #policy: #required<#ty>));
+            }
+            FieldOperation::Hook(_) => {}
+        }
+        if matches!(operation, Operation::FromNode)
+            && matches!(field.attrs.fallback, FieldFallback::FromDefaults)
+        {
+            predicates.push(syn::parse_quote_spanned!(ty.span()=> #ty: #scry::FromDefaults));
+        }
+        for predicate in predicates {
             if existing.insert(predicate.to_token_stream().to_string()) {
                 generics.make_where_clause().predicates.push(predicate);
             }

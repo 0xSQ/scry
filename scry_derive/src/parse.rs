@@ -72,6 +72,9 @@ pub struct FieldAttrs {
     fallback_span: Option<Span>,
     pub rename: Option<String>,
     rename_span: Option<Span>,
+    /// Policy type selected by `via(...)` for all requested Scry operations.
+    pub via: Option<Type>,
+    via_span: Option<Span>,
     /// Custom Node → T conversion function. Set by `from_node_with(...)`.
     pub from_node_with: Option<syn::Path>,
     /// Custom description function. Set by `describe_with(...)`.
@@ -126,6 +129,28 @@ impl FieldAttrs {
                     result.rename = Some(lit.value());
                     result.rename_span = Some(lit.span());
                     Ok(())
+                } else if meta.path.is_ident("via") {
+                    let content;
+                    syn::parenthesized!(content in meta.input);
+                    if content.is_empty() {
+                        return Err(content.error("`via(...)` requires one Rust policy type"));
+                    }
+                    let policy: Type = content.parse()?;
+                    if !content.is_empty() {
+                        return Err(
+                            content.error("`via(...)` accepts exactly one Rust policy type")
+                        );
+                    }
+                    if let Some(first_span) = result.via_span {
+                        return Err(conflicting_declaration_error(
+                            meta.path.span(),
+                            first_span,
+                            "duplicate `via` field attribute",
+                        ));
+                    }
+                    result.via = Some(policy);
+                    result.via_span = Some(meta.path.span());
+                    Ok(())
                 } else if meta.path.is_ident("from_node_with") {
                     let content;
                     syn::parenthesized!(content in meta.input);
@@ -147,6 +172,7 @@ impl FieldAttrs {
             })?;
         }
 
+        result.validate_via_hooks()?;
         Ok(result)
     }
 
@@ -182,6 +208,29 @@ impl FieldAttrs {
             }
         };
         Err(syn::Error::new(self.fallback_span.unwrap_or_else(Span::call_site), message))
+    }
+
+    fn validate_via_hooks(&self) -> Result<()> {
+        let Some(via_span) = self.via_span else {
+            return Ok(());
+        };
+
+        for (name, hook) in [
+            ("from_node_with", &self.from_node_with),
+            ("to_node_with", &self.to_node_with),
+            ("describe_with", &self.describe_with),
+        ] {
+            if let Some(hook) = hook {
+                let mut error = syn::Error::new(
+                    via_span,
+                    format!("`via` cannot be combined with `{name}` on the same field"),
+                );
+                error.combine(syn::Error::new(hook.span(), "conflicting hook is here"));
+                return Err(error);
+            }
+        }
+
+        Ok(())
     }
 
     fn set_fallback(&mut self, fallback: FieldFallback, span: Span) -> Result<()> {

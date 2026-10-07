@@ -522,7 +522,8 @@ fn parse_color(node: &Node) -> Result<Color, NodeError> {
 }
 ```
 
-If you use the same external type in many places, consider creating a newtype wrapper with its own `FromNode` implementation instead.
+For reusable field behavior while retaining the external type, use a Via policy as described
+below. A newtype wrapper remains useful when the value itself should enforce a domain invariant.
 
 The hook returns the complete field type, including `Option<T>`. Missing fields use their
 fallback without calling it. See the [derive docs](../scry_derive/src/lib.rs) for the contract.
@@ -570,6 +571,35 @@ those same input locations and serialization error prefixes as native operations
 
 Positional fields reject `rename`, `default = EXPR`, and `from_defaults`. They have no named key to
 rename or omit. A present null still goes through the complete field's parser or hook.
+
+### Via Policies
+
+`#[scry(via(Policy))]` selects reusable Scry behavior for the complete field type. A local policy
+can support a foreign target while the field keeps its ordinary Rust type. Define the policy's
+capabilities using `FromNodeVia<T>`, `ToNodeVia<T>`, and `DescribeVia<T>`, available at the crate
+root and under `scry::via`. See the [Via module](../scry/src/via.rs) for a complete IP-address example.
+
+Each derive requests only its own capability. `Config` needs input and description, while output
+requires a separate `ToNode` derive. Missing policy support is a compiler error. Via does not
+silently use the target's native implementation or require all three capabilities.
+
+The annotation works on named fields, transparent newtypes, tuples, and enum payloads. It contains
+a Rust type, including qualified paths, generic types, or aliases. Repeated selections and
+combinations with any operation hook on the same field are rejected.
+
+Missing keys use their existing field fallback without calling the policy. A present null reaches
+the policy as part of the complete type, including outer `Option<T>`. Output borrows the stored
+value and serializes every named field. A policy may return null. Input errors use the full Node
+path, output errors are relative to the emitted value, and map policies validate their own keys.
+
+Policy descriptions supply the complete value shape and nullability. Field prose and omission
+remain separate. Adapted fields suppress target-domain literal default displays and directly
+described enum default markers, because those do not establish a default in the policy's
+configuration representation. Defaults on nested described fields remain intact.
+
+Generic requirements inspect both the policy type and target type. Recognizable recursive fields
+retain the existing inferred-bound exception and can require explicit caller constraints. Input
+narrows potentially unsized targets to `Sized`. Output and description retain unsized support.
 
 ## FromDefaults
 

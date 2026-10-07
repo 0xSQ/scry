@@ -51,6 +51,7 @@ pub mod rhai;
 pub mod string_enum;
 mod traits;
 pub mod util;
+pub mod via;
 pub mod writer;
 
 // ---------------------------------------------------------------------------------------------- //
@@ -64,6 +65,7 @@ pub use key_path::{KeyPath, KeyPathError};
 pub use node::{Node, NodeError};
 pub use string_enum::StringEnumError;
 pub use traits::{Describe, FromDefaults, FromNode, ToNode};
+pub use via::{DescribeVia, FromNodeVia, ToNodeVia};
 
 // Re-export derive macros.
 pub use scry_derive::{Config, Describe, FromDefaults, FromNode, StringEnum, ToNode};

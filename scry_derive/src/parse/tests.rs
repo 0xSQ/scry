@@ -611,6 +611,210 @@ fn fields_accept_one_hook_per_operation() {
 }
 
 #[test]
+fn fields_accept_complete_via_policy_types_in_named_and_positional_shapes() {
+    let policies: [Type; 6] = [
+        syn::parse_quote!(Rgb),
+        syn::parse_quote!(adapter::Rgb),
+        syn::parse_quote!(Vec<Option<adapter::Rgb>>),
+        syn::parse_quote!(crate::Policy<'a, T, 3>),
+        syn::parse_quote!(<T as Family>::Policy),
+        syn::parse_quote!([Rgb; 2]),
+    ];
+
+    for policy in policies {
+        let inputs: [DeriveInput; 6] = [
+            syn::parse_quote!(
+                struct Value {
+                    #[scry(via(#policy))]
+                    value: Foreign,
+                }
+            ),
+            syn::parse_quote!(
+                struct Value(#[scry(via(#policy))] Foreign);
+            ),
+            syn::parse_quote!(
+                struct Value(u16, #[scry(via(#policy))] Foreign);
+            ),
+            syn::parse_quote!(
+                enum Value {
+                    Payload {
+                        #[scry(via(#policy))]
+                        value: Foreign,
+                    },
+                }
+            ),
+            syn::parse_quote!(
+                enum Value {
+                    Payload(#[scry(via(#policy))] Foreign),
+                }
+            ),
+            syn::parse_quote!(
+                enum Value {
+                    Payload(u16, #[scry(via(#policy))] Foreign),
+                }
+            ),
+        ];
+
+        for input in inputs {
+            let parsed = parse_input(&input).unwrap();
+            let fields = match &parsed {
+                DeriveTarget::Struct(StructInfo {
+                    fields: StructFields::Named(fields) | StructFields::Tuple(fields),
+                    ..
+                }) => fields,
+                DeriveTarget::Enum(info) => match &info.variants[0].data {
+                    VariantData::Struct(fields) | VariantData::Tuple(fields) => fields,
+                    _ => panic!("expected variant fields"),
+                },
+            };
+            let parsed_policy = fields.last().unwrap().attrs.via.as_ref().unwrap();
+
+            assert_eq!(
+                quote::quote!(#parsed_policy).to_string(),
+                quote::quote!(#policy).to_string(),
+            );
+        }
+    }
+}
+
+#[test]
+fn duplicate_via_policies_are_rejected_within_and_across_attributes() {
+    for second_policy in [syn::parse_quote!(Rgb), syn::parse_quote!(Vec<Rgb>)] {
+        let second_policy: Type = second_policy;
+        for separate_attributes in [false, true] {
+            let attrs: Vec<Attribute> = if separate_attributes {
+                vec![
+                    syn::parse_quote!(#[scry(via(Rgb))]),
+                    syn::parse_quote!(#[scry(via(#second_policy))]),
+                ]
+            } else {
+                vec![syn::parse_quote!(#[scry(via(Rgb), via(#second_policy))])]
+            };
+            let inputs: [DeriveInput; 4] = [
+                syn::parse_quote!(struct Value { #(#attrs)* value: Foreign }),
+                syn::parse_quote!(struct Value(#(#attrs)* Foreign);),
+                syn::parse_quote!(enum Value { Payload { #(#attrs)* value: Foreign } }),
+                syn::parse_quote!(enum Value { Payload(#(#attrs)* Foreign) }),
+            ];
+
+            for input in inputs {
+                let error = parse_input(&input).err().expect("duplicate Via policies should fail");
+                assert_conflicting_attribute_error(error, "duplicate `via` field attribute");
+            }
+        }
+    }
+}
+
+#[test]
+fn via_conflicts_with_each_hook_in_either_order_and_across_attributes() {
+    for hook_name in ["from_node_with", "to_node_with", "describe_with"] {
+        let hook = Ident::new(hook_name, Span::call_site());
+        for via_first in [false, true] {
+            for separate_attributes in [false, true] {
+                let attrs: Vec<Attribute> = match (via_first, separate_attributes) {
+                    (true, true) => vec![
+                        syn::parse_quote!(#[scry(via(Rgb))]),
+                        syn::parse_quote!(#[scry(#hook(adapter::convert))]),
+                    ],
+                    (false, true) => vec![
+                        syn::parse_quote!(#[scry(#hook(adapter::convert))]),
+                        syn::parse_quote!(#[scry(via(Rgb))]),
+                    ],
+                    (true, false) => {
+                        vec![syn::parse_quote!(#[scry(via(Rgb), #hook(adapter::convert))])]
+                    }
+                    (false, false) => {
+                        vec![syn::parse_quote!(#[scry(#hook(adapter::convert), via(Rgb))])]
+                    }
+                };
+                let inputs: [DeriveInput; 4] = [
+                    syn::parse_quote!(struct Value { #(#attrs)* value: Foreign }),
+                    syn::parse_quote!(struct Value(#(#attrs)* Foreign);),
+                    syn::parse_quote!(enum Value { Payload { #(#attrs)* value: Foreign } }),
+                    syn::parse_quote!(enum Value { Payload(#(#attrs)* Foreign) }),
+                ];
+
+                for input in inputs {
+                    let error = parse_input(&input).err().expect("Via and hooks should conflict");
+                    let declarations: Vec<_> = error.into_iter().collect();
+
+                    assert_eq!(declarations.len(), 2, "both declarations should be identified");
+                    assert_eq!(
+                        declarations[0].to_string(),
+                        format!("`via` cannot be combined with `{hook_name}` on the same field"),
+                    );
+                    assert_eq!(declarations[1].to_string(), "conflicting hook is here");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn via_accepts_named_field_keys_and_missing_value_fallbacks() {
+    let input: DeriveInput = syn::parse_quote! {
+        struct Value {
+            #[scry(via(Rgb), rename = "colour", default = Foreign::new())]
+            explicit: Foreign,
+            #[scry(via(Rgb), from_defaults)]
+            recursive: Foreign,
+            #[scry(via(MaybeRgb))]
+            optional: Option<Foreign>,
+        }
+    };
+
+    assert!(parse_input(&input).is_ok());
+}
+
+#[test]
+fn via_requires_exactly_one_type_in_parentheses() {
+    let attrs: [Attribute; 5] = [
+        syn::parse_quote!(#[scry(via())]),
+        syn::parse_quote!(#[scry(via(Rgb, Other))]),
+        syn::parse_quote!(#[scry(via(Rgb,))]),
+        syn::parse_quote!(#[scry(via)]),
+        syn::parse_quote!(#[scry(via = Rgb)]),
+    ];
+
+    for attr in attrs {
+        assert!(FieldAttrs::from_attrs(&[attr]).is_err());
+    }
+}
+
+#[test]
+fn via_is_not_a_container_or_variant_attribute() {
+    let inputs: [(DeriveInput, &str); 3] = [
+        (
+            syn::parse_quote! {
+                #[scry(via(Rgb))]
+                struct Value { value: Foreign }
+            },
+            "unknown scry struct attribute",
+        ),
+        (
+            syn::parse_quote! {
+                #[scry(via(Rgb))]
+                enum Value { Payload(Foreign) }
+            },
+            "unknown scry enum attribute",
+        ),
+        (
+            syn::parse_quote! {
+                enum Value {
+                    #[scry(via(Rgb))]
+                    Payload(Foreign),
+                }
+            },
+            "unknown scry variant attribute",
+        ),
+    ];
+
+    for (input, message) in inputs {
+        assert_eq!(parse_input_error(&input), message);
+    }
+}
+
+#[test]
 fn positional_rename_and_fallbacks_have_targeted_errors() {
     let inputs: [(DeriveInput, &str); 6] = [
         (syn::parse_quote! { struct Value(#[scry(rename = "key")] u16); }, "rename"),
