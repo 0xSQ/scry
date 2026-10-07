@@ -82,7 +82,24 @@ impl Display for SeqExpr {
 pub struct IntSeqExpr(SeqExpr);
 
 impl IntSeqExpr {
-    /// Returns the expression exactly as authored.
+    /// Creates an expression spanning the supplied evaluation context.
+    ///
+    /// The expression is `..`, with an included start, excluded stop, and unit step. Evaluation
+    /// requires open bounds or a finite source length. An index evaluator supplies that length.
+    pub fn open_range() -> Self {
+        "..".parse().expect("the open range is a valid integer sequence expression")
+    }
+
+    /// Creates an expression containing one native integer.
+    ///
+    /// Accepts all ten Scry integer types and stores their canonical decimal spelling. Evaluation
+    /// checks whether the value fits its requested output type, so constructing `u64::MAX` succeeds
+    /// even though evaluating it as an `i64` fails.
+    pub fn single(value: impl Into<IntValue>) -> Self {
+        value.into().0.to_string().parse().expect("native integers are valid sequence expressions")
+    }
+
+    /// Returns the stored expression source.
     pub fn source(&self) -> &str {
         self.0.source()
     }
@@ -157,6 +174,27 @@ impl Display for RealSeqExpr {
         formatter.write_str(self.source())
     }
 }
+
+/// Stores a native integer for sequence-expression construction.
+///
+/// Converts from `i8`, `i16`, `i32`, `i64`, `isize`, `u8`, `u16`, `u32`, `u64`, and `usize` without
+/// losing precision. Callers can pass these types directly to [`IntSeqExpr::single`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IntValue(i128);
+
+macro_rules! impl_int_value {
+    ($($type:ty),+ $(,)?) => {
+        $(
+            impl From<$type> for IntValue {
+                fn from(value: $type) -> Self {
+                    Self(value as i128)
+                }
+            }
+        )+
+    };
+}
+
+impl_int_value!(i8, i16, i32, i64, isize, u8, u16, u32, u64, usize);
 
 /// Identifies a half-open UTF-8 byte span in the authored expression.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

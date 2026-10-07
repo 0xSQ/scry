@@ -208,8 +208,8 @@ assert_eq!(indices, vec![9, 10, 11]);
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-`source()` and `Display` preserve the source exactly, including whitespace and numeric spelling.
-They do not format a canonical expression or display evaluated values:
+For parsed expressions, `source()` and `Display` preserve the authored text exactly, including
+whitespace and numeric spelling. They return the stored source rather than evaluated values:
 
 ```rust
 use scry::kit::seq_expr::{IntSeqExpr, SeqExpr};
@@ -219,6 +219,23 @@ let parsed: SeqExpr = authored.parse()?;
 let integers = IntSeqExpr::try_from(parsed)?;
 assert_eq!(integers.source(), authored);
 assert_eq!(integers.to_string(), authored);
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+`IntSeqExpr::single(value)` and `IntSeqExpr::open_range()` construct expressions infallibly.
+`single` accepts Scry's ten native integer types, including `u64`, `isize`, and `usize`, and stores
+the value in canonical decimal form. `open_range` stores `".."` and still requires evaluation
+context to supply its endpoints:
+
+```rust
+use scry::kit::seq_expr::{IndexEvaluator, IntSeqExpr};
+
+let one = IntSeqExpr::single(u64::MAX);
+assert_eq!(one.source(), "18446744073709551615");
+
+let all = IntSeqExpr::open_range();
+assert_eq!(all.source(), "..");
+assert_eq!(IndexEvaluator::default().evaluate(&all, 3)?, vec![0, 1, 2]);
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
@@ -246,7 +263,7 @@ struct Experiment {
     /// Concrete iteration values.
     iterations: Vec<i64>,
     /// Positions to select when the input list is available.
-    #[scry(default = "..".parse::<IntSeqExpr>().expect("valid default selector"))]
+    #[scry(default = IntSeqExpr::open_range())]
     select: IntSeqExpr,
     /// An optional second selection for comparison.
     comparison: Option<IntSeqExpr>,
@@ -285,7 +302,8 @@ decode as `Vec<i64>`. A whole expression string also cannot decode as a plain `V
 Missing and null values follow the field's declared type and fallback:
 
 - `iterations` and `strengths` are required. Missing either key is an error.
-- Missing `select` uses the explicitly parsed `".."` default. A present null is still invalid.
+- Missing `select` uses `IntSeqExpr::open_range()`, whose source is `".."`. A present null is
+  still invalid.
 - Missing or null `comparison` becomes `None`. A supplied expression string becomes `Some`.
 
 Expression types accept only string values. They have no inherent Rust `Default` or Scry
