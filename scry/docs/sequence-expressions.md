@@ -290,6 +290,110 @@ These field shapes work across Scry-supported configuration formats. The executa
 uses Rhai, which is available without format feature flags. An equivalent JSON document uses
 the same arrays and expression strings when `format-json` is enabled.
 
+### Expanding expressions into vectors
+
+When a field needs the numeric values immediately, use a Via sequence policy. `IntSequence`
+adapts an entire `Vec<i64>` field, and `RealSequence` adapts an entire `Vec<f64>` field.
+Each accepts either an expression string or a numeric array. Decoding an expression evaluates
+it and stores its values:
+
+```rust
+use scry::kit::seq_expr::{IntSequence, RealSequence};
+use scry::node::Format;
+use scry::{Config, Node, ToNode};
+
+#[derive(Debug, Config, ToNode)]
+struct Sweep {
+    #[scry(via(IntSequence))]
+    iterations: Vec<i64>,
+    #[scry(via(RealSequence))]
+    strengths: Vec<f64>,
+}
+
+for input in [
+    r#"#{ iterations: "[10..30]:10", strengths: "[0..0.3]:0.1" }"#,
+    r#"#{ iterations: [10,20,30], strengths: [0.0,0.1,0.2,0.3] }"#,
+] {
+    let config: Sweep = Node::parse_str(input, Format::Rhai)?.as_type()?;
+    assert_eq!(config.iterations, vec![10, 20, 30]);
+    assert_eq!(config.strengths, vec![0.0, 0.1, 0.2, 0.3]);
+
+    let output = config.to_node()?;
+    assert_eq!(output.req::<Vec<i64>>("iterations")?, vec![10, 20, 30]);
+    assert_eq!(output.req::<Vec<f64>>("strengths")?, vec![0.0, 0.1, 0.2, 0.3]);
+}
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Both inputs produce the same vectors. Explicit `ToNode` output always writes numeric arrays.
+The vectors retain the values, order, and duplicates. They do not retain the expression's
+source or which input form was used.
+
+Immediate expansion uses the default parser and evaluator limits and supplies no integer
+context. Expressions such as `"N-1"` and `".."` fail during decoding. The policies do not infer
+context from neighboring fields or arrays. Keep an `IntSeqExpr` when evaluation needs a source
+length or explicit bounds supplied later.
+
+Array entries use Scry's primitive conversions. Numeric strings such as `"3"` are accepted,
+but `"3..7"` inside an array is not expanded. Integer arrays reject floating-point values.
+Empty arrays are valid empty vectors. Empty expression strings are invalid, while a valid
+expression that emits no values produces an empty vector.
+
+`RealSequence` requires every decoded or serialized value to be finite, including values
+supplied as native arrays. Native array entries such as `"NaN"` or `"inf"` are rejected.
+Signed zero is preserved in arrays. Expression-derived zero keeps the evaluator's positive-zero
+normalization. In arrays, conversion and finiteness failures identify the offending element.
+
+Each policy permits at most `MAX_VALUES` values on input and output. This also checks vectors
+constructed directly in Rust before serializing them. Parser byte and literal limits apply to
+expression strings. The array count check bounds construction of the policy result, after the
+format reader has already built the input Node array.
+
+These policies preserve ordinary field defaults. Missing required keys fail, explicit defaults
+apply only to missing keys, and a direct sequence policy rejects null. A target vector supplied
+by a field default is used directly rather than parsed as an expression.
+
+### Optional and grouped sequences
+
+The existing Via container policies compose with sequence policies. Use `Option<RealSequence>`
+for an optional vector, or `Vec<IntSequence>` to adapt each entry in a list of integer vectors:
+
+```rust
+use scry::kit::seq_expr::{IntSequence, RealSequence};
+use scry::node::Format;
+use scry::{Config, Node, ToNode};
+
+#[derive(Debug, Config, ToNode)]
+struct Groups {
+    #[scry(via(Option<RealSequence>))]
+    strengths: Option<Vec<f64>>,
+    #[scry(via(Vec<IntSequence>))]
+    iterations: Vec<Vec<i64>>,
+}
+
+let input = r#"#{ strengths: (), iterations: ["1..3",[7,8]] }"#;
+let config: Groups = Node::parse_str(input, Format::Rhai)?.as_type()?;
+assert_eq!(config.strengths, None);
+assert_eq!(config.iterations, vec![vec![1, 2], vec![7, 8]]);
+
+let output = config.to_node()?;
+assert_eq!(output.req::<Option<Vec<f64>>>("strengths")?, None);
+assert_eq!(output.req::<Vec<Vec<i64>>>("iterations")?, vec![vec![1, 2], vec![7, 8]]);
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+An omitted or null `strengths` becomes `None`. A supplied array or expression produces a vector
+stored in `Some`. Group entries can independently use either input form, and output contains
+numeric arrays for every group. The sequence ceiling applies to each inner vector. The outer
+list follows the ordinary Via vector rules.
+
+Descriptions use the hints `integer sequence expression string or integer array` and
+`real sequence expression string or real array`. They describe the forms without evaluating
+an expression. Scry's CLI `--get` queries the original Node before typed conversion,
+so it reports an authored expression string when that is the input. Expanded arrays appear
+when the application explicitly serializes its decoded values with `ToNode`. Child-index
+queries through `--get` are available when the original input is an array.
+
 ## Explicit integer contexts
 
 `IntEvalOptions::context` controls omitted endpoints and symbolic values:

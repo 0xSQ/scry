@@ -13,6 +13,7 @@ mod exact;
 mod index;
 mod integer;
 mod parser;
+mod policies;
 mod real;
 mod scry;
 
@@ -30,6 +31,7 @@ pub use error::{
 };
 pub use index::{IndexError, IndexErrorKind, IndexEvaluator};
 pub use integer::IntEvaluator;
+pub use policies::{IntSequence, RealSequence};
 pub use real::RealEvaluator;
 
 // ---------------------------------------------------------------------------------------------- //
