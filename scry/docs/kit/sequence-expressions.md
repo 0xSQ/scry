@@ -94,13 +94,16 @@ not grouping. `0.0..10.0/2` is a valid shorthand for `[0.0..10.0)/2`.
 ## Samplers and rounding
 
 The resolved endpoint order determines direction. Step magnitudes remain positive for descending
-ranges. Concatenation preserves order and repeated occurrences:
+ranges:
 
 ```text
 3..10:2   -> 3, 5, 7, 9
 10..3:2   -> 10, 8, 6, 4
-2,1,2     -> 2, 1, 2
 ```
+
+Numeric literals, endpoint comparisons, steps, anchors, and cardinalities use exact arithmetic.
+Only retained values must fit the output type. Empty ranges have no values to convert, but
+required context and output limits still apply.
 
 ### Fixed steps
 
@@ -130,7 +133,6 @@ Equal endpoints produce one value only when both are included. Otherwise the res
 ```text
 [0.0..10.0)/2  -> 0.0, 5.0
 [0.0..10.0]/2  -> 0.0, 5.0, 10.0
-[1..0]/4       -> 1.0, 0.75, 0.5, 0.25, 0.0  (real profile)
 [5..5]/3       -> 5, 5, 5, 5
 (0..1)/1       -> empty
 ```
@@ -148,17 +150,13 @@ away from zero. Inclusion rules select anchors before rounding:
 The last result contains 1 because the retained interior anchor 0.5 rounds to 1. Oversampling,
 duplicate values, and aliases of excluded endpoints are valid numeric results.
 
-Integer endpoints, steps, and sampling calculations use exact arithmetic. Only retained values
-must fit the output type. A range can therefore use an excluded stop beyond that type's maximum,
-or subdivide very large coordinates to produce a small interior value. For example,
-`(-9223372036854775809..9223372036854775809)/2` emits just `0`, which fits `i64`.
-An empty range has no values to convert. Required context and output count limits still apply.
+Large endpoints can produce small retained values. For example,
+`(-9223372036854775809..9223372036854775809)/2` emits only `0`, which fits `i64`.
 
 ### Exact real anchors
 
-Decimal literals, endpoint comparisons, cardinalities, and real anchors use exact arithmetic.
-`[0..0.3]:0.1` produces four anchors, including the stop. Repeated floating addition does not
-determine whether the last anchor is retained.
+`[0..0.3]:0.1` produces four exact anchors, including the stop. Repeated floating addition does
+not determine whether the last anchor is retained.
 
 Each retained real anchor is rounded once to the requested `f32` or `f64` using nearest rounding
 with ties to even. `f32` evaluation converts the exact anchor directly to `f32`.
@@ -167,13 +165,12 @@ positive zero. Underflow, duplicate floats, and aliases of excluded endpoints ar
 rounding outcomes. For example, `[0..1e-1000]/2` produces three zeros.
 
 An emitted value that cannot become finite in the requested type is an evaluation error.
-Endpoints and step magnitudes need not themselves fit that type when every retained result does.
 
 ## Rust API and numeric profiles
 
-The Rust API separates parsing from evaluation. An expression retains its authored text, and
-evaluation returns an ordinary vector of numbers or indices. Choose the numeric profile for
-the values your application needs:
+Expression types check syntax and the selected numeric profile. Evaluation checks context and
+output representability later. A literal outside the output type's range or an unresolved `N`
+can therefore parse successfully:
 
 | Type | Validation while parsing | Evaluation |
 | --- | --- | --- |
@@ -182,25 +179,35 @@ the values your application needs:
 | `RealSeqExpr` | Grammar and limits. Ranges require both endpoints and explicit sampling. | `RealEvaluator`. |
 
 All three types implement `FromStr`. `SeqExpr::parse_with_limits` accepts explicit parser limits.
-`IntSeqExpr::try_from` and `RealSeqExpr::try_from` validate an already parsed `SeqExpr`.
-The profile types expose the underlying expression through `as_expr()`.
+The profile types also implement `TryFrom<SeqExpr>` and expose that expression through `as_expr()`.
+
+`IntEvaluator::evaluate` returns `Vec<i64>`:
 
 ```rust
-use scry::kit::seq_expr::{
-    IndexEvaluator, IntEvalOptions, IntEvaluator, IntSeqExpr, RealEvalOptions, RealEvaluator,
-    RealSeqExpr,
-};
+use scry::kit::seq_expr::{IntEvalOptions, IntEvaluator, IntSeqExpr};
 
-let integers: IntSeqExpr = "[0..10]/4".parse()?;
-let values = IntEvaluator::new(IntEvalOptions::default()).evaluate(&integers)?;
+let expression: IntSeqExpr = "[0..10]/4".parse()?;
+let values = IntEvaluator::new(IntEvalOptions::default()).evaluate(&expression)?;
 assert_eq!(values, vec![0, 3, 5, 8, 10]);
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
 
-let reals: RealSeqExpr = "[0..0.3]:0.1".parse()?;
-let real_evaluator = RealEvaluator::new(RealEvalOptions::default());
-let values = real_evaluator.evaluate(&reals)?;
-assert_eq!(values, vec![0.0, 0.1, 0.2, 0.3]);
-let values: Vec<f32> = real_evaluator.evaluate_f32(&reals)?;
-assert_eq!(values, vec![0.0, 0.1, 0.2, 0.3]);
+`RealEvaluator` returns `Vec<f64>`, or `Vec<f32>` through `evaluate_f32`:
+
+```rust
+use scry::kit::seq_expr::{RealEvalOptions, RealEvaluator, RealSeqExpr};
+
+let expression: RealSeqExpr = "[0..0.3]:0.1".parse()?;
+let evaluator = RealEvaluator::new(RealEvalOptions::default());
+assert_eq!(evaluator.evaluate(&expression)?, vec![0.0, 0.1, 0.2, 0.3]);
+assert_eq!(evaluator.evaluate_f32(&expression)?, vec![0.0_f32, 0.1, 0.2, 0.3]);
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+`IndexEvaluator` supplies the collection length and returns checked `usize` positions:
+
+```rust
+use scry::kit::seq_expr::{IndexEvaluator, IntSeqExpr};
 
 let selection: IntSeqExpr = "N-3..".parse()?;
 let indices = IndexEvaluator::default().evaluate(&selection, 12)?;
@@ -208,8 +215,8 @@ assert_eq!(indices, vec![9, 10, 11]);
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-For parsed expressions, `source()` and `Display` preserve the authored text exactly, including
-whitespace and numeric spelling. They return the stored source rather than evaluated values:
+`source()` and `Display` return the stored expression. Parsing preserves whitespace and numeric
+spelling exactly:
 
 ```rust
 use scry::kit::seq_expr::{IntSeqExpr, SeqExpr};
@@ -222,10 +229,9 @@ assert_eq!(integers.to_string(), authored);
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-`IntSeqExpr::single(value)` and `IntSeqExpr::open_range()` construct expressions infallibly.
-`single` accepts Scry's ten native integer types, including `u64`, `isize`, and `usize`, and stores
-the value in canonical decimal form. `open_range` stores `".."` and still requires evaluation
-context to supply its endpoints:
+`IntSeqExpr::single(value)` and `IntSeqExpr::open_range()` are infallible. `single` accepts Scry's
+ten native integer types, including `u64`, `isize`, and `usize`, and stores canonical decimal text.
+`open_range` stores `".."` and requires evaluation context to supply its endpoints:
 
 ```rust
 use scry::kit::seq_expr::{IndexEvaluator, IntSeqExpr};
@@ -239,35 +245,38 @@ assert_eq!(IndexEvaluator::default().evaluate(&all, 3)?, vec![0, 1, 2]);
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-Profile validation does not evaluate coordinates or convert real anchors to floats. An integer
-literal outside the target integer range, or a real literal outside the target's finite range,
-can therefore parse successfully and fail when evaluation needs that value. `IntEvaluator`
-returns `Vec<i64>`. `RealEvaluator::evaluate` returns `Vec<f64>`, and `evaluate_f32` returns
-`Vec<f32>`. Via policies select the numeric type from the field declaration. An integer
-expression containing `N` or an omitted endpoint can be retained before its context exists.
-
 ## Scry configuration
 
-Expression types can be fields in an ordinary Scry configuration. They accept a string and
-retain its source for later evaluation. A plain numeric `Vec` field accepts an array of values.
-For example, an experiment can store concrete iteration values alongside an expression that
-selects their positions and a real-valued sweep:
+Choose a field type according to when you need the values and whether you need the expression's
+source:
+
+| Field | Input | Evaluation | `ToNode` output |
+| --- | --- | --- | --- |
+| Plain numeric `Vec<T>` | Array. | Primitive conversion during decoding. | Numeric array. |
+| `SeqExpr`, `IntSeqExpr`, `RealSeqExpr` | Expression string. | Later, through an evaluator. | Stored expression string. |
+| `Vec<T>` via `IntSequence` or `RealSequence` | Expression string or array. | During decoding. | Numeric array. |
+
+Numeric arrays use Scry's primitive conversions, including numeric strings such as
+`"20"`. Their scalar entries never expand sequence terms, so `["3..7"]` is invalid. Integer arrays
+reject floating-point values. A whole expression string requires an expression type or Via
+policy rather than a plain `Vec`.
+
+### Retaining expressions
+
+An experiment can store concrete iteration values alongside a positional selector and a real
+sweep to evaluate later:
 
 ```rust
 use scry::kit::seq_expr::{IndexEvaluator, IntSeqExpr, RealSeqExpr};
 use scry::node::Format;
 use scry::{Config, Node, ToNode};
 
-#[derive(Debug, Config, ToNode)]
+#[derive(Config, ToNode)]
 struct Experiment {
-    /// Concrete iteration values.
     iterations: Vec<i64>,
-    /// Positions to select when the input list is available.
     #[scry(default = IntSeqExpr::open_range())]
     select: IntSeqExpr,
-    /// An optional second selection for comparison.
     comparison: Option<IntSeqExpr>,
-    /// A sweep to evaluate when the experiment runs.
     strengths: RealSeqExpr,
 }
 
@@ -279,25 +288,16 @@ let indices = IndexEvaluator::default().evaluate(&config.select, config.iteratio
 assert_eq!(indices, vec![1, 2]);
 
 let output = config.to_node()?;
-assert_eq!(output.req::<Vec<i64>>("iterations")?, vec![10, 20, 30]);
 assert_eq!(output.req::<String>("select")?, " N-2.. ");
 assert_eq!(output.req::<String>("strengths")?, "[0..0.3]:0.1");
 assert_eq!(output.req::<Option<String>>("comparison")?, None);
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-Decoding parses the expression strings and checks their numeric profiles. It does not expand
-them. The selector can therefore contain `N` before a source length exists. Apply configuration
-overrides before decoding, then supply the final collection length when evaluating the selector.
-The same retained selector can be reused against several collections.
-
-Explicit `ToNode` output writes numeric arrays for the concrete values, preserves expression
-strings exactly, and writes the absent comparison as null. The source spaces around `N-2..`
-survive even though they make no difference to evaluation.
-
-Native arrays follow Scry's ordinary primitive conversions. The iteration array above accepts
-`"20"` as an integer. Array elements do not expand sequence terms, so `["3..7"]` fails to
-decode as `Vec<i64>`. A whole expression string also cannot decode as a plain `Vec<i64>`.
+Decoding checks the expression strings and their profiles without expanding them. Apply
+configuration overrides before decoding, then supply the final collection length when evaluating
+the selector. The same expression can be reused against different lengths. Serialization preserves
+the spaces around `N-2..` and writes the absent comparison as null.
 
 Missing and null values follow the field's declared type and fallback:
 
@@ -306,33 +306,25 @@ Missing and null values follow the field's declared type and fallback:
   still invalid.
 - Missing or null `comparison` becomes `None`. A supplied expression string becomes `Some`.
 
-Expression types accept only string values. They have no inherent Rust `Default` or Scry
-`FromDefaults`, because there is no expression that serves as a default in every context.
-An explicit field default chooses the target expression only when its key is missing.
+Expression types have no Rust `Default` or Scry `FromDefaults`. A field's explicit default
+constructs its target value directly. This also applies to Via vectors, whose defaults are
+ordinary vectors rather than expression inputs. A direct expression or sequence policy rejects
+null. Use an outer `Option` when null should mean absence.
 
-Scry descriptions identify the accepted values as `sequence expression string`,
-`integer sequence expression string`, or `real sequence expression string`. Invalid syntax or
-profile errors carry the configuration field's location and retain the concrete `ParseError`
-or `ExprBuildError` as their cause. The authored span and error kind remain available on that
-cause.
-
-These field shapes work across Scry-supported configuration formats. The executable example
-uses Rhai, which is available without format feature flags. An equivalent JSON document uses
-the same arrays and expression strings when `format-json` is enabled.
+The examples use Rhai, which needs no format feature flag. Other Scry formats use the same
+arrays and expression strings. JSON requires `format-json`.
 
 ### Expanding expressions into vectors
 
-When a field needs the numeric values immediately, use a Via sequence policy. `IntSequence`
-adapts an entire integer vector field, and `RealSequence` adapts an entire floating-point vector.
-Each accepts either an expression string or a numeric array. Decoding an expression evaluates
-it into the field's declared element type:
+`IntSequence` and `RealSequence` adapt whole vectors. An expression is evaluated directly into
+the field's declared element type:
 
 ```rust
 use scry::kit::seq_expr::{IntSequence, RealSequence};
 use scry::node::Format;
 use scry::{Config, Node, ToNode};
 
-#[derive(Debug, Config, ToNode)]
+#[derive(Config, ToNode)]
 struct Sweep {
     #[scry(via(IntSequence))]
     iterations: Vec<u32>,
@@ -355,46 +347,30 @@ for input in [
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-Both inputs produce the same vectors. Explicit `ToNode` output always writes numeric arrays.
-The vectors retain the values, order, and duplicates. They do not retain the expression's
-source or which input form was used.
+Both inputs produce the same vectors. They retain the values rather than the source or input form.
 
 | Policy | Supported vector element types |
 | --- | --- |
 | `IntSequence` | `i8`, `i16`, `i32`, `i64`, `isize`, `u8`, `u16`, `u32`, `u64`, `usize`. |
 | `RealSequence` | `f32`, `f64`. |
 
-Integer expressions use the full range of the declared type. For a `Vec<u64>`, the expression
-`"18446744073709551615..18446744073709551616"` emits `[u64::MAX]`. The excluded upper boundary
-does not need to fit `u64`. Negative retained values fail for unsigned fields, and every retained
-value must fit the target. These conversions report the target type in their evaluation error.
-`isize` and `usize` use the current platform's width.
+The full target range is available. For a `Vec<u64>`,
+`"18446744073709551615..18446744073709551616"` emits `[u64::MAX]` with an excluded stop beyond
+that type's maximum. Negative retained values fail for unsigned fields. Range errors identify
+the target type, and `isize` and `usize` use the current platform's width.
 
-Immediate expansion uses the default parser and evaluator limits and supplies no integer
-context. Expressions such as `"N-1"` and `".."` fail during decoding. The policies do not infer
-context from neighboring fields or arrays. Keep an `IntSeqExpr` when evaluation needs a source
-length or explicit bounds supplied later.
+Immediate expansion supplies no integer context. `"N-1"` and `".."` fail during decoding.
+Policies do not infer context from neighboring fields or arrays. Retain an `IntSeqExpr` when
+evaluation needs a length or numeric bounds supplied later.
 
-Array entries use Scry's primitive conversions. Numeric strings such as `"3"` are accepted,
-but `"3..7"` inside an array is not expanded. Integer arrays reject floating-point values.
-Real arrays convert values as the format reader supplied them. Expression strings retain exact
-decimal anchors until rounding to the field's type.
-Empty arrays are valid empty vectors. Empty expression strings are invalid, while a valid
-expression that emits no values produces an empty vector.
+Real arrays convert numbers as supplied by the format reader. Expression strings keep exact
+decimal anchors until rounding to the field's type. Empty arrays are valid. Empty strings are
+invalid, while a valid expression that emits no values produces an empty vector.
 
 `RealSequence` requires every decoded or serialized value to be finite, including values
 supplied as native arrays. Native array entries such as `"NaN"` or `"inf"` are rejected.
-Signed zero is preserved in arrays. Expression-derived zero keeps the evaluator's positive-zero
-normalization. In arrays, conversion and finiteness failures identify the offending element.
-
-Each policy permits at most `MAX_VALUES` values on input and output. This also checks vectors
-constructed directly in Rust before serializing them. Parser byte and literal limits apply to
-expression strings. The array count check bounds construction of the policy result, after the
-format reader has already built the input Node array.
-
-These policies preserve ordinary field defaults. Missing required keys fail, explicit defaults
-apply only to missing keys, and a direct sequence policy rejects null. A target vector supplied
-by a field default is used directly rather than parsed as an expression.
+Signed zero from array entries is preserved. Expression-derived zero is normalized to positive
+zero. Array conversion and finiteness failures identify the offending element.
 
 ### Optional and grouped sequences
 
@@ -406,7 +382,7 @@ use scry::kit::seq_expr::{IntSequence, RealSequence};
 use scry::node::Format;
 use scry::{Config, Node, ToNode};
 
-#[derive(Debug, Config, ToNode)]
+#[derive(Config, ToNode)]
 struct Groups {
     #[scry(via(Option<RealSequence>))]
     strengths: Option<Vec<f64>>,
@@ -425,17 +401,20 @@ assert_eq!(output.req::<Vec<Vec<i64>>>("iterations")?, vec![vec![1, 2], vec![7, 
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-An omitted or null `strengths` becomes `None`. A supplied array or expression produces a vector
-stored in `Some`. Group entries can independently use either input form, and output contains
-numeric arrays for every group. The sequence ceiling applies to each inner vector. The outer
-list follows the ordinary Via vector rules.
+Omitted or null `strengths` becomes `None`, and an array or expression becomes `Some`.
+Each group independently accepts either input form. The sequence ceiling applies per inner
+vector. The outer list follows ordinary Via vector rules.
 
-Descriptions use the hints `integer sequence expression string or integer array` and
-`real sequence expression string or real array`. They describe the forms without evaluating
-an expression. Scry's CLI `--get` queries the original Node before typed conversion,
-so it reports an authored expression string when that is the input. Expanded arrays appear
-when the application explicitly serializes its decoded values with `ToNode`. Child-index
-queries through `--get` are available when the original input is an array.
+### Descriptions and CLI queries
+
+Native descriptions use `sequence expression string`, `integer sequence expression string`,
+or `real sequence expression string`. Via descriptions add the array alternative:
+`integer sequence expression string or integer array` and
+`real sequence expression string or real array`. Descriptions do not evaluate expressions.
+
+Scry's CLI `--get` reads the original Node before typed conversion. An expression input therefore
+remains a string in queries, and child-index queries work only for original arrays. `ToNode`
+serializes the decoded fields using the representations in the table above.
 
 ## Explicit integer contexts
 
@@ -471,6 +450,9 @@ assert_eq!(evaluator.evaluate(&"45".parse()?)?, vec![45]);
 Evaluating `N` with a length of 10 returns `[10]`. Use `IndexEvaluator` when that coordinate
 must identify an existing element.
 
+Numeric finite-source lengths use the full `usize` range. `IndexEvaluator` takes a `usize`
+length that must also fit `i64`, even when the result is empty.
+
 ### End-relative values
 
 Uppercase `N` is the source length and the exclusive upper index boundary. The final valid index
@@ -483,27 +465,23 @@ Use symbolic values in integer singletons or endpoints. Steps and counts remain 
 Lowercase `n`, `+N`, `-N`, `N--1`, `N+-1`, missing magnitudes, decimal or exponent offsets,
 digit separators, chained offsets, multiplication, and grouped arithmetic are invalid.
 
-Offsets are resolved exactly. The written magnitude and range endpoints need not fit the output
-type. Only retained values are narrowed. For `IntEvaluator`, evaluating `N+1` at length
-`i64::MAX` is an `i64` range error, while the empty range `N+1..N+1` succeeds.
+Offsets resolve exactly even when the written magnitude exceeds the output type's range.
+For `IntEvaluator`, `N+1` at length `i64::MAX` is an `i64` range error, while the empty range
+`N+1..N+1` succeeds.
 
 Direction follows the resolved endpoints. `N-6..0` descends at length 10 and ascends at length 4.
 Resolve required context before deciding that a term is empty. Even `N..N` needs finite-source
-context. Numeric `FiniteSource` lengths use the full `usize` range. `IndexEvaluator` separately
-requires its length to fit `i64`.
+context.
 
 ### Strict indices
 
 `IndexEvaluator` validates every emitted integer against `0 <= index < length`, including
-rounded subdivision results. It preserves order and repeated occurrences. It does not clip
-negative coordinates, unavailable suffixes, or oversized ranges.
+rounded subdivision results. It does not clip negative coordinates, unavailable suffixes,
+or oversized ranges.
 
 | Expression at length 12 | Result |
 | --- | --- |
 | `..` | Indices 0 through 11. |
-| `..:3` | `[0, 3, 6, 9]`. |
-| `2,0,2` | `[2, 0, 2]`. |
-| `N-2..` | `[10, 11]`. |
 | `(N..0]` | Indices 11 through 0, descending. |
 | `..100` | Error when an emitted index reaches 12. |
 | `100..` | Error at the first emitted index, 100. |
@@ -512,14 +490,12 @@ negative coordinates, unavailable suffixes, or oversized ranges.
 | `N-13..` | Error at -1. |
 | `0..100:100` | `[0]`. The unvisited boundary does not invalidate it. |
 | `N-1..N+1:2` | `[11]`. |
-| `[0..1]/4` | `[0, 0, 1, 1, 1]`. |
 
 At length 10, `[N-1..N)/2` retains exact anchors 9 and 9.5, then fails because 9.5 rounds
 to index 10. To sample a nonempty source including its final valid position, use `[0..N-1]/4`.
 
-Lengths use `usize` and must also fit `i64`. Empty results are allowed. At length zero, `..`
-and `N..N` produce no indices. `N..N/2` retains repeated anchors and fails at index zero.
-The same parsed expression can be evaluated separately against different source lengths.
+Empty results are allowed. At length zero, `..` and `N..N` produce no indices. `N..N/2` retains
+repeated anchors and fails at index zero.
 
 ## Limits
 
@@ -529,14 +505,17 @@ The same parsed expression can be evaluated separately against different source 
 | Decimal digits in one numeric, count, or offset token | 1,024. |
 | Absolute written exponent | 4,096. |
 | Values emitted by one evaluation | 1,000,000, exposed as `MAX_VALUES`. |
-| Numeric finite source length | `usize::MAX`. |
-| Index selection length | `i64::MAX`, also constrained by `usize`. |
 
 `ParseLimits`, `IntEvalOptions::max_values`, `RealEvalOptions::max_values`, and
 `IndexEvaluator::new(max_values)` can tighten the relevant ceilings. Larger requested limits
 are capped. The input byte limit bounds comma-separated terms without a separate term limit.
 Literal digit limits count leading zeros, significand digits, and exponent digits. Offset
 magnitudes have no exponent syntax.
+
+Via sequence policies use the default limits. The value ceiling applies to both input forms
+and to serialization, including vectors constructed directly in Rust. Parser limits apply only
+to expression strings. Array length is checked before constructing the policy result, after
+the format reader has already built the Node array.
 
 Output limits apply cumulatively to the expression and count duplicates. Required coordinates
 are resolved and each term's exact retained cardinality is checked before expanding it.
@@ -558,8 +537,12 @@ values or products of independently evaluated sequences.
 
 Errors expose `source_text()`, `span()`, `kind()`, and `render()`. Profile and evaluation
 errors also identify the originating `term_index()`. Error-kind types provide machine-readable
-categories. `Span` is a half-open UTF-8 byte range in the authored expression. `Display` on
+categories. `Span` is a half-open UTF-8 byte range in the expression source. `Display` on
 an error renders a bounded source excerpt with a caret and explanation.
+
+Scry decoding adds the configuration field's location and retains the concrete `ParseError`,
+`ExprBuildError`, or `EvalError` as the `NodeError` cause. Primitive array conversion failures
+keep their element location and original numeric cause.
 
 Successful expressions retain their complete source. Errors normally retain it too. When input
 exceeds its byte limit, `ParseError::source_text()` retains a UTF-8-safe prefix of at most
@@ -568,12 +551,12 @@ also applies to a wrapping `ExprBuildError`. Use `render()` for bounded diagnost
 Do not assume the returned source text can be sliced using that span.
 
 `IndexError` retains the underlying numeric error category as `IndexErrorKind::Evaluation`,
-alongside the source text, span, and term association. It does not retain the original `EvalError` as an
-`std::error::Error::source()` cause.
+alongside the source text, span, and term association. It does not retain the original `EvalError`
+as an `std::error::Error::source()` cause.
 
 `evaluate()` either returns a complete vector or an error. `IntEvaluator::evaluate_each()`
-instead invokes a callback for each bounded candidate, with its integer value, zero-based term
-index, and source span. It can invoke callbacks before a later term or callback fails.
+instead invokes a callback with each retained `i64` value, its zero-based term index, and its
+source span. It can invoke callbacks before a later term or callback fails.
 The callback API is not transactional:
 
 ```rust

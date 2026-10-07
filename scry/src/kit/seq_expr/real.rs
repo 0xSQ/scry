@@ -10,7 +10,13 @@ use super::{
 
 // ---------------------------------------------------------------------------------------------- //
 
-/// Evaluates validated real-number sequence expressions.
+/// Evaluates [`RealSeqExpr`] values as finite `f32` or `f64`.
+///
+/// Sampling keeps anchors exact until each retained value is rounded to the requested type,
+/// using nearest rounding with ties to even. Values that cannot become finite in that type fail
+/// evaluation. Floating zeros become positive zero.
+/// [`Self::evaluate`] and [`Self::evaluate_f32`] preserve order and duplicates and return no vector
+/// on failure.
 #[derive(Debug, Clone)]
 pub struct RealEvaluator {
     options: RealEvalOptions,
@@ -26,20 +32,14 @@ impl RealEvaluator {
         }
     }
 
-    /// Evaluates an expression exactly before converting each retained anchor once to `f64`.
-    ///
-    /// Uses nearest rounding with ties to even, normalizes floating zero to positive zero, and
-    /// rejects non-finite retained values. Order and duplicates are preserved. Returns no vector
-    /// on failure.
+    /// Evaluates exact retained anchors directly into `Vec<f64>`.
     pub fn evaluate(&self, expression: &RealSeqExpr) -> Result<Vec<f64>, EvalError> {
         self.evaluate_as::<f64>(expression)
     }
 
-    /// Evaluates an expression exactly before converting each retained anchor once to `f32`.
+    /// Evaluates exact retained anchors directly into `Vec<f32>`.
     ///
-    /// Rounds directly from the exact anchor with ties to even, without an intermediate `f64`.
-    /// Normalizes floating zero to positive zero and rejects non-finite retained values.
-    /// Order and duplicates are preserved. Returns no vector on failure.
+    /// Rounds each exact anchor once, without an intermediate `f64` conversion.
     pub fn evaluate_f32(&self, expression: &RealSeqExpr) -> Result<Vec<f32>, EvalError> {
         self.evaluate_as::<f32>(expression)
     }

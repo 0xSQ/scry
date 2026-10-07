@@ -7,14 +7,14 @@ use super::{IntContext, IntEvalOptions, IntEvaluator, IntSeqExpr, Span, MAX_VALU
 
 // ---------------------------------------------------------------------------------------------- //
 
-/// Evaluates integer expressions as strict indices into a finite domain.
+/// Evaluates [`IntSeqExpr`] values as strict indices into a finite source.
 #[derive(Debug, Clone, Copy)]
 pub struct IndexEvaluator {
     max_values: usize,
 }
 
 impl IndexEvaluator {
-    /// Creates an index evaluator with a limit no greater than the hard core ceiling.
+    /// Creates an index evaluator whose output limit is capped at [`MAX_VALUES`].
     pub fn new(max_values: usize) -> Self {
         Self {
             max_values: max_values.min(MAX_VALUES),
@@ -23,9 +23,10 @@ impl IndexEvaluator {
 
     /// Returns every selected occurrence or fails on the first invalid emitted index.
     ///
-    /// Defines `N` as `length` and fills omitted endpoints with zero and `length`. The length
-    /// must fit `i64`, including for empty results. Every emitted or rounded index must satisfy
-    /// `0 <= index < length`. Selection preserves order and duplicates and never clips indices.
+    /// Supplies [`IntContext::FiniteSource`]. Defines `N` as `length` and fills omitted endpoints
+    /// with zero and `length`. The length must fit `i64`, including for empty results. Every emitted
+    /// or rounded index must satisfy `0 <= index < length`. Selection preserves order and duplicates
+    /// and never clips indices.
     pub fn evaluate(
         &self,
         expression: &IntSeqExpr,
@@ -95,7 +96,7 @@ impl IndexError {
         self.term_index
     }
 
-    /// Returns the byte span associated with the failure.
+    /// Returns the half-open UTF-8 byte [`Span`] associated with the failure.
     pub fn span(&self) -> Span {
         self.span
     }
@@ -125,7 +126,7 @@ impl From<EvalError> for IndexError {
 /// Describes an invalid extent, emitted index, or underlying numeric evaluation.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum IndexErrorKind {
-    /// The source length cannot be represented as an integer coordinate.
+    /// The source length exceeds `i64::MAX`.
     #[error("source length {length} cannot be represented as an i64 coordinate")]
     InvalidExtent {
         /// The supplied source length.

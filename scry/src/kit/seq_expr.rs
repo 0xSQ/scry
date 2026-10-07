@@ -1,11 +1,6 @@
-//! Parses and evaluates concise integer and real-number sequence expressions.
-//!
-//! Expressions retain their authored text. Parsing checks syntax, and converting to [`IntSeqExpr`]
-//! or [`RealSeqExpr`] checks the numeric profile. Evaluation supplies runtime context and checks
-//! output representability and limits. Via policies expand into Scry's integer and floating-point
-//! vector types, and index selection checks a caller-supplied source length.
+//! Provides compact numeric sequences and index selections for command-line tools.
 
-#![doc = include_str!("../../docs/sequence-expressions.md")]
+#![doc = include_str!("../../docs/kit/sequence-expressions.md")]
 #![warn(missing_docs)]
 
 mod error;
@@ -54,7 +49,10 @@ impl SeqExpr {
         parser::parse(source, limits)
     }
 
-    /// Returns the expression exactly as authored.
+    /// Returns the stored expression source.
+    ///
+    /// Parsing preserves the original spelling and whitespace. Expressions built by an
+    /// [`IntSeqExpr`] constructor instead use its generated source.
     pub fn source(&self) -> &str {
         &self.source
     }
@@ -82,7 +80,7 @@ impl Display for SeqExpr {
 pub struct IntSeqExpr(SeqExpr);
 
 impl IntSeqExpr {
-    /// Creates an expression spanning the supplied evaluation context.
+    /// Creates an open range whose endpoints are supplied during evaluation.
     ///
     /// The expression is `..`, with an included start, excluded stop, and unit step. Evaluation
     /// requires open bounds or a finite source length. An index evaluator supplies that length.
@@ -196,7 +194,7 @@ macro_rules! impl_int_value {
 
 impl_int_value!(i8, i16, i32, i64, isize, u8, u16, u32, u64, usize);
 
-/// Identifies a half-open UTF-8 byte span in the authored expression.
+/// Identifies a half-open UTF-8 byte span in the expression source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Span {
     /// The inclusive starting byte offset.

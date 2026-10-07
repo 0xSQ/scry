@@ -6,7 +6,8 @@
 //! 2. **`where`** - Filtering rules: which discovered files to keep.
 //! 3. **`sort`** - Ordering rules for each discovered root batch.
 //!
-//! See `docs/files.md` for the user-facing config cookbook.
+//! See the [Files guide](https://github.com/0xSQ/scry/blob/main/scry/docs/kit/files.md)
+//! for configuration forms and recipes.
 //!
 //! # Symlink behavior
 //!

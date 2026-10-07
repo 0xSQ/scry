@@ -24,7 +24,7 @@ impl Describe for SeqExpr {
     fn describe() -> Desc {
         Desc::plain("sequence expression string").with_doc(
             "Comma-separated values and ranges with optional step or subdivision sampling. \
-             The numeric profile is selected before evaluation.",
+             Parsing retains the source. Select an integer or real profile before evaluation.",
         )
     }
 }
@@ -51,7 +51,7 @@ impl Describe for IntSeqExpr {
     fn describe() -> Desc {
         Desc::plain("integer sequence expression string").with_doc(
             "Comma-separated integer values and ranges with optional step or subdivision sampling. \
-             Open ranges and N require evaluation context.",
+             Parsing retains the source. Evaluation supplies context for open ranges and N.",
         )
     }
 }
@@ -78,7 +78,8 @@ impl Describe for RealSeqExpr {
     fn describe() -> Desc {
         Desc::plain("real sequence expression string").with_doc(
             "Comma-separated real values and ranges. Ranges require explicit endpoints and a step \
-             or subdivision sampler. Evaluation produces finite f64 values.",
+             or subdivision sampler. Parsing retains the source. Evaluation produces finite \
+             f32 or f64 values.",
         )
     }
 }

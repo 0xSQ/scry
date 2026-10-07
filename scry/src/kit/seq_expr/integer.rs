@@ -9,24 +9,27 @@ use super::{
 
 // ---------------------------------------------------------------------------------------------- //
 
-/// Evaluates integer expressions with exact coordinates and explicit contextual bounds.
+/// Evaluates [`IntSeqExpr`] values as `i64` with explicit context.
+///
+/// Uses [`IntEvalOptions`] for open endpoints, `N`, and output limits. For strict source indices,
+/// use [`IndexEvaluator`](super::IndexEvaluator). [`IntSequence`](super::IntSequence) selects other
+/// native integer outputs when decoding a Scry field.
 #[derive(Debug, Clone)]
 pub struct IntEvaluator {
     options: IntEvalOptions,
 }
 
 impl IntEvaluator {
-    /// Creates an evaluator with the supplied context and bounded output limit.
+    /// Creates an evaluator whose output limit is capped at [`MAX_VALUES`].
     pub fn new(mut options: IntEvalOptions) -> Self {
         options.max_values = options.max_values.min(MAX_VALUES);
         Self { options }
     }
 
-    /// Evaluates an expression into an ordered vector, preserving duplicate values.
+    /// Evaluates an expression into an ordered `Vec<i64>`.
     ///
-    /// Returns no vector on failure. Omitted endpoints and end-relative values require the
-    /// appropriate explicit context, and retained values must fit `i64`. Endpoints and steps
-    /// remain exact even when they exceed the output type's range.
+    /// Preserves duplicates and returns no vector on failure. Omitted endpoints and `N` require
+    /// [`IntContext`]. Endpoints, steps, and sampling stay exact. Only retained values must fit `i64`.
     pub fn evaluate(&self, expression: &IntSeqExpr) -> Result<Vec<i64>, EvalError> {
         self.evaluate_as(expression)
     }
@@ -44,12 +47,13 @@ impl IntEvaluator {
         Ok(values)
     }
 
-    /// Visits bounded integer candidates while retaining their diagnostic source association.
+    /// Visits retained `i64` values in expression order, preserving duplicates.
     ///
-    /// The callback receives the value, its zero-based term index, and its authored byte span.
-    /// Evaluation preserves order and duplicates and stops on the first evaluation or callback
-    /// error. Earlier callbacks may already have run when a later term fails. Collect into a
-    /// temporary value or use [`Self::evaluate`] when results must be published atomically.
+    /// The callback receives each value, its zero-based term index, and its source [`Span`].
+    /// Uses the context and narrowing rules of [`Self::evaluate`] and checks each term's count
+    /// before emitting it. Stops on the first evaluation or callback error. Earlier callbacks may
+    /// already have run when a later failure occurs, and their effects are not rolled back.
+    /// Collect into a temporary value or use [`Self::evaluate`] for atomic publication.
     pub fn evaluate_each<E: From<EvalError>>(
         &self,
         expression: &IntSeqExpr,

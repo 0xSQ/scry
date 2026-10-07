@@ -1,4 +1,4 @@
-//! Via policies for immediately expanded numeric sequences.
+//! Via policies for immediate expansion into native numeric vectors.
 
 use super::MAX_VALUES;
 use super::{
@@ -15,10 +15,12 @@ use crate::{
 /// Expands integer expression strings or decodes integer arrays into a native integer vector.
 ///
 /// This Via policy supports `i8`, `i16`, `i32`, `i64`, `isize`, `u8`, `u16`, `u32`, `u64`, and
-/// `usize`. Expressions are evaluated exactly before retained values are checked against the
-/// destination type. Evaluation has no context, so `N` and omitted endpoints require a retained
-/// [`IntSeqExpr`] instead. Arrays use ordinary Scry integer decoding. Input and output are limited
-/// to [`MAX_VALUES`] values, and output is always a numeric array.
+/// `usize`. Expression strings use exact evaluation without context. Only retained values must
+/// fit the destination type. Keep an [`IntSeqExpr`] when `N` or omitted endpoints need context
+/// supplied later. Arrays use ordinary [`FromNode`] integer decoding.
+///
+/// Input and output allow at most [`MAX_VALUES`] values. Output is always a numeric array and
+/// does not retain the expression source.
 pub struct IntSequence;
 
 macro_rules! impl_integer_sequence {
@@ -59,8 +61,8 @@ macro_rules! impl_integer_sequence {
                 fn describe() -> Desc {
                     Desc::plain("integer sequence expression string or integer array").with_doc(
                         format!(
-                            "Expression strings expand during decoding without context. Arrays \
-                             contain scalar integers. Retained values must fit {} ({}..={}). \
+                            "Expression strings expand without context. Arrays use ordinary integer \
+                             decoding. Retained values must fit {} ({}..={}). \
                              Input and output allow at most 1,000,000 values. Output is a numeric array.",
                             stringify!($target),
                             <$target>::MIN,
@@ -78,9 +80,12 @@ impl_integer_sequence!(i8, i16, i32, i64, isize, u8, u16, u32, u64, usize);
 /// Expands real expression strings or decodes real arrays into `Vec<f32>` or `Vec<f64>`.
 ///
 /// Expression evaluation rounds exact retained values directly into the destination type, using
-/// nearest rounding with ties to even. Arrays use ordinary Scry floating-point decoding and preserve
-/// signed zero. Expression evaluation retains its positive-zero normalization. This policy requires
-/// finite values and limits input and output to [`MAX_VALUES`] values. Output is a numeric array.
+/// nearest rounding with ties to even. Arrays use ordinary [`FromNode`] floating-point decoding
+/// and preserve signed zero. Expression zeros are normalized to positive zero.
+///
+/// Input and output require finite values and allow at most [`MAX_VALUES`] values. Output is
+/// always a numeric array and does not retain the expression source. Keep a [`RealSeqExpr`] to
+/// evaluate later with [`RealEvaluator`].
 pub struct RealSequence;
 
 macro_rules! impl_real_sequence {
@@ -124,11 +129,11 @@ macro_rules! impl_real_sequence {
             impl DescribeVia<Vec<$target>> for RealSequence {
                 fn describe() -> Desc {
                     Desc::plain("real sequence expression string or real array").with_doc(format!(
-                        "Expression strings expand during decoding, rounding exact retained values \
-                         directly to {} with nearest rounding and ties to even. Arrays contain scalar \
-                         real values decoded as {}. Values must be finite in that type. Input and \
-                         output allow at most 1,000,000 values. Output is a numeric array.",
-                        stringify!($target),
+                        "Expression strings round exact retained values directly to {} with nearest \
+                         rounding and ties to even. Arrays use ordinary floating-point decoding and \
+                         preserve signed zero. Expression zeros become positive. Values must be \
+                         finite in the destination type. Input and output allow at most 1,000,000 \
+                         values. Output is a numeric array.",
                         stringify!($target),
                     ))
                 }
