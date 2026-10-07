@@ -29,6 +29,9 @@ fs-err = "3"
 heck = "0.5"
 indexmap = "2"
 json5 = { version = "0.4", optional = true }
+num-bigint = "0.4"
+num-rational = "0.4"
+num-traits = "0.2"
 regex = "1"
 rhai = "1"
 scry_derive = { path = "../scry_derive" }

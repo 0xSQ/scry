@@ -401,11 +401,12 @@ defaults::base + #{
 ## Further
 
 - **[Core Concepts](docs/concepts.md)** - Explains the basics: how the `Node` tree works, how to implement `FromNode` manually, etc.
-- The [`kit`](scry/src/kit.rs) module provides reusable building blocks for common configuration
-  patterns. [`Files`](docs/files.md) represents sets of files using config-file syntax,
+- The [`kit`](scry/src/kit.rs) module provides reusable building blocks for configuration and CLI
+  tools. [`Files`](docs/files.md) represents sets of files using config-file syntax,
   [`KeyValues<V>`](scry/src/kit/key_values.rs) provides key-value entries for initializing Rust map
   types, and [`OneOrMany<T>`](scry/src/kit/one_or_many.rs) lets a field accept either a
-  single value or an array.
+  single value or an array. [SeqExpr](scry/docs/sequence-expressions.md) lets a command-line
+  argument specify a numeric sequence or a selection of list indices.
 
 See the [examples](scry/examples) directory for complete working code.
 
