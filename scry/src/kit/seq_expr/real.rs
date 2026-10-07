@@ -1,4 +1,4 @@
-use num_bigint::{BigInt, BigUint};
+use num_bigint::{BigInt, BigUint, Sign};
 use num_rational::BigRational;
 use num_traits::{One, ToPrimitive, Zero};
 
@@ -32,6 +32,19 @@ impl RealEvaluator {
     /// rejects non-finite retained values. Order and duplicates are preserved. Returns no vector
     /// on failure.
     pub fn evaluate(&self, expression: &RealSeqExpr) -> Result<Vec<f64>, EvalError> {
+        self.evaluate_as::<f64>(expression)
+    }
+
+    /// Evaluates an expression exactly before converting each retained anchor once to `f32`.
+    ///
+    /// Rounds directly from the exact anchor with ties to even, without an intermediate `f64`.
+    /// Normalizes floating zero to positive zero and rejects non-finite retained values.
+    /// Order and duplicates are preserved. Returns no vector on failure.
+    pub fn evaluate_f32(&self, expression: &RealSeqExpr) -> Result<Vec<f32>, EvalError> {
+        self.evaluate_as::<f32>(expression)
+    }
+
+    fn evaluate_as<T: RealTarget>(&self, expression: &RealSeqExpr) -> Result<Vec<T>, EvalError> {
         let mut values = Vec::new();
         for (term_index, term) in expression.0.terms.iter().enumerate() {
             match &term.kind {
@@ -89,7 +102,7 @@ impl RealEvaluator {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn append_fixed_step(
+    fn append_fixed_step<T: RealTarget>(
         &self,
         expression: &RealSeqExpr,
         term_index: usize,
@@ -99,7 +112,7 @@ impl RealEvaluator {
         step: &BigRational,
         start_inclusion: Inclusion,
         stop_inclusion: Inclusion,
-        values: &mut Vec<f64>,
+        values: &mut Vec<T>,
     ) -> Result<(), EvalError> {
         if start == stop {
             let count = usize::from(
@@ -156,7 +169,7 @@ impl RealEvaluator {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn append_subdivision(
+    fn append_subdivision<T: RealTarget>(
         &self,
         expression: &RealSeqExpr,
         term_index: usize,
@@ -166,7 +179,7 @@ impl RealEvaluator {
         count: &BigUint,
         start_inclusion: Inclusion,
         stop_inclusion: Inclusion,
-        values: &mut Vec<f64>,
+        values: &mut Vec<T>,
     ) -> Result<(), EvalError> {
         let subdivision = Subdivision::bounded(
             count,
@@ -196,9 +209,9 @@ impl RealEvaluator {
         current: usize,
         additional: usize,
     ) -> Result<(), EvalError> {
-        let total = current.checked_add(additional).ok_or_else(|| {
-            eval_error(expression, term_index, span, EvalErrorKind::CardinalityOverflow)
-        })?;
+        let total = current
+            .checked_add(additional)
+            .ok_or_else(|| self.output_limit_error(expression, term_index, span))?;
         if total > self.options.max_values {
             return Err(self.output_limit_error(expression, term_index, span));
         }
@@ -273,19 +286,119 @@ pub(super) fn validate(expression: &SeqExpr) -> Result<(), ProfileError> {
     Ok(())
 }
 
-fn real_value(
+fn real_value<T: RealTarget>(
     expression: &RealSeqExpr,
     term_index: usize,
     span: Span,
     value: &BigRational,
-) -> Result<f64, EvalError> {
-    let converted = value.to_f64().ok_or_else(|| {
-        eval_error(expression, term_index, span, EvalErrorKind::RealValueNotFinite)
-    })?;
-    if !converted.is_finite() {
-        return Err(eval_error(expression, term_index, span, EvalErrorKind::RealValueNotFinite));
+) -> Result<T, EvalError> {
+    T::from_rational(value).ok_or_else(|| {
+        eval_error(
+            expression,
+            term_index,
+            span,
+            EvalErrorKind::RealValueNotFinite {
+                target_type: T::TYPE_NAME,
+            },
+        )
+    })
+}
+
+trait RealTarget: Sized {
+    const TYPE_NAME: &'static str;
+
+    fn from_rational(value: &BigRational) -> Option<Self>;
+}
+
+impl RealTarget for f64 {
+    const TYPE_NAME: &'static str = "f64";
+
+    fn from_rational(value: &BigRational) -> Option<Self> {
+        value.to_f64().filter(|converted| converted.is_finite()).map(|converted| {
+            if converted == 0.0 {
+                0.0
+            } else {
+                converted
+            }
+        })
     }
-    Ok(if converted == 0.0 { 0.0 } else { converted })
+}
+
+impl RealTarget for f32 {
+    const TYPE_NAME: &'static str = "f32";
+
+    fn from_rational(value: &BigRational) -> Option<Self> {
+        rational_to_f32(value)
+    }
+}
+
+fn rational_to_f32(value: &BigRational) -> Option<f32> {
+    let numerator = value.numer().magnitude();
+    if numerator.is_zero() {
+        return Some(0.0);
+    }
+    let denominator = value.denom().magnitude();
+    let mut exponent =
+        i64::try_from(numerator.bits()).ok()? - i64::try_from(denominator.bits()).ok()?;
+
+    // The exact exponent is this bit-length difference or one less. Avoid scaling huge values.
+    if exponent > 128 {
+        return None;
+    }
+    if exponent < -150 {
+        return Some(0.0);
+    }
+    let below_power = if exponent >= 0 {
+        numerator < &(denominator << usize::try_from(exponent).ok()?)
+    } else {
+        &(numerator << usize::try_from(-exponent).ok()?) < denominator
+    };
+    if below_power {
+        exponent -= 1;
+    }
+    if exponent > 127 {
+        return None;
+    }
+
+    // Normal values retain 24 significand bits. Subnormals use the fixed quantum 2^-149.
+    let shift = 23 - exponent.max(-126);
+    let (scaled_numerator, scaled_denominator) = if shift >= 0 {
+        (numerator << usize::try_from(shift).ok()?, denominator.clone())
+    } else {
+        (numerator.clone(), denominator << usize::try_from(-shift).ok()?)
+    };
+    let mut significand = &scaled_numerator / &scaled_denominator;
+    let twice_remainder = (&scaled_numerator % &scaled_denominator) << 1_usize;
+    if twice_remainder > scaled_denominator
+        || (twice_remainder == scaled_denominator && significand.bit(0))
+    {
+        significand += 1_u8;
+    }
+    let mut significand = significand.to_u32()?;
+    if significand == 0 {
+        return Some(0.0);
+    }
+
+    let magnitude = if exponent < -126 {
+        // Rounding can reach the smallest normal value. Its raw bits equal this significand too.
+        significand
+    } else {
+        if significand == 1 << 24 {
+            significand >>= 1;
+            exponent += 1;
+        }
+        if exponent > 127 {
+            return None;
+        }
+        let biased_exponent = u32::try_from(exponent + 127).ok()?;
+        (biased_exponent << 23) | (significand - (1 << 23))
+    };
+    let sign = if value.numer().sign() == Sign::Minus {
+        1 << 31
+    } else {
+        0
+    };
+    Some(f32::from_bits(sign | magnitude))
 }
 
 fn eval_error(

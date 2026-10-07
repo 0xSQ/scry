@@ -40,12 +40,15 @@ fn native_decoding_validates_profiles_without_evaluating_values() {
     let integer = IntSeqExpr::from_node(&"9223372036854775808".to_node().unwrap()).unwrap();
     assert_eq!(
         IntEvaluator::new(IntEvalOptions::default()).evaluate(&integer).unwrap_err().kind(),
-        &EvalErrorKind::IntegerOutOfRange,
+        &EvalErrorKind::IntegerOutOfRange { target_type: "i64" },
     );
 
     let real = RealSeqExpr::from_node(&"1e4000".to_node().unwrap()).unwrap();
     let evaluator = RealEvaluator::new(RealEvalOptions::default());
-    assert_eq!(evaluator.evaluate(&real).unwrap_err().kind(), &EvalErrorKind::RealValueNotFinite);
+    assert_eq!(
+        evaluator.evaluate(&real).unwrap_err().kind(),
+        &EvalErrorKind::RealValueNotFinite { target_type: "f64" }
+    );
     let real = RealSeqExpr::from_node(&"(-1e4000..1e4000)/2".to_node().unwrap()).unwrap();
     assert_eq!(evaluator.evaluate(&real).unwrap(), [0.0]);
 

@@ -148,19 +148,26 @@ away from zero. Inclusion rules select anchors before rounding:
 The last result contains 1 because the retained interior anchor 0.5 rounds to 1. Oversampling,
 duplicate values, and aliases of excluded endpoints are valid numeric results.
 
+Integer endpoints, steps, and sampling calculations use exact arithmetic. Only retained values
+must fit the output type. A range can therefore use an excluded stop beyond that type's maximum,
+or subdivide very large coordinates to produce a small interior value. For example,
+`(-9223372036854775809..9223372036854775809)/2` emits just `0`, which fits `i64`.
+An empty range has no values to convert. Required context and output count limits still apply.
+
 ### Exact real anchors
 
 Decimal literals, endpoint comparisons, cardinalities, and real anchors use exact arithmetic.
 `[0..0.3]:0.1` produces four anchors, including the stop. Repeated floating addition does not
 determine whether the last anchor is retained.
 
-Each retained real anchor is rounded once to `f64` using nearest rounding with ties to even.
+Each retained real anchor is rounded once to the requested `f32` or `f64` using nearest rounding
+with ties to even. `f32` evaluation converts the exact anchor directly to `f32`.
 Results are finite and monotonic in the range's direction. Floating zeros are normalized to
 positive zero. Underflow, duplicate floats, and aliases of excluded endpoints are ordinary
 rounding outcomes. For example, `[0..1e-1000]/2` produces three zeros.
 
-An emitted value that cannot become a finite `f64` is an evaluation error. Endpoints and step
-magnitudes need not themselves fit in `f64` when every retained result does.
+An emitted value that cannot become finite in the requested type is an evaluation error.
+Endpoints and step magnitudes need not themselves fit that type when every retained result does.
 
 ## Rust API and numeric profiles
 
@@ -189,7 +196,10 @@ let values = IntEvaluator::new(IntEvalOptions::default()).evaluate(&integers)?;
 assert_eq!(values, vec![0, 3, 5, 8, 10]);
 
 let reals: RealSeqExpr = "[0..0.3]:0.1".parse()?;
-let values = RealEvaluator::new(RealEvalOptions::default()).evaluate(&reals)?;
+let real_evaluator = RealEvaluator::new(RealEvalOptions::default());
+let values = real_evaluator.evaluate(&reals)?;
+assert_eq!(values, vec![0.0, 0.1, 0.2, 0.3]);
+let values: Vec<f32> = real_evaluator.evaluate_f32(&reals)?;
 assert_eq!(values, vec![0.0, 0.1, 0.2, 0.3]);
 
 let selection: IntSeqExpr = "N-3..".parse()?;
@@ -213,9 +223,11 @@ assert_eq!(integers.to_string(), authored);
 ```
 
 Profile validation does not evaluate coordinates or convert real anchors to floats. An integer
-literal outside `i64`, or a real literal outside finite `f64`, can therefore parse successfully
-and fail when evaluation needs that value. An integer expression containing `N` or an omitted
-endpoint can be retained before its evaluation context exists.
+literal outside the target integer range, or a real literal outside the target's finite range,
+can therefore parse successfully and fail when evaluation needs that value. `IntEvaluator`
+returns `Vec<i64>`. `RealEvaluator::evaluate` returns `Vec<f64>`, and `evaluate_f32` returns
+`Vec<f32>`. Via policies select the numeric type from the field declaration. An integer
+expression containing `N` or an omitted endpoint can be retained before its context exists.
 
 ## Scry configuration
 
@@ -293,9 +305,9 @@ the same arrays and expression strings when `format-json` is enabled.
 ### Expanding expressions into vectors
 
 When a field needs the numeric values immediately, use a Via sequence policy. `IntSequence`
-adapts an entire `Vec<i64>` field, and `RealSequence` adapts an entire `Vec<f64>` field.
+adapts an entire integer vector field, and `RealSequence` adapts an entire floating-point vector.
 Each accepts either an expression string or a numeric array. Decoding an expression evaluates
-it and stores its values:
+it into the field's declared element type:
 
 ```rust
 use scry::kit::seq_expr::{IntSequence, RealSequence};
@@ -305,9 +317,9 @@ use scry::{Config, Node, ToNode};
 #[derive(Debug, Config, ToNode)]
 struct Sweep {
     #[scry(via(IntSequence))]
-    iterations: Vec<i64>,
+    iterations: Vec<u32>,
     #[scry(via(RealSequence))]
-    strengths: Vec<f64>,
+    strengths: Vec<f32>,
 }
 
 for input in [
@@ -319,8 +331,8 @@ for input in [
     assert_eq!(config.strengths, vec![0.0, 0.1, 0.2, 0.3]);
 
     let output = config.to_node()?;
-    assert_eq!(output.req::<Vec<i64>>("iterations")?, vec![10, 20, 30]);
-    assert_eq!(output.req::<Vec<f64>>("strengths")?, vec![0.0, 0.1, 0.2, 0.3]);
+    assert_eq!(output.req::<Vec<u32>>("iterations")?, vec![10, 20, 30]);
+    assert_eq!(output.req::<Vec<f32>>("strengths")?, vec![0.0, 0.1, 0.2, 0.3]);
 }
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
@@ -329,6 +341,17 @@ Both inputs produce the same vectors. Explicit `ToNode` output always writes num
 The vectors retain the values, order, and duplicates. They do not retain the expression's
 source or which input form was used.
 
+| Policy | Supported vector element types |
+| --- | --- |
+| `IntSequence` | `i8`, `i16`, `i32`, `i64`, `isize`, `u8`, `u16`, `u32`, `u64`, `usize`. |
+| `RealSequence` | `f32`, `f64`. |
+
+Integer expressions use the full range of the declared type. For a `Vec<u64>`, the expression
+`"18446744073709551615..18446744073709551616"` emits `[u64::MAX]`. The excluded upper boundary
+does not need to fit `u64`. Negative retained values fail for unsigned fields, and every retained
+value must fit the target. These conversions report the target type in their evaluation error.
+`isize` and `usize` use the current platform's width.
+
 Immediate expansion uses the default parser and evaluator limits and supplies no integer
 context. Expressions such as `"N-1"` and `".."` fail during decoding. The policies do not infer
 context from neighboring fields or arrays. Keep an `IntSeqExpr` when evaluation needs a source
@@ -336,6 +359,8 @@ length or explicit bounds supplied later.
 
 Array entries use Scry's primitive conversions. Numeric strings such as `"3"` are accepted,
 but `"3..7"` inside an array is not expanded. Integer arrays reject floating-point values.
+Real arrays convert values as the format reader supplied them. Expression strings retain exact
+decimal anchors until rounding to the field's type.
 Empty arrays are valid empty vectors. Empty expression strings are invalid, while a valid
 expression that emits no values produces an empty vector.
 
@@ -440,13 +465,14 @@ Use symbolic values in integer singletons or endpoints. Steps and counts remain 
 Lowercase `n`, `+N`, `-N`, `N--1`, `N+-1`, missing magnitudes, decimal or exponent offsets,
 digit separators, chained offsets, multiplication, and grouped arithmetic are invalid.
 
-Offsets are resolved exactly before narrowing the coordinate to `i64`. The written magnitude
-itself need not fit `i64`. The resolved coordinate must fit and can still be invalid as an index.
-For example, `N+1` at length `i64::MAX` is a coordinate range error.
+Offsets are resolved exactly. The written magnitude and range endpoints need not fit the output
+type. Only retained values are narrowed. For `IntEvaluator`, evaluating `N+1` at length
+`i64::MAX` is an `i64` range error, while the empty range `N+1..N+1` succeeds.
 
 Direction follows the resolved endpoints. `N-6..0` descends at length 10 and ascends at length 4.
-Validate finite extents and resolve required coordinates before deciding that a term is empty.
-Even `N..N` needs finite-source context.
+Resolve required context before deciding that a term is empty. Even `N..N` needs finite-source
+context. Numeric `FiniteSource` lengths use the full `usize` range. `IndexEvaluator` separately
+requires its length to fit `i64`.
 
 ### Strict indices
 
@@ -485,7 +511,8 @@ The same parsed expression can be evaluated separately against different source 
 | Decimal digits in one numeric, count, or offset token | 1,024. |
 | Absolute written exponent | 4,096. |
 | Values emitted by one evaluation | 1,000,000, exposed as `MAX_VALUES`. |
-| Finite source length | `i64::MAX`, also constrained by `usize`. |
+| Numeric finite source length | `usize::MAX`. |
+| Index selection length | `i64::MAX`, also constrained by `usize`. |
 
 `ParseLimits`, `IntEvalOptions::max_values`, `RealEvalOptions::max_values`, and
 `IndexEvaluator::new(max_values)` can tighten the relevant ceilings. Larger requested limits
@@ -508,7 +535,7 @@ values or products of independently evaluated sequences.
 | `ParseError` | Grammar or parser resource limits. |
 | `ProfileError` | Integer or real profile validation. |
 | `ExprBuildError` | Parse or profile failure from a profile's `FromStr` implementation. |
-| `EvalError` | Context, representability, arithmetic, or output limits. |
+| `EvalError` | Context, output representability, or output limits. |
 | `IndexError` | Invalid extent, emitted index bounds, or numeric evaluation. |
 
 Errors expose `source_text()`, `span()`, `kind()`, and `render()`. Profile and evaluation

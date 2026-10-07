@@ -1,5 +1,5 @@
 use num_bigint::BigInt;
-use num_traits::ToPrimitive;
+use num_traits::{Signed, ToPrimitive, Zero};
 
 use super::error::{EvalError, EvalErrorKind, ProfileError, ProfileErrorKind};
 use super::{
@@ -9,7 +9,7 @@ use super::{
 
 // ---------------------------------------------------------------------------------------------- //
 
-/// Evaluates integer expressions with finite contextual bounds and checked arithmetic.
+/// Evaluates integer expressions with exact coordinates and explicit contextual bounds.
 #[derive(Debug, Clone)]
 pub struct IntEvaluator {
     options: IntEvalOptions,
@@ -25,10 +25,19 @@ impl IntEvaluator {
     /// Evaluates an expression into an ordered vector, preserving duplicate values.
     ///
     /// Returns no vector on failure. Omitted endpoints and end-relative values require the
-    /// appropriate explicit context, and retained values must fit `i64`.
+    /// appropriate explicit context, and retained values must fit `i64`. Endpoints and steps
+    /// remain exact even when they exceed the output type's range.
     pub fn evaluate(&self, expression: &IntSeqExpr) -> Result<Vec<i64>, EvalError> {
+        self.evaluate_as(expression)
+    }
+
+    /// Evaluates directly into the selected native integer type.
+    pub(super) fn evaluate_as<T: IntegerTarget>(
+        &self,
+        expression: &IntSeqExpr,
+    ) -> Result<Vec<T>, EvalError> {
         let mut values = Vec::new();
-        self.evaluate_each(expression, |value, _, _| {
+        self.evaluate_each_as(expression, |value, _, _| {
             values.push(value);
             Ok::<_, EvalError>(())
         })?;
@@ -44,22 +53,38 @@ impl IntEvaluator {
     pub fn evaluate_each<E: From<EvalError>>(
         &self,
         expression: &IntSeqExpr,
-        mut emit: impl FnMut(i64, usize, Span) -> Result<(), E>,
+        emit: impl FnMut(i64, usize, Span) -> Result<(), E>,
+    ) -> Result<(), E> {
+        self.evaluate_each_as(expression, emit)
+    }
+
+    fn evaluate_each_as<T: IntegerTarget, E: From<EvalError>>(
+        &self,
+        expression: &IntSeqExpr,
+        mut emit: impl FnMut(T, usize, Span) -> Result<(), E>,
+    ) -> Result<(), E> {
+        self.evaluate_exact(expression, |value, term_index, span| {
+            let value = T::from_bigint(value).ok_or_else(|| {
+                EvalError::new(
+                    expression.0.source.clone(),
+                    Some(term_index),
+                    span,
+                    EvalErrorKind::IntegerOutOfRange {
+                        target_type: T::NAME,
+                    },
+                )
+            })?;
+            emit(value, term_index, span)
+        })
+    }
+
+    fn evaluate_exact<E: From<EvalError>>(
+        &self,
+        expression: &IntSeqExpr,
+        mut emit: impl FnMut(&BigInt, usize, Span) -> Result<(), E>,
     ) -> Result<(), E> {
         let finite_length = match self.options.context {
-            Some(IntContext::FiniteSource { length }) => {
-                Some(i64::try_from(length).map_err(|_| {
-                    EvalError::new(
-                        expression.0.source.clone(),
-                        None,
-                        Span {
-                            start: 0,
-                            end: expression.source().len(),
-                        },
-                        EvalErrorKind::InvalidFiniteExtent { length },
-                    )
-                })?)
-            }
+            Some(IntContext::FiniteSource { length }) => Some(BigInt::from(length)),
             _ => None,
         };
         let mut emitted = 0;
@@ -69,10 +94,14 @@ impl IntEvaluator {
             };
             match &term.kind {
                 TermKind::Singleton(value_expr) => {
-                    let value =
-                        self.resolve_value(expression, term_index, value_expr, finite_length)?;
-                    self.check_count(emitted, 1, &error)?;
-                    emit(value, term_index, value_expr.span())?;
+                    let value = self.resolve_value(
+                        expression,
+                        term_index,
+                        value_expr,
+                        finite_length.as_ref(),
+                    )?;
+                    self.check_count(emitted, &BigInt::from(1_u8), &error)?;
+                    emit(&value, term_index, value_expr.span())?;
                     emitted += 1;
                 }
                 TermKind::Range(range) => {
@@ -81,40 +110,34 @@ impl IntEvaluator {
                         term_index,
                         &range.start,
                         true,
-                        finite_length,
+                        finite_length.as_ref(),
                     )?;
                     let stop = self.resolve_endpoint(
                         expression,
                         term_index,
                         &range.stop,
                         false,
-                        finite_length,
+                        finite_length.as_ref(),
                     )?;
                     match &range.sampler {
                         Sampler::Unit | Sampler::Step(_) => {
                             let step = match &range.sampler {
-                                Sampler::Step(literal) => {
-                                    integer_value(expression, term_index, literal)?
-                                }
-                                _ => 1,
+                                Sampler::Step(literal) => literal.value.to_integer(),
+                                _ => BigInt::from(1_u8),
                             };
                             let lattice = IntegerLattice::new(
-                                start,
-                                stop,
-                                step,
+                                &start,
+                                &stop,
+                                &step,
                                 range.start.inclusion,
                                 range.stop.inclusion,
                             );
-                            let count = self.check_count(emitted, lattice.count, &error)?;
-                            for offset in 0..count {
-                                let k = lattice.first_k + offset as i128;
-                                let value = k
-                                    .checked_mul(i128::from(step))
-                                    .and_then(|value| value.checked_mul(lattice.direction))
-                                    .and_then(|value| i128::from(start).checked_add(value))
-                                    .and_then(|value| i64::try_from(value).ok())
-                                    .ok_or_else(|| error(EvalErrorKind::IntegerOverflow))?;
-                                emit(value, term_index, term.span)?;
+                            let count = self.check_count(emitted, &lattice.count, &error)?;
+                            let directed_step = if start <= stop { step } else { -step };
+                            let mut value = start + &directed_step * lattice.first_k;
+                            for _ in 0..count {
+                                emit(&value, term_index, term.span)?;
+                                value += &directed_step;
                             }
                             emitted += count;
                         }
@@ -130,21 +153,14 @@ impl IntEvaluator {
                                     limit: self.options.max_values,
                                 })
                             })?;
-                            let denominator = subdivision.count as i128;
-                            let difference = i128::from(stop) - i128::from(start);
-                            let base = i128::from(start)
-                                .checked_mul(denominator)
-                                .ok_or_else(|| error(EvalErrorKind::IntegerOverflow))?;
-                            for k in subdivision.first_k..subdivision.first_k + subdivision.retained
-                            {
-                                let numerator = difference
-                                    .checked_mul(k as i128)
-                                    .and_then(|value| base.checked_add(value))
-                                    .ok_or_else(|| error(EvalErrorKind::IntegerOverflow))?;
-                                let value = round_anchor(numerator, denominator)
-                                    .and_then(|value| i64::try_from(value).ok())
-                                    .ok_or_else(|| error(EvalErrorKind::IntegerOverflow))?;
-                                emit(value, term_index, term.span)?;
+                            let denominator = BigInt::from(subdivision.count);
+                            let difference = stop - &start;
+                            let mut numerator =
+                                start * &denominator + &difference * subdivision.first_k;
+                            for _ in 0..subdivision.retained {
+                                let value = round_anchor(&numerator, &denominator);
+                                emit(&value, term_index, term.span)?;
+                                numerator += &difference;
                             }
                             emitted += subdivision.retained;
                         }
@@ -158,15 +174,15 @@ impl IntEvaluator {
     fn check_count(
         &self,
         current: usize,
-        additional: i128,
+        additional: &BigInt,
         error: &impl Fn(EvalErrorKind) -> EvalError,
     ) -> Result<usize, EvalError> {
-        if additional > (self.options.max_values - current) as i128 {
+        if additional > &BigInt::from(self.options.max_values - current) {
             return Err(error(EvalErrorKind::OutputLimitExceeded {
                 limit: self.options.max_values,
             }));
         }
-        usize::try_from(additional).map_err(|_| error(EvalErrorKind::CardinalityOverflow))
+        Ok(additional.to_usize().expect("bounded retained cardinality fits usize"))
     }
 
     fn resolve_endpoint(
@@ -175,17 +191,21 @@ impl IntEvaluator {
         term_index: usize,
         endpoint: &Endpoint,
         is_start: bool,
-        finite_length: Option<i64>,
-    ) -> Result<i64, EvalError> {
+        finite_length: Option<&BigInt>,
+    ) -> Result<BigInt, EvalError> {
         if let Some(value) = &endpoint.value {
             return self.resolve_value(expression, term_index, value, finite_length);
         }
         if let Some(length) = finite_length {
-            return Ok(if is_start { 0 } else { length });
+            return Ok(if is_start {
+                BigInt::zero()
+            } else {
+                length.clone()
+            });
         }
         match (self.options.context, is_start) {
-            (Some(IntContext::Bounds { open_start, .. }), true) => Ok(open_start),
-            (Some(IntContext::Bounds { open_stop, .. }), false) => Ok(open_stop),
+            (Some(IntContext::Bounds { open_start, .. }), true) => Ok(BigInt::from(open_start)),
+            (Some(IntContext::Bounds { open_stop, .. }), false) => Ok(BigInt::from(open_stop)),
             _ => Err(EvalError::new(
                 expression.0.source.clone(),
                 Some(term_index),
@@ -204,23 +224,47 @@ impl IntEvaluator {
         expression: &IntSeqExpr,
         term_index: usize,
         value: &ValueExpr,
-        finite_length: Option<i64>,
-    ) -> Result<i64, EvalError> {
+        finite_length: Option<&BigInt>,
+    ) -> Result<BigInt, EvalError> {
         match value {
-            ValueExpr::Literal(literal) => integer_value(expression, term_index, literal),
+            ValueExpr::Literal(literal) => Ok(literal.value.to_integer()),
             ValueExpr::EndRelative { offset, span } => {
                 let error = |kind| {
                     EvalError::new(expression.0.source.clone(), Some(term_index), *span, kind)
                 };
                 let length =
                     finite_length.ok_or_else(|| error(EvalErrorKind::MissingFiniteContext))?;
-                (BigInt::from(length) + offset)
-                    .to_i64()
-                    .ok_or_else(|| error(EvalErrorKind::EndRelativeOutOfRange))
+                Ok(length + offset)
             }
         }
     }
 }
+
+/// Defines the closed set of native integer outputs supported by sequence policies.
+pub(super) trait IntegerTarget: Sized {
+    const NAME: &'static str;
+
+    fn from_bigint(value: &BigInt) -> Option<Self>;
+}
+
+macro_rules! integer_targets {
+    ($($target:ty => $convert:ident),+ $(,)?) => {
+        $(
+            impl IntegerTarget for $target {
+                const NAME: &'static str = stringify!($target);
+
+                fn from_bigint(value: &BigInt) -> Option<Self> {
+                    value.$convert()
+                }
+            }
+        )+
+    };
+}
+
+integer_targets!(
+    i8 => to_i8, i16 => to_i16, i32 => to_i32, i64 => to_i64, isize => to_isize,
+    u8 => to_u8, u16 => to_u16, u32 => to_u32, u64 => to_u64, usize => to_usize,
+);
 
 /// Validates that every integer-profile literal uses integer spelling.
 pub(super) fn validate(expression: &SeqExpr) -> Result<(), ProfileError> {
@@ -260,51 +304,40 @@ pub(super) fn validate(expression: &SeqExpr) -> Result<(), ProfileError> {
 }
 
 struct IntegerLattice {
-    first_k: i128,
-    count: i128,
-    direction: i128,
+    first_k: usize,
+    count: BigInt,
 }
 
 impl IntegerLattice {
-    fn new(start: i64, stop: i64, step: i64, left: Inclusion, right: Inclusion) -> Self {
-        debug_assert!(step > 0);
-        let distance = (i128::from(stop) - i128::from(start)).abs();
-        let step = i128::from(step);
-        let first_k = i128::from(left == Inclusion::Excluded);
-        let mut last_k = distance / step;
-        if right == Inclusion::Excluded && distance % step == 0 {
-            last_k -= 1;
+    fn new(
+        start: &BigInt,
+        stop: &BigInt,
+        step: &BigInt,
+        left: Inclusion,
+        right: Inclusion,
+    ) -> Self {
+        debug_assert!(step.is_positive());
+        let distance = (stop - start).abs();
+        let first_k = usize::from(left == Inclusion::Excluded);
+        let mut last_k = &distance / step;
+        if right == Inclusion::Excluded && (&distance % step).is_zero() {
+            last_k -= 1_u8;
         }
         Self {
             first_k,
-            count: (last_k - first_k + 1).max(0),
-            direction: if start <= stop { 1 } else { -1 },
+            count: (last_k - first_k + 1_u8).max(BigInt::zero()),
         }
     }
 }
 
-fn integer_value(
-    expression: &IntSeqExpr,
-    term_index: usize,
-    literal: &NumberLiteral,
-) -> Result<i64, EvalError> {
-    literal.value.to_integer().to_i64().ok_or_else(|| {
-        EvalError::new(
-            expression.0.source.clone(),
-            Some(term_index),
-            literal.span,
-            EvalErrorKind::IntegerOutOfRange,
-        )
-    })
-}
-
-fn round_anchor(numerator: i128, denominator: i128) -> Option<i128> {
-    let quotient = numerator.checked_div(denominator)?;
-    let remainder = numerator.checked_rem(denominator)?;
-    if remainder.checked_abs()?.checked_mul(2)? < denominator {
-        Some(quotient)
+fn round_anchor(numerator: &BigInt, denominator: &BigInt) -> BigInt {
+    debug_assert!(denominator.is_positive());
+    let quotient = numerator / denominator;
+    let twice_remainder = (numerator % denominator).abs() * 2_u8;
+    if &twice_remainder < denominator {
+        quotient
     } else {
-        quotient.checked_add(numerator.signum())
+        quotient + numerator.signum()
     }
 }
 

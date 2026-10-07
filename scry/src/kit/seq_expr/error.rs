@@ -292,21 +292,16 @@ pub enum EvalErrorKind {
     MissingOpenStopContext,
     /// An end-relative value has no explicit finite-source context.
     MissingFiniteContext,
-    /// A supplied finite source length cannot be represented as an `i64` coordinate.
-    InvalidFiniteExtent {
-        /// The supplied source length that failed context validation.
-        length: usize,
+    /// A retained integer value cannot be represented by its output type.
+    IntegerOutOfRange {
+        /// The Rust integer type requested by the evaluator or Via policy.
+        target_type: &'static str,
     },
-    /// The exactly resolved end-relative coordinate is outside the `i64` range.
-    EndRelativeOutOfRange,
-    /// An ordinary integer literal is outside the `i64` range.
-    IntegerOutOfRange,
-    /// Checked arithmetic for an integer sequence calculation overflowed.
-    IntegerOverflow,
-    /// A retained-value cardinality cannot be represented by the platform index type.
-    CardinalityOverflow,
-    /// A retained exact real value cannot be converted to a finite `f64`.
-    RealValueNotFinite,
+    /// A retained exact real value cannot be converted to a finite value of its output type.
+    RealValueNotFinite {
+        /// The Rust floating-point type requested by the evaluator or Via policy.
+        target_type: &'static str,
+    },
     /// The cumulative retained-value count exceeds the effective evaluation limit.
     OutputLimitExceeded {
         /// The effective maximum number of retained values in the evaluation.
@@ -326,22 +321,11 @@ impl Display for EvalErrorKind {
             Self::MissingFiniteContext => {
                 formatter.write_str("end-relative values require a finite source context")
             }
-            Self::InvalidFiniteExtent { length } => {
-                write!(
-                    formatter,
-                    "source length {length} cannot be represented as an i64 coordinate"
-                )
+            Self::IntegerOutOfRange { target_type } => {
+                write!(formatter, "retained integer value is outside the {target_type} range")
             }
-            Self::EndRelativeOutOfRange => {
-                formatter.write_str("resolved end-relative coordinate is outside the i64 range")
-            }
-            Self::IntegerOutOfRange => {
-                formatter.write_str("integer literal is outside the i64 range")
-            }
-            Self::IntegerOverflow => formatter.write_str("integer sequence calculation overflowed"),
-            Self::CardinalityOverflow => formatter.write_str("sequence cardinality overflowed"),
-            Self::RealValueNotFinite => {
-                formatter.write_str("exact value cannot be represented as a finite f64")
+            Self::RealValueNotFinite { target_type } => {
+                write!(formatter, "exact value cannot be represented as a finite {target_type}")
             }
             Self::OutputLimitExceeded { limit } => {
                 write!(formatter, "sequence exceeds the output limit of {limit} values")
@@ -381,15 +365,14 @@ impl EvalError {
         &self.source_text
     }
 
-    /// Returns the zero-based originating term, or none for a supplied-context preflight failure.
+    /// Returns the zero-based originating term when the failure belongs to an authored term.
     pub fn term_index(&self) -> Option<usize> {
         self.term_index
     }
 
     /// Returns the half-open UTF-8 byte span associated with the failure.
     ///
-    /// Term-local failures retain the relevant value or term span. A context preflight failure
-    /// spans the complete authored expression and has no originating term.
+    /// Term-local failures retain the relevant value or term span.
     pub fn span(&self) -> Span {
         self.span
     }

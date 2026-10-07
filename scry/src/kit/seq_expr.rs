@@ -2,8 +2,8 @@
 //!
 //! Expressions retain their authored text. Parsing checks syntax, and converting to [`IntSeqExpr`]
 //! or [`RealSeqExpr`] checks the numeric profile. Evaluation supplies runtime context and checks
-//! output representability and limits. Integer sequences produce `i64`, real sequences produce
-//! finite `f64`, and index selection checks a caller-supplied source length.
+//! output representability and limits. Via policies expand into Scry's integer and floating-point
+//! vector types, and index selection checks a caller-supplied source length.
 
 #![doc = include_str!("../../docs/sequence-expressions.md")]
 #![warn(missing_docs)]
@@ -119,7 +119,7 @@ impl Display for IntSeqExpr {
 /// Stores a sequence expression validated for real-number evaluation.
 ///
 /// Validation requires explicit range endpoints and samplers and rejects end-relative values.
-/// Exact literals can exceed the finite `f64` range until evaluation needs a retained output value.
+/// Exact literals can exceed the output type's finite range until evaluation needs a retained value.
 #[derive(Debug, Clone)]
 pub struct RealSeqExpr(SeqExpr);
 
@@ -212,7 +212,7 @@ pub enum IntContext {
     },
     /// Supplies omitted bounds as zero and length, and defines `N` as length.
     FiniteSource {
-        /// The source length, which must fit `i64` even when evaluation emits no values.
+        /// The source length, resolved exactly before checking emitted values against their type.
         length: usize,
     },
 }

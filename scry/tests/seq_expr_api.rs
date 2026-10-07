@@ -99,17 +99,26 @@ fn evaluators_accept_explicit_context_and_keep_indices_strict() {
 fn output_representability_is_checked_after_profile_building() {
     let integer: IntSeqExpr = "9223372036854775808".parse().unwrap();
     let error = IntEvaluator::new(IntEvalOptions::default()).evaluate(&integer).unwrap_err();
-    assert_eq!(error.kind(), &EvalErrorKind::IntegerOutOfRange);
+    assert_eq!(error.kind(), &EvalErrorKind::IntegerOutOfRange { target_type: "i64" });
     assert_eq!(error.source_text(), integer.source());
+
+    // Only retained values must fit the output type, including after integer rounding.
+    let integer: IntSeqExpr = "(-9223372036854775809..9223372036854775809)/2".parse().unwrap();
+    assert_eq!(IntEvaluator::new(IntEvalOptions::default()).evaluate(&integer).unwrap(), [0]);
 
     let real: RealSeqExpr = "1e4000".parse().unwrap();
     let evaluator = RealEvaluator::new(RealEvalOptions::default());
     let error = evaluator.evaluate(&real).unwrap_err();
-    assert_eq!(error.kind(), &EvalErrorKind::RealValueNotFinite);
+    assert_eq!(error.kind(), &EvalErrorKind::RealValueNotFinite { target_type: "f64" });
 
     // Exact endpoints outside f64 remain valid when the retained anchor is representable.
     let real: RealSeqExpr = "(-1e4000..1e4000)/2".parse().unwrap();
     assert_eq!(evaluator.evaluate(&real).unwrap(), [0.0]);
+
+    // Single-precision evaluation rounds the exact decimal directly to its target precision.
+    let real: RealSeqExpr = "1.000000059604644775390626".parse().unwrap();
+    assert_eq!(evaluator.evaluate_f32(&real).unwrap()[0].to_bits(), 1.0_f32.to_bits() + 1);
+    assert_eq!((evaluator.evaluate(&real).unwrap()[0] as f32).to_bits(), 1.0_f32.to_bits());
 }
 
 #[test]
@@ -186,7 +195,7 @@ fn streaming_evaluation_can_deliver_values_before_a_later_failure() {
             (2, 1, Span { start: 2, end: 3 })
         ],
     );
-    assert_eq!(error.kind(), &EvalErrorKind::IntegerOutOfRange);
+    assert_eq!(error.kind(), &EvalErrorKind::IntegerOutOfRange { target_type: "i64" });
     assert_eq!(error.term_index(), Some(2));
 }
 
@@ -214,7 +223,7 @@ fn streaming_evaluation_preserves_caller_errors_and_stops_callbacks() {
     let CallbackError::Evaluation(error) = error else {
         panic!("evaluation failures must use the caller's From<EvalError> conversion");
     };
-    assert_eq!(error.kind(), &EvalErrorKind::IntegerOutOfRange);
+    assert_eq!(error.kind(), &EvalErrorKind::IntegerOutOfRange { target_type: "i64" });
 }
 
 // ---------------------------------------------------------------------------------------------- //

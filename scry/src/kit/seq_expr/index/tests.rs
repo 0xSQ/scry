@@ -18,6 +18,9 @@ fn follows_the_complete_integer_language_without_clipping() {
         ("7,2,7", vec![7, 2, 7]),
         ("0..12", (0..12).collect()),
         ("0..100:100", vec![0]),
+        ("0..18446744073709551616:18446744073709551616", vec![0]),
+        ("(-18446744073709551616..18446744073709551616)/2", vec![0]),
+        ("9223372036854775808..9223372036854775808", vec![]),
         ("3..3", vec![]),
     ] {
         assert_eq!(evaluate(source, 12).unwrap(), expected, "{source}");
@@ -56,7 +59,10 @@ fn retains_the_offending_term_and_span() {
     assert!(error.to_string().contains("index 12 is outside 0..12"));
     let numeric = evaluate("1,9223372036854775808", 12).unwrap_err();
     assert_eq!(numeric.term_index(), Some(1));
-    assert_eq!(numeric.kind(), &IndexErrorKind::Evaluation(EvalErrorKind::IntegerOutOfRange));
+    assert_eq!(
+        numeric.kind(),
+        &IndexErrorKind::Evaluation(EvalErrorKind::IntegerOutOfRange { target_type: "i64" })
+    );
 }
 
 #[test]
@@ -167,7 +173,10 @@ fn retains_symbolic_value_spans_and_distinguishes_numeric_failures() {
     assert_eq!(error.source_text(), source);
     let source = "1,N+9223372036854775807";
     let error = evaluate(source, 10).unwrap_err();
-    assert_eq!(error.kind(), &IndexErrorKind::Evaluation(EvalErrorKind::EndRelativeOutOfRange));
+    assert_eq!(
+        error.kind(),
+        &IndexErrorKind::Evaluation(EvalErrorKind::IntegerOutOfRange { target_type: "i64" })
+    );
     assert_eq!(error.term_index(), Some(1));
     assert_eq!(
         error.span(),
