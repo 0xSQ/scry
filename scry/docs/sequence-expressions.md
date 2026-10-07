@@ -217,6 +217,79 @@ literal outside `i64`, or a real literal outside finite `f64`, can therefore par
 and fail when evaluation needs that value. An integer expression containing `N` or an omitted
 endpoint can be retained before its evaluation context exists.
 
+## Scry configuration
+
+Expression types can be fields in an ordinary Scry configuration. They accept a string and
+retain its source for later evaluation. A plain numeric `Vec` field accepts an array of values.
+For example, an experiment can store concrete iteration values alongside an expression that
+selects their positions and a real-valued sweep:
+
+```rust
+use scry::kit::seq_expr::{IndexEvaluator, IntSeqExpr, RealSeqExpr};
+use scry::node::Format;
+use scry::{Config, Node, ToNode};
+
+#[derive(Debug, Config, ToNode)]
+struct Experiment {
+    /// Concrete iteration values.
+    iterations: Vec<i64>,
+    /// Positions to select when the input list is available.
+    #[scry(default = "..".parse::<IntSeqExpr>().expect("valid default selector"))]
+    select: IntSeqExpr,
+    /// An optional second selection for comparison.
+    comparison: Option<IntSeqExpr>,
+    /// A sweep to evaluate when the experiment runs.
+    strengths: RealSeqExpr,
+}
+
+let input =
+    r#"#{ iterations: [10, "20", 30], select: " N-2.. ", strengths: "[0..0.3]:0.1" }"#;
+let config: Experiment = Node::parse_str(input, Format::Rhai)?.as_type()?;
+
+let indices = IndexEvaluator::default().evaluate(&config.select, config.iterations.len())?;
+assert_eq!(indices, vec![1, 2]);
+
+let output = config.to_node()?;
+assert_eq!(output.req::<Vec<i64>>("iterations")?, vec![10, 20, 30]);
+assert_eq!(output.req::<String>("select")?, " N-2.. ");
+assert_eq!(output.req::<String>("strengths")?, "[0..0.3]:0.1");
+assert_eq!(output.req::<Option<String>>("comparison")?, None);
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Decoding parses the expression strings and checks their numeric profiles. It does not expand
+them. The selector can therefore contain `N` before a source length exists. Apply configuration
+overrides before decoding, then supply the final collection length when evaluating the selector.
+The same retained selector can be reused against several collections.
+
+Explicit `ToNode` output writes numeric arrays for the concrete values, preserves expression
+strings exactly, and writes the absent comparison as null. The source spaces around `N-2..`
+survive even though they make no difference to evaluation.
+
+Native arrays follow Scry's ordinary primitive conversions. The iteration array above accepts
+`"20"` as an integer. Array elements do not expand sequence terms, so `["3..7"]` fails to
+decode as `Vec<i64>`. A whole expression string also cannot decode as a plain `Vec<i64>`.
+
+Missing and null values follow the field's declared type and fallback:
+
+- `iterations` and `strengths` are required. Missing either key is an error.
+- Missing `select` uses the explicitly parsed `".."` default. A present null is still invalid.
+- Missing or null `comparison` becomes `None`. A supplied expression string becomes `Some`.
+
+Expression types accept only string values. They have no inherent Rust `Default` or Scry
+`FromDefaults`, because there is no expression that serves as a default in every context.
+An explicit field default chooses the target expression only when its key is missing.
+
+Scry descriptions identify the accepted values as `sequence expression string`,
+`integer sequence expression string`, or `real sequence expression string`. Invalid syntax or
+profile errors carry the configuration field's location and retain the concrete `ParseError`
+or `ExprBuildError` as their cause. The authored span and error kind remain available on that
+cause.
+
+These field shapes work across Scry-supported configuration formats. The executable example
+uses Rhai, which is available without format feature flags. An equivalent JSON document uses
+the same arrays and expression strings when `format-json` is enabled.
+
 ## Explicit integer contexts
 
 `IntEvalOptions::context` controls omitted endpoints and symbolic values:

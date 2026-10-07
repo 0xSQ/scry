@@ -14,6 +14,7 @@ mod index;
 mod integer;
 mod parser;
 mod real;
+mod scry;
 
 use std::fmt::{self, Display, Formatter};
 use std::str::FromStr;
