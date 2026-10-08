@@ -5,6 +5,7 @@
 
 use std::ops::Deref;
 
+use crate::convert::{read, write};
 use crate::desc::Desc;
 use crate::node::{Node, NodeError};
 use crate::traits::{Describe, FromNode, ToNode};
@@ -36,8 +37,9 @@ use crate::traits::{Describe, FromNode, ToNode};
 ///
 /// # Canonical output
 ///
-/// When serialized (e.g., via `--get`), `OneOrMany<T>` always emits an array,
+/// When serialized through `ToNode`, `OneOrMany<T>` always emits an array,
 /// even for single elements. This ensures stable round-trip behavior.
+/// Array-valued single elements need an enclosing array in input, such as `[[1, 2, 3]]`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OneOrMany<T>(Vec<T>);
 
@@ -82,6 +84,45 @@ impl<T> OneOrMany<T> {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+}
+
+// ---------------------------------------------------------------------------------------------- //
+// Shared shape operations
+
+/// Reads an array as many items or a non-array value as one item using the supplied reader.
+///
+/// Every array selects the outer many form. A singleton item represented by an array needs an
+/// enclosing array. Missing callback error locations gain the actual item's complete Node path.
+/// The callback consumes accepted leaves through typed decoding or [`Node::read_leaf`].
+pub fn read_with<T>(
+    node: &Node,
+    mut read_item: impl FnMut(&Node) -> Result<T, NodeError>,
+) -> Result<OneOrMany<T>, NodeError> {
+    if node.kind.is_vec() {
+        read::vec(node, read_item).map(OneOrMany::new)
+    } else {
+        read_item(node).map(OneOrMany::one).map_err(|error| error.at_path(&node.path))
+    }
+}
+
+/// Writes the borrowed items as an array using the supplied writer for each item.
+///
+/// Always emits an array, including for empty and singleton collections. Item errors receive
+/// their emitted indices exactly once.
+pub fn write_with<T>(
+    values: &OneOrMany<T>,
+    write_item: impl FnMut(&T) -> Result<Node, NodeError>,
+) -> Result<Node, NodeError> {
+    write::list(values.as_slice(), write_item)
+}
+
+/// Builds the one-or-many label from the supplied item description.
+///
+/// Retains the container's existing label convention, including its fallback for unlabelled values.
+pub fn description(item: Desc) -> Desc {
+    let inner = item.type_label();
+    let type_part = if inner.is_empty() { "value" } else { &inner };
+    Desc::plain(format!("{}…", type_part))
 }
 
 // ---------------------------------------------------------------------------------------------- //
@@ -133,28 +174,19 @@ impl<T> FromIterator<T> for OneOrMany<T> {
 
 impl<T: FromNode> FromNode for OneOrMany<T> {
     fn from_node(node: &Node) -> Result<Self, NodeError> {
-        if node.kind.is_vec() {
-            // Array form: parse as Vec<T>.
-            Ok(OneOrMany::new(Vec::<T>::from_node(node)?))
-        } else {
-            // Non-array (scalar, map, etc.): parse as single T.
-            Ok(OneOrMany::one(node.as_type::<T>()?))
-        }
+        read_with(node, Node::as_type)
     }
 }
 
 impl<T: Describe> Describe for OneOrMany<T> {
     fn describe() -> Desc {
-        let inner = T::describe().type_label();
-        let type_part = if inner.is_empty() { "value" } else { &inner };
-        Desc::plain(format!("{}…", type_part))
+        description(T::describe())
     }
 }
 
 impl<T: ToNode> ToNode for OneOrMany<T> {
     fn to_node(&self) -> Result<Node, NodeError> {
-        // Always emit as array for canonical output.
-        self.0.to_node()
+        write_with(self, ToNode::to_node)
     }
 }
 

@@ -254,12 +254,12 @@ source:
 | --- | --- | --- | --- |
 | Plain numeric `Vec<T>` | Array. | Primitive conversion during decoding. | Numeric array. |
 | `SeqExpr`, `IntSeqExpr`, `RealSeqExpr` | Expression string. | Later, through an evaluator. | Stored expression string. |
-| `Vec<T>` via `IntSequence` or `RealSequence` | Expression string or array. | During decoding. | Numeric array. |
+| `Vec<T>` with an `int_sequence` or `real_sequence` adapter | Expression string or array. | During decoding. | Numeric array. |
 
 Numeric arrays use Scry's primitive conversions, including numeric strings such as
 `"20"`. Their scalar entries never expand sequence terms, so `["3..7"]` is invalid. Integer arrays
-reject floating-point values. A whole expression string requires an expression type or Via
-policy rather than a plain `Vec`.
+reject floating-point values. A whole expression string requires an expression type or sequence
+adapter rather than a plain `Vec`.
 
 ### Retaining expressions
 
@@ -307,8 +307,8 @@ Missing and null values follow the field's declared type and fallback:
 - Missing or null `comparison` becomes `None`. A supplied expression string becomes `Some`.
 
 Expression types have no Rust `Default` or Scry `FromDefaults`. A field's explicit default
-constructs its target value directly. This also applies to Via vectors, whose defaults are
-ordinary vectors rather than expression inputs. A direct expression or sequence policy rejects
+constructs its target value directly. This also applies to adapted vectors, whose defaults are
+ordinary vectors rather than expression inputs. A direct expression or sequence adapter rejects
 null. Use an outer `Option` when null should mean absence.
 
 The examples use Rhai, which needs no format feature flag. Other Scry formats use the same
@@ -316,19 +316,20 @@ arrays and expression strings. JSON requires `format-json`.
 
 ### Expanding expressions into vectors
 
-`IntSequence` and `RealSequence` adapt whole vectors. An expression is evaluated directly into
-the field's declared element type:
+The `int_sequence` and `real_sequence` modules provide whole-vector adapters for each supported
+numeric type. Select the module matching the field's element type. An expression is evaluated
+directly into that type:
 
 ```rust
-use scry::kit::seq_expr::{IntSequence, RealSequence};
+use scry::kit::seq_expr::{int_sequence, real_sequence};
 use scry::node::Format;
 use scry::{Config, Node, ToNode};
 
 #[derive(Config, ToNode)]
 struct Sweep {
-    #[scry(via(IntSequence))]
+    #[scry(with(int_sequence::u32))]
     iterations: Vec<u32>,
-    #[scry(via(RealSequence))]
+    #[scry(with(real_sequence::f32))]
     strengths: Vec<f32>,
 }
 
@@ -349,10 +350,14 @@ for input in [
 
 Both inputs produce the same vectors. They retain the values rather than the source or input form.
 
-| Policy | Supported vector element types |
+| Adapter namespace | Concrete modules |
 | --- | --- |
-| `IntSequence` | `i8`, `i16`, `i32`, `i64`, `isize`, `u8`, `u16`, `u32`, `u64`, `usize`. |
-| `RealSequence` | `f32`, `f64`. |
+| `int_sequence` | `i8`, `i16`, `i32`, `i64`, `isize`, `u8`, `u16`, `u32`, `u64`, `usize`. |
+| `real_sequence` | `f32`, `f64`. |
+
+Each concrete module exports `from_node`, `to_node`, and `describe`. The functions are also
+usable directly. Output borrows a slice, so vectors and arrays can be serialized without an
+intermediate representation collection.
 
 The full target range is available. For a `Vec<u64>`,
 `"18446744073709551615..18446744073709551616"` emits `[u64::MAX]` with an excluded stop beyond
@@ -360,33 +365,69 @@ that type's maximum. Negative retained values fail for unsigned fields. Range er
 the target type, and `isize` and `usize` use the current platform's width.
 
 Immediate expansion supplies no integer context. `"N-1"` and `".."` fail during decoding.
-Policies do not infer context from neighboring fields or arrays. Retain an `IntSeqExpr` when
+Adapters do not infer context from neighboring fields or arrays. Retain an `IntSeqExpr` when
 evaluation needs a length or numeric bounds supplied later.
 
 Real arrays convert numbers as supplied by the format reader. Expression strings keep exact
 decimal anchors until rounding to the field's type. Empty arrays are valid. Empty strings are
 invalid, while a valid expression that emits no values produces an empty vector.
 
-`RealSequence` requires every decoded or serialized value to be finite, including values
+Real sequence adapters require every decoded or serialized value to be finite, including values
 supplied as native arrays. Native array entries such as `"NaN"` or `"inf"` are rejected.
 Signed zero from array entries is preserved. Expression-derived zero is normalized to positive
 zero. Array conversion and finiteness failures identify the offending element.
 
 ### Optional and grouped sequences
 
-The existing Via container policies compose with sequence policies. Use `Option<RealSequence>`
-for an optional vector, or `Vec<IntSequence>` to adapt each entry in a list of integer vectors:
+A selected module handles the complete field value. Compose the standard helpers in a small
+module when the field wraps a sequence in `Option` or groups several sequences in an outer
+vector. The inner sequence adapter owns each complete numeric vector:
 
 ```rust
-use scry::kit::seq_expr::{IntSequence, RealSequence};
 use scry::node::Format;
 use scry::{Config, Node, ToNode};
 
+mod optional_strengths {
+    use scry::convert::{read, write};
+    use scry::kit::seq_expr::real_sequence;
+    use scry::{Desc, Node, NodeError};
+
+    pub fn from_node(node: &Node) -> Result<Option<Vec<f64>>, NodeError> {
+        read::option(node, real_sequence::f64::from_node)
+    }
+
+    pub fn to_node(values: &Option<Vec<f64>>) -> Result<Node, NodeError> {
+        write::option(values, |values| real_sequence::f64::to_node(values))
+    }
+
+    pub fn describe() -> Desc {
+        real_sequence::f64::describe().nullable()
+    }
+}
+
+mod grouped_iterations {
+    use scry::convert::{read, write};
+    use scry::kit::seq_expr::int_sequence;
+    use scry::{Desc, Node, NodeError};
+
+    pub fn from_node(node: &Node) -> Result<Vec<Vec<i64>>, NodeError> {
+        read::vec(node, int_sequence::i64::from_node)
+    }
+
+    pub fn to_node(values: &[Vec<i64>]) -> Result<Node, NodeError> {
+        write::list(values, |values| int_sequence::i64::to_node(values))
+    }
+
+    pub fn describe() -> Desc {
+        Desc::list(int_sequence::i64::describe())
+    }
+}
+
 #[derive(Config, ToNode)]
 struct Groups {
-    #[scry(via(Option<RealSequence>))]
+    #[scry(with(optional_strengths))]
     strengths: Option<Vec<f64>>,
-    #[scry(via(Vec<IntSequence>))]
+    #[scry(with(grouped_iterations))]
     iterations: Vec<Vec<i64>>,
 }
 
@@ -403,12 +444,12 @@ assert_eq!(output.req::<Vec<Vec<i64>>>("iterations")?, vec![vec![1, 2], vec![7, 
 
 Omitted or null `strengths` becomes `None`, and an array or expression becomes `Some`.
 Each group independently accepts either input form. The sequence ceiling applies per inner
-vector. The outer list follows ordinary Via vector rules.
+vector. The outer list follows ordinary vector-reader rules.
 
 ### Descriptions and CLI queries
 
 Native descriptions use `sequence expression string`, `integer sequence expression string`,
-or `real sequence expression string`. Via descriptions add the array alternative:
+or `real sequence expression string`. Adapter descriptions add the array alternative:
 `integer sequence expression string or integer array` and
 `real sequence expression string or real array`. Descriptions do not evaluate expressions.
 
@@ -512,9 +553,9 @@ are capped. The input byte limit bounds comma-separated terms without a separate
 Literal digit limits count leading zeros, significand digits, and exponent digits. Offset
 magnitudes have no exponent syntax.
 
-Via sequence policies use the default limits. The value ceiling applies to both input forms
+Sequence adapters use the default limits. The value ceiling applies to both input forms
 and to serialization, including vectors constructed directly in Rust. Parser limits apply only
-to expression strings. Array length is checked before constructing the policy result, after
+to expression strings. Array length is checked before constructing the result, after
 the format reader has already built the Node array.
 
 Output limits apply cumulatively to the expression and count duplicates. Required coordinates

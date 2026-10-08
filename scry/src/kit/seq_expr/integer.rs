@@ -12,8 +12,8 @@ use super::{
 /// Evaluates [`IntSeqExpr`] values as `i64` with explicit context.
 ///
 /// Uses [`IntEvalOptions`] for open endpoints, `N`, and output limits. For strict source indices,
-/// use [`IndexEvaluator`](super::IndexEvaluator). [`IntSequence`](super::IntSequence) selects other
-/// native integer outputs when decoding a Scry field.
+/// use [`IndexEvaluator`](super::IndexEvaluator). The [`int_sequence`](super::int_sequence)
+/// adapters select other native integer outputs when decoding a Scry field.
 #[derive(Debug, Clone)]
 pub struct IntEvaluator {
     options: IntEvalOptions,
@@ -244,7 +244,7 @@ impl IntEvaluator {
     }
 }
 
-/// Defines the closed set of native integer outputs supported by sequence policies.
+/// Defines the closed set of native integer outputs supported by sequence adapters.
 pub(super) trait IntegerTarget: Sized {
     const NAME: &'static str;
 

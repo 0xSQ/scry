@@ -3,12 +3,12 @@
 #![doc = include_str!("../../docs/kit/sequence-expressions.md")]
 #![warn(missing_docs)]
 
+mod adapters;
 mod error;
 mod exact;
 mod index;
 mod integer;
 mod parser;
-mod policies;
 mod real;
 mod scry;
 
@@ -20,13 +20,13 @@ use num_bigint::{BigInt, BigUint};
 use num_rational::BigRational;
 use num_traits::ToPrimitive;
 
+pub use adapters::{int_sequence, real_sequence};
 pub use error::{
     EvalError, EvalErrorKind, ExprBuildError, ExprBuildErrorKind, ParseError, ParseErrorKind,
     ProfileError, ProfileErrorKind,
 };
 pub use index::{IndexError, IndexErrorKind, IndexEvaluator};
 pub use integer::IntEvaluator;
-pub use policies::{IntSequence, RealSequence};
 pub use real::RealEvaluator;
 
 // ---------------------------------------------------------------------------------------------- //

@@ -12,8 +12,9 @@ use crate::Node;
 /// Provides configuration description for a type.
 ///
 /// Derives delegate to each complete field type. A field without a native implementation needs
-/// an explicit `#[scry(describe_with(...))]` hook or [`crate::via`] policy. Nullability describes
-/// present values, while [`crate::desc::FieldDesc::optional`] describes whether a key may be omitted.
+/// an explicit `#[scry(describe_with(...))]` hook or `#[scry(with(module))]` function adapter.
+/// Nullability describes present values, while [`crate::desc::FieldDesc::optional`] describes
+/// whether a key may be omitted.
 ///
 /// Missing description support is a compile-time error, including inside containers:
 ///

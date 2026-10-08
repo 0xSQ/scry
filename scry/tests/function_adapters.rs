@@ -1,4 +1,4 @@
-//! Checks complete-value adaptation through application-owned policy markers.
+//! Checks complete-value adaptation through application-owned adapter modules.
 
 use std::error::Error;
 use std::io;
@@ -6,61 +6,58 @@ use std::net::{AddrParseError, IpAddr, Ipv4Addr};
 
 use scry::desc::{DescKind, FieldDesc, VariantRepr};
 use scry::node::Format;
-use scry::{
-    Config, Desc, Describe, DescribeVia, FromDefaults, FromNode, FromNodeVia, KeyPath, Node,
-    NodeError, ToNode, ToNodeVia,
-};
+use scry::{Config, Desc, Describe, FromDefaults, FromNode, KeyPath, Node, NodeError, ToNode};
 
 // ---------------------------------------------------------------------------------------------- //
 
 #[derive(Debug, PartialEq, Config, ToNode)]
 struct AddressConfig {
     /// The listening address.
-    #[scry(rename = "server.address", via(AddressText))]
+    #[scry(rename = "server.address", with(address_text))]
     address: IpAddr,
 }
 
 #[derive(Debug, PartialEq, FromNode, ToNode, Describe)]
-struct Transparent(#[scry(via(AddressText))] IpAddr);
+struct Transparent(#[scry(with(address_text))] IpAddr);
 
 #[derive(Debug, PartialEq, FromNode, ToNode, Describe)]
-struct Pair(u8, #[scry(via(AddressText))] IpAddr);
+struct Pair(u8, #[scry(with(address_text))] IpAddr);
 
 #[derive(Debug, PartialEq, FromNode, ToNode, Describe)]
 enum AddressChoice {
     #[scry(rename = "single.key")]
-    Single(#[scry(via(AddressText))] IpAddr),
+    Single(#[scry(with(address_text))] IpAddr),
     #[scry(rename = "pair.key")]
-    Pair(u8, #[scry(via(AddressText))] IpAddr),
+    Pair(u8, #[scry(with(address_text))] IpAddr),
     #[scry(rename = "named.key")]
     Named {
-        #[scry(rename = "address.key", via(AddressText))]
+        #[scry(rename = "address.key", with(address_text))]
         address: IpAddr,
     },
 }
 
 #[derive(Config)]
 struct ReadConfig {
-    #[scry(via(ReadAddress))]
+    #[scry(with(read_address))]
     address: IpAddr,
 }
 
 #[derive(ToNode)]
-struct WriteOnly(#[scry(via(WriteAddress))] IpAddr);
+struct WriteOnly(#[scry(with(write_address))] IpAddr);
 
 #[derive(Describe)]
 #[allow(dead_code)]
-struct DescribeOnly(#[scry(via(DescribeAddress))] IpAddr);
+struct DescribeOnly(#[scry(with(describe_address))] IpAddr);
 
 #[derive(Debug, PartialEq, Config, ToNode)]
 struct OptionalAddress {
-    #[scry(via(WholeOptional))]
+    #[scry(with(whole_optional))]
     address: Option<IpAddr>,
 }
 
 #[derive(Debug, PartialEq, Config, ToNode)]
 struct ExplicitOptionalAddress {
-    #[scry(default = Some(IpAddr::V4(Ipv4Addr::UNSPECIFIED)), via(WholeOptional))]
+    #[scry(default = Some(IpAddr::V4(Ipv4Addr::UNSPECIFIED)), with(whole_optional))]
     address: Option<IpAddr>,
 }
 
@@ -68,15 +65,15 @@ type MaybeAddress = Option<IpAddr>;
 
 #[derive(Debug, PartialEq, FromNode)]
 struct AliasOptional {
-    #[scry(default = None, via(WholeOptional))]
+    #[scry(default = None, with(whole_optional))]
     address: MaybeAddress,
 }
 
 #[derive(Debug, PartialEq, Config)]
 struct AdaptedDefaults {
-    #[scry(default = true, via(SwitchWord))]
+    #[scry(default = true, with(switch_word))]
     toggle: bool,
-    #[scry(from_defaults, via(ModePolicy))]
+    #[scry(from_defaults, with(mode_policy))]
     mode: TargetMode,
 }
 
@@ -102,7 +99,7 @@ enum ModeRepresentation {
 #[derive(Describe)]
 #[allow(dead_code)]
 struct UnevaluatedDefault {
-    #[scry(default = panic!("description evaluated a fallback"), via(IntegerLabel))]
+    #[scry(default = panic!("description evaluated a fallback"), with(integer_label))]
     value: u16,
 }
 
@@ -111,7 +108,7 @@ struct UnevaluatedDefault {
 #[allow(dead_code)]
 struct DocumentedTransparent(
     /// A positional address.
-    #[scry(via(AddressText))]
+    #[scry(with(address_text))]
     IpAddr,
 );
 
@@ -119,7 +116,7 @@ struct DocumentedTransparent(
 #[allow(dead_code)]
 struct FieldDocumentedTransparent(
     /// A positional address.
-    #[scry(via(AddressText))]
+    #[scry(with(address_text))]
     IpAddr,
 );
 
@@ -129,29 +126,29 @@ enum DocumentedChoice {
     /// One listening address.
     Single(
         /// The variant's address.
-        #[scry(via(AddressText))]
+        #[scry(with(address_text))]
         IpAddr,
     ),
 }
 
 #[derive(ToNode)]
 struct RelativeOutput {
-    #[scry(rename = "address.key", via(AddressPair))]
+    #[scry(rename = "address.key", with(address_pair))]
     address: IpAddr,
 }
 
 #[derive(ToNode)]
-struct RelativeTuple(u8, #[scry(via(AddressPair))] IpAddr);
+struct RelativeTuple(u8, #[scry(with(address_pair))] IpAddr);
 
 #[derive(ToNode)]
 enum RelativeChoice {
     #[scry(rename = "single.key")]
-    Single(#[scry(via(AddressPair))] IpAddr),
+    Single(#[scry(with(address_pair))] IpAddr),
     #[scry(rename = "pair.key")]
-    Pair(u8, #[scry(via(AddressPair))] IpAddr),
+    Pair(u8, #[scry(with(address_pair))] IpAddr),
     #[scry(rename = "named.key")]
     Named {
-        #[scry(rename = "address.key", via(AddressPair))]
+        #[scry(rename = "address.key", with(address_pair))]
         address: IpAddr,
     },
 }
@@ -164,13 +161,13 @@ struct NestedOutput {
 
 #[derive(Debug, FromNode)]
 struct StrictMapAddress {
-    #[scry(via(StrictAddressMap))]
+    #[scry(with(strict_address_map))]
     address: IpAddr,
 }
 
 #[derive(Debug, FromNode)]
 struct PermissiveMapAddress {
-    #[scry(via(PermissiveAddressMap))]
+    #[scry(with(permissive_address_map))]
     address: IpAddr,
 }
 
@@ -188,7 +185,7 @@ struct PermissiveRepresentation {
 // ---------------------------------------------------------------------------------------------- //
 
 #[test]
-fn a_local_policy_adapts_a_foreign_target_without_changing_the_stored_type() {
+fn a_local_module_adapts_a_foreign_target_without_changing_the_stored_type() {
     let value: AddressConfig = parse(r#"#{ "server.address": "127.0.0.1" }"#);
     assert_eq!(value.address, IpAddr::V4(Ipv4Addr::LOCALHOST));
     let output = value.to_node().unwrap();
@@ -206,7 +203,7 @@ fn a_local_policy_adapts_a_foreign_target_without_changing_the_stored_type() {
 }
 
 #[test]
-fn policies_preserve_transparent_tuple_and_enum_payload_shapes() {
+fn modules_preserve_transparent_tuple_and_enum_payload_shapes() {
     let address = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let transparent: Transparent = parse(r#""127.0.0.1""#);
     assert_eq!(transparent, Transparent(address));
@@ -237,7 +234,7 @@ fn policies_preserve_transparent_tuple_and_enum_payload_shapes() {
 }
 
 #[test]
-fn requested_capabilities_do_not_require_other_policy_or_native_capabilities() {
+fn requested_capabilities_do_not_require_other_adapter_or_native_capabilities() {
     let value: ReadConfig = parse(r#"#{ address: "127.0.0.1" }"#);
     assert_eq!(value.address, IpAddr::V4(Ipv4Addr::LOCALHOST));
     assert_eq!(field(&ReadConfig::describe(), "address").value.type_label(), "IP address");
@@ -248,7 +245,7 @@ fn requested_capabilities_do_not_require_other_policy_or_native_capabilities() {
 }
 
 #[test]
-fn optional_policies_receive_present_null_and_missing_keys_use_target_fallbacks() {
+fn optional_adapters_receive_present_null_and_missing_keys_use_target_fallbacks() {
     assert_eq!(parse::<OptionalAddress>("#{}").address, None);
     assert_eq!(
         parse::<OptionalAddress>("#{ address: () }").address,
@@ -272,7 +269,7 @@ fn optional_policies_receive_present_null_and_missing_keys_use_target_fallbacks(
     let output = OptionalAddress { address: None }.to_node().unwrap();
     assert_eq!(output.as_map().unwrap().len(), 1);
     assert_eq!(output.req::<Option<String>>("address").unwrap(), None);
-    let root = <WholeOptional as ToNodeVia<Option<IpAddr>>>::to_node(&None).unwrap();
+    let root = whole_optional::to_node(&None).unwrap();
     assert_eq!(root.as_type::<Option<String>>().unwrap(), None);
 
     let desc = OptionalAddress::describe();
@@ -348,7 +345,7 @@ fn adapted_descriptions_keep_existing_documentation_precedence() {
 }
 
 #[test]
-fn policy_input_errors_keep_absolute_locations_and_original_causes() {
+fn adapter_input_errors_keep_absolute_locations_and_original_causes() {
     let cases = [
         (
             r#"#{ scope: #{ "server.address": "invalid" } }"#,
@@ -386,7 +383,7 @@ fn policy_input_errors_keep_absolute_locations_and_original_causes() {
 }
 
 #[test]
-fn policy_output_errors_compose_actual_representation_paths_once() {
+fn adapter_output_errors_compose_actual_representation_paths_once() {
     let address = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
     let cases = [
         (
@@ -426,7 +423,7 @@ fn policy_output_errors_compose_actual_representation_paths_once() {
 }
 
 #[test]
-fn parent_and_policy_validate_their_own_map_shapes_and_leaf_audits_remain_explicit() {
+fn parent_and_adapter_validate_their_own_map_shapes_and_leaf_audits_remain_explicit() {
     let source = node(r#"#{ address: #{ text: "127.0.0.1" } }"#);
     let parsed = source.as_type::<StrictMapAddress>().unwrap();
     assert_eq!(parsed.address, IpAddr::V4(Ipv4Addr::LOCALHOST));
@@ -453,10 +450,10 @@ fn parent_and_policy_validate_their_own_map_shapes_and_leaf_audits_remain_explic
 
 // ---------------------------------------------------------------------------------------------- //
 
-struct AddressText;
+mod address_text {
+    use super::*;
 
-impl FromNodeVia<IpAddr> for AddressText {
-    fn from_node(node: &Node) -> Result<IpAddr, NodeError> {
+    pub fn from_node(node: &Node) -> Result<IpAddr, NodeError> {
         let text: String = node.as_type()?;
         match text.as_str() {
             "unlocated" => {
@@ -472,121 +469,107 @@ impl FromNodeVia<IpAddr> for AddressText {
             }),
         }
     }
-}
 
-impl ToNodeVia<IpAddr> for AddressText {
-    fn to_node(value: &IpAddr) -> Result<Node, NodeError> {
+    pub fn to_node(value: &IpAddr) -> Result<Node, NodeError> {
         value.to_string().to_node()
     }
-}
 
-impl DescribeVia<IpAddr> for AddressText {
-    fn describe() -> Desc {
+    pub fn describe() -> Desc {
         Desc::plain("IP address").with_doc("A textual IP address.")
     }
 }
 
-struct ReadAddress;
+mod read_address {
+    use super::*;
 
-impl FromNodeVia<IpAddr> for ReadAddress {
-    fn from_node(node: &Node) -> Result<IpAddr, NodeError> {
-        <AddressText as FromNodeVia<IpAddr>>::from_node(node)
+    pub fn from_node(node: &Node) -> Result<IpAddr, NodeError> {
+        address_text::from_node(node)
+    }
+
+    pub fn describe() -> Desc {
+        address_text::describe()
     }
 }
 
-impl DescribeVia<IpAddr> for ReadAddress {
-    fn describe() -> Desc {
-        <AddressText as DescribeVia<IpAddr>>::describe()
+mod write_address {
+    use super::*;
+
+    pub fn to_node(value: &IpAddr) -> Result<Node, NodeError> {
+        address_text::to_node(value)
     }
 }
 
-struct WriteAddress;
+mod describe_address {
+    use super::*;
 
-impl ToNodeVia<IpAddr> for WriteAddress {
-    fn to_node(value: &IpAddr) -> Result<Node, NodeError> {
-        <AddressText as ToNodeVia<IpAddr>>::to_node(value)
+    pub fn describe() -> Desc {
+        address_text::describe()
     }
 }
 
-struct DescribeAddress;
+mod whole_optional {
+    use super::*;
 
-impl DescribeVia<IpAddr> for DescribeAddress {
-    fn describe() -> Desc {
-        <AddressText as DescribeVia<IpAddr>>::describe()
-    }
-}
-
-struct WholeOptional;
-
-impl FromNodeVia<Option<IpAddr>> for WholeOptional {
-    fn from_node(node: &Node) -> Result<Option<IpAddr>, NodeError> {
+    pub fn from_node(node: &Node) -> Result<Option<IpAddr>, NodeError> {
         if node.as_type::<Option<String>>()?.is_none() {
             Ok(Some(IpAddr::V4(Ipv4Addr::LOCALHOST)))
         } else {
-            <AddressText as FromNodeVia<IpAddr>>::from_node(node).map(Some)
+            address_text::from_node(node).map(Some)
         }
     }
-}
 
-impl ToNodeVia<Option<IpAddr>> for WholeOptional {
-    fn to_node(value: &Option<IpAddr>) -> Result<Node, NodeError> {
+    pub fn to_node(value: &Option<IpAddr>) -> Result<Node, NodeError> {
         value.map(|value| value.to_string()).to_node()
     }
-}
 
-impl DescribeVia<Option<IpAddr>> for WholeOptional {
-    fn describe() -> Desc {
-        <AddressText as DescribeVia<IpAddr>>::describe().nullable()
+    pub fn describe() -> Desc {
+        address_text::describe().nullable()
     }
 }
 
-struct SwitchWord;
+mod switch_word {
+    use super::*;
 
-impl FromNodeVia<bool> for SwitchWord {
-    fn from_node(node: &Node) -> Result<bool, NodeError> {
+    pub fn from_node(node: &Node) -> Result<bool, NodeError> {
         match node.as_type::<String>()?.as_str() {
             "on" => Ok(true),
             "off" => Ok(false),
             _ => Err(NodeError::invalid_value(&node.path, "expected on or off")),
         }
     }
-}
 
-impl DescribeVia<bool> for SwitchWord {
-    fn describe() -> Desc {
+    pub fn describe() -> Desc {
         Desc::plain("on or off")
     }
 }
 
-struct ModePolicy;
+mod mode_policy {
+    use super::*;
 
-impl FromNodeVia<TargetMode> for ModePolicy {
-    fn from_node(node: &Node) -> Result<TargetMode, NodeError> {
+    pub fn from_node(node: &Node) -> Result<TargetMode, NodeError> {
         match node.as_type::<ModeRepresentation>()? {
             ModeRepresentation::Automatic => Ok(TargetMode::Idle),
             ModeRepresentation::Nested { count } => Ok(TargetMode::Nested { count }),
         }
     }
-}
 
-impl DescribeVia<TargetMode> for ModePolicy {
-    fn describe() -> Desc {
+    pub fn describe() -> Desc {
         ModeRepresentation::describe()
     }
 }
 
-struct IntegerLabel;
+mod integer_label {
+    use super::*;
 
-impl DescribeVia<u16> for IntegerLabel {
-    fn describe() -> Desc {
+    pub fn describe() -> Desc {
         Desc::plain("level")
     }
 }
 
-struct AddressPair;
+mod address_pair {
+    use super::*;
 
-impl ToNodeVia<IpAddr> for AddressPair {
-    fn to_node(value: &IpAddr) -> Result<Node, NodeError> {
+    pub fn to_node(value: &IpAddr) -> Result<Node, NodeError> {
         if *value == IpAddr::V4(Ipv4Addr::UNSPECIFIED) {
             Err(NodeError::invalid_value_with_source(
                 &KeyPath::from_index(1),
@@ -599,10 +582,10 @@ impl ToNodeVia<IpAddr> for AddressPair {
     }
 }
 
-struct StrictAddressMap;
+mod strict_address_map {
+    use super::*;
 
-impl FromNodeVia<IpAddr> for StrictAddressMap {
-    fn from_node(node: &Node) -> Result<IpAddr, NodeError> {
+    pub fn from_node(node: &Node) -> Result<IpAddr, NodeError> {
         let representation: StrictRepresentation = node.as_type()?;
         representation.text.parse().map_err(|error| {
             NodeError::invalid_value_with_source(
@@ -614,10 +597,10 @@ impl FromNodeVia<IpAddr> for StrictAddressMap {
     }
 }
 
-struct PermissiveAddressMap;
+mod permissive_address_map {
+    use super::*;
 
-impl FromNodeVia<IpAddr> for PermissiveAddressMap {
-    fn from_node(node: &Node) -> Result<IpAddr, NodeError> {
+    pub fn from_node(node: &Node) -> Result<IpAddr, NodeError> {
         let representation: PermissiveRepresentation = node.as_type()?;
         representation.text.parse().map_err(|error| {
             NodeError::invalid_value_with_source(

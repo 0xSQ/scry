@@ -25,6 +25,7 @@
 //!
 //! - [`node`] - The [`Node`] tree, an intermediate representation for configuration data.
 //! - [`desc`] - Description types for documenting config shapes (powers `--desc`).
+//! - [`convert`] - Shared shape operations for composing custom field conversions.
 //! - [`key_path`] - Path navigation for addressing locations in a config tree.
 //! - [`cli`] - CLI utilities, including the [`Setup`](cli::setup::Setup) builder for assembling
 //!   clap commands with config loading, overrides, and inspection options.
@@ -43,6 +44,7 @@
 extern crate self as scry;
 
 pub mod cli;
+pub mod convert;
 pub mod desc;
 pub mod key_path;
 pub mod kit;
@@ -51,7 +53,6 @@ pub mod rhai;
 pub mod string_enum;
 mod traits;
 pub mod util;
-pub mod via;
 pub mod writer;
 
 // ---------------------------------------------------------------------------------------------- //
@@ -65,7 +66,6 @@ pub use key_path::{KeyPath, KeyPathError};
 pub use node::{Node, NodeError};
 pub use string_enum::StringEnumError;
 pub use traits::{Describe, FromDefaults, FromNode, ToNode};
-pub use via::{DescribeVia, FromNodeVia, ToNodeVia};
 
 // Re-export derive macros.
 pub use scry_derive::{Config, Describe, FromDefaults, FromNode, StringEnum, ToNode};
@@ -94,6 +94,27 @@ pub fn from_defaults<T: FromDefaults>() -> Result<T, NodeError> {
 #[doc(hidden)]
 pub mod _private {
     pub use indexmap::IndexMap;
+
+    /// Invokes a reader with the complete field type as its expected result.
+    pub fn call_reader<T>(
+        node: &crate::Node,
+        reader: impl FnOnce(&crate::Node) -> Result<T, crate::NodeError>,
+    ) -> Result<T, crate::NodeError> {
+        reader(node)
+    }
+
+    /// Invokes a writer with the complete field type as its expected argument.
+    pub fn call_writer<T: ?Sized>(
+        value: &T,
+        writer: impl FnOnce(&T) -> Result<crate::Node, crate::NodeError>,
+    ) -> Result<crate::Node, crate::NodeError> {
+        writer(value)
+    }
+
+    /// Invokes a description callable once.
+    pub fn call_describer(describer: impl FnOnce() -> crate::Desc) -> crate::Desc {
+        describer()
+    }
 }
 
 // ---------------------------------------------------------------------------------------------- //

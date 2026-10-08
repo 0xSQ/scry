@@ -1,61 +1,61 @@
-//! Checks structural composition of policies without changing ordinary container semantics.
+//! Checks structural composition of adapters without changing ordinary container semantics.
 
 use std::error::Error;
 use std::io;
 use std::net::{AddrParseError, IpAddr, Ipv4Addr, Ipv6Addr};
 
 use scry::cli::setup::{ExposeMap, Setup};
+use scry::convert::{read, write};
 use scry::desc::{DescKind, FieldDesc};
 use scry::node::Format;
-use scry::via::Native;
-use scry::{
-    Config, Desc, Describe, DescribeVia, FromNode, FromNodeVia, KeyPath, Node, NodeError, ToNode,
-    ToNodeVia,
-};
+use scry::{Config, Desc, Describe, FromNode, KeyPath, Node, NodeError, ToNode};
 
 // ---------------------------------------------------------------------------------------------- //
 
 #[derive(Debug, PartialEq, Config, ToNode)]
 struct Addresses {
-    #[scry(rename = "server.addresses", via(Vec<Option<AddressText>>))]
+    #[scry(rename = "server.addresses", with(address_options))]
     addresses: Vec<Option<IpAddr>>,
-    #[scry(via(Option<Vec<AddressText>>))]
+    #[scry(with(optional_addresses))]
     fallback: Option<Vec<IpAddr>>,
 }
 
 #[derive(Debug, PartialEq, Config, ToNode)]
-struct AddressPair(u8, #[scry(via(Vec<Option<AddressText>>))] Vec<Option<IpAddr>>);
+struct AddressPair(u8, #[scry(with(address_options))] Vec<Option<IpAddr>>);
 
 #[derive(Debug, PartialEq, Config)]
-struct WholePairs(#[scry(via(Vec<PairText>))] Vec<Vec<u16>>);
+struct WholePairs(
+    #[scry(from_node_with(|node| read::vec(node, pair_text::from_node)), describe_with(|| Desc::list(pair_text::describe())))]
+     Vec<Vec<u16>>,
+);
 
 #[derive(Debug, PartialEq, FromNode)]
 struct AddressGroups {
-    #[scry(rename = "address.groups", via(Vec<Option<Vec<AddressText>>>))]
+    #[scry(rename = "address.groups", from_node_with(|node| read::vec(node, |node| read::option(node, |node| read::vec(node, address_text::from_node)))))]
     groups: Vec<Option<Vec<IpAddr>>>,
 }
 
 #[derive(ToNode)]
 struct OutputGroups {
-    #[scry(rename = "address.groups", via(Vec<Option<Vec<PairRepresentation>>>))]
+    #[scry(rename = "address.groups", to_node_with(|values| write::list(values, |value| write::option(value, |values| write::list(values, pair_representation::to_node)))))]
     groups: Vec<Option<Vec<IpAddr>>>,
 }
 
 #[derive(Debug, Config)]
 struct MapAddresses {
-    #[scry(via(Vec<Option<StrictMapAddress>>))]
+    #[scry(from_node_with(|node| read::vec(node, |node| read::option(node, strict_map_address::from_node))), describe_with(|| Desc::list(strict_map_address::describe().nullable())))]
     addresses: Vec<Option<IpAddr>>,
 }
 
 #[derive(Debug, FromNode)]
 struct PermissiveMapAddresses {
-    #[scry(via(Vec<Option<PermissiveMapAddress>>))]
+    #[scry(from_node_with(|node| read::vec(node, |node| read::option(node, permissive_map_address::from_node))))]
     addresses: Vec<Option<IpAddr>>,
 }
 
 #[derive(Debug, FromNode)]
 struct RawValues {
-    #[scry(via(Vec<Option<Native>>))]
+    #[scry(from_node_with(|node| read::vec(node, |node| read::option(node, Node::as_type::<Node>))))]
     values: Vec<Option<Node>>,
 }
 
@@ -104,7 +104,7 @@ fn foreign_values_round_trip_through_named_and_positional_containers() {
 }
 
 #[test]
-fn each_element_policy_receives_its_complete_inner_vector_target() {
+fn each_element_adapter_receives_its_complete_inner_vector_target() {
     let value: WholePairs = parse(r#"["2,4", "6,8"]"#);
     assert_eq!(value, WholePairs(vec![vec![2, 4], vec![6, 8]]));
     let DescKind::List { item } = WholePairs::describe().kind else {
@@ -113,7 +113,7 @@ fn each_element_policy_receives_its_complete_inner_vector_target() {
     assert_eq!(item.type_label(), "integer pair text");
     assert!(matches!(item.kind, DescKind::Plain { .. }));
 
-    // The target has an inner vector, but this policy accepts one string for the complete vector.
+    // The target has an inner vector, but this adapter accepts one string for the complete vector.
     let error = node("[[2, 4]]").as_type::<WholePairs>().unwrap_err();
     assert_eq!(error.path(), Some(&KeyPath::from_index(0)));
     assert!(
@@ -122,8 +122,8 @@ fn each_element_policy_receives_its_complete_inner_vector_target() {
 }
 
 #[test]
-fn null_skips_inner_policies_is_consumed_and_is_retained_in_output() {
-    // AddressText rejects null. Successful decoding therefore also checks that it was bypassed.
+fn null_skips_inner_adapters_is_consumed_and_is_retained_in_output() {
+    // The address reader rejects null. Successful decoding therefore also checks that it was bypassed.
     let source = node(r#"#{ "server.addresses": [(), "127.0.0.1"], fallback: () }"#);
     let value = source.as_type::<Addresses>().unwrap();
     assert_eq!(value.addresses, vec![None, Some(local_v4())]);
@@ -137,13 +137,9 @@ fn null_skips_inner_policies_is_consumed_and_is_retained_in_output() {
     assert_eq!(output.req::<Option<Vec<String>>>("fallback").unwrap(), None);
 
     let root = node("()");
-    assert_eq!(
-        <Option<Vec<AddressText>> as FromNodeVia<Option<Vec<IpAddr>>>>::from_node(&root).unwrap(),
-        None
-    );
+    assert_eq!(optional_addresses::from_node(&root).unwrap(), None);
     root.ensure_no_unknown_keys().unwrap();
-    let output =
-        <Option<Vec<AddressText>> as ToNodeVia<Option<Vec<IpAddr>>>>::to_node(&None).unwrap();
+    let output = optional_addresses::to_node(&None).unwrap();
     assert_eq!(output.as_type::<Option<Vec<String>>>().unwrap(), None);
 }
 
@@ -203,7 +199,7 @@ fn nested_output_errors_prepend_indices_and_literal_fields_once() {
     assert_eq!(find_source::<io::Error>(&error).unwrap().to_string(), "unrepresentable address");
 
     let root = Some(vec![IpAddr::V4(Ipv4Addr::UNSPECIFIED)]);
-    let error = <Option<Vec<PairRepresentation>> as ToNodeVia<Option<Vec<IpAddr>>>>::to_node(&root)
+    let error = write::option(&root, |values| write::list(values, pair_representation::to_node))
         .unwrap_err();
     assert_eq!(error.path(), Some(&KeyPath::from_index(0).push_index(1)));
     assert!(find_source::<io::Error>(&error).is_some());
@@ -263,7 +259,7 @@ fn composition_keeps_structural_descriptions_child_defaults_and_cli_choices() {
 }
 
 #[test]
-fn composed_map_policies_keep_local_strictness_and_explicit_leaf_audits() {
+fn composed_map_adapters_keep_local_strictness_and_explicit_leaf_audits() {
     let source = node(r#"#{ addresses: [(), #{ text: "127.0.0.1" }] }"#);
     let value = source.as_type::<MapAddresses>().unwrap();
     assert_eq!(value.addresses, vec![None, Some(local_v4())]);
@@ -305,7 +301,7 @@ fn native_raw_subtrees_inside_adapted_containers_consume_their_leaves() {
 #[test]
 fn a_failed_element_prevents_conversion_and_reads_of_later_elements() {
     let source = node(r#"["127.0.0.1", "invalid", "::1"]"#);
-    let error = <Vec<AddressText> as FromNodeVia<Vec<IpAddr>>>::from_node(&source).unwrap_err();
+    let error = read::vec(&source, address_text::from_node).unwrap_err();
     assert_eq!(error.path(), Some(&KeyPath::from_index(1)));
     assert!(find_source::<AddrParseError>(&error).is_some());
     assert_unknown_paths(
@@ -316,10 +312,42 @@ fn a_failed_element_prevents_conversion_and_reads_of_later_elements() {
 
 // ---------------------------------------------------------------------------------------------- //
 
-struct AddressText;
+mod address_options {
+    use super::*;
 
-impl FromNodeVia<IpAddr> for AddressText {
-    fn from_node(node: &Node) -> Result<IpAddr, NodeError> {
+    pub fn from_node(node: &Node) -> Result<Vec<Option<IpAddr>>, NodeError> {
+        read::vec(node, |node| read::option(node, address_text::from_node))
+    }
+
+    pub fn to_node(values: &[Option<IpAddr>]) -> Result<Node, NodeError> {
+        write::list(values, |value| write::option(value, address_text::to_node))
+    }
+
+    pub fn describe() -> Desc {
+        Desc::list(address_text::describe().nullable())
+    }
+}
+
+mod optional_addresses {
+    use super::*;
+
+    pub fn from_node(node: &Node) -> Result<Option<Vec<IpAddr>>, NodeError> {
+        read::option(node, |node| read::vec(node, address_text::from_node))
+    }
+
+    pub fn to_node(value: &Option<Vec<IpAddr>>) -> Result<Node, NodeError> {
+        write::option(value, |values| write::list(values, address_text::to_node))
+    }
+
+    pub fn describe() -> Desc {
+        Desc::list(address_text::describe()).nullable()
+    }
+}
+
+mod address_text {
+    use super::*;
+
+    pub fn from_node(node: &Node) -> Result<IpAddr, NodeError> {
         let text: String = node.as_type()?;
         match text.as_str() {
             "unlocated" => {
@@ -333,24 +361,20 @@ impl FromNodeVia<IpAddr> for AddressText {
             _ => parse_address(node, &text),
         }
     }
-}
 
-impl ToNodeVia<IpAddr> for AddressText {
-    fn to_node(value: &IpAddr) -> Result<Node, NodeError> {
+    pub fn to_node(value: &IpAddr) -> Result<Node, NodeError> {
         value.to_string().to_node()
     }
-}
 
-impl DescribeVia<IpAddr> for AddressText {
-    fn describe() -> Desc {
+    pub fn describe() -> Desc {
         Desc::plain("IP address")
     }
 }
 
-struct PairRepresentation;
+mod pair_representation {
+    use super::*;
 
-impl ToNodeVia<IpAddr> for PairRepresentation {
-    fn to_node(value: &IpAddr) -> Result<Node, NodeError> {
+    pub fn to_node(value: &IpAddr) -> Result<Node, NodeError> {
         if *value == IpAddr::V4(Ipv4Addr::UNSPECIFIED) {
             return Err(NodeError::invalid_value_with_source(
                 &KeyPath::from_index(1),
@@ -362,10 +386,10 @@ impl ToNodeVia<IpAddr> for PairRepresentation {
     }
 }
 
-struct PairText;
+mod pair_text {
+    use super::*;
 
-impl FromNodeVia<Vec<u16>> for PairText {
-    fn from_node(node: &Node) -> Result<Vec<u16>, NodeError> {
+    pub fn from_node(node: &Node) -> Result<Vec<u16>, NodeError> {
         let text: String = node.as_type()?;
         let (first, second) = text.split_once(',').ok_or_else(|| {
             NodeError::invalid_value(&node.path, "expected two comma-separated integers")
@@ -379,34 +403,30 @@ impl FromNodeVia<Vec<u16>> for PairText {
             })
             .collect()
     }
-}
 
-impl DescribeVia<Vec<u16>> for PairText {
-    fn describe() -> Desc {
+    pub fn describe() -> Desc {
         Desc::plain("integer pair text")
     }
 }
 
-struct StrictMapAddress;
+mod strict_map_address {
+    use super::*;
 
-impl FromNodeVia<IpAddr> for StrictMapAddress {
-    fn from_node(node: &Node) -> Result<IpAddr, NodeError> {
+    pub fn from_node(node: &Node) -> Result<IpAddr, NodeError> {
         let representation: AddressRepresentation = node.as_type()?;
         let _ = (representation.retries, representation.transport);
         parse_address(node.req_node("text")?, &representation.text)
     }
-}
 
-impl DescribeVia<IpAddr> for StrictMapAddress {
-    fn describe() -> Desc {
+    pub fn describe() -> Desc {
         AddressRepresentation::describe()
     }
 }
 
-struct PermissiveMapAddress;
+mod permissive_map_address {
+    use super::*;
 
-impl FromNodeVia<IpAddr> for PermissiveMapAddress {
-    fn from_node(node: &Node) -> Result<IpAddr, NodeError> {
+    pub fn from_node(node: &Node) -> Result<IpAddr, NodeError> {
         let representation: PermissiveRepresentation = node.as_type()?;
         parse_address(node.req_node("text")?, &representation.text)
     }

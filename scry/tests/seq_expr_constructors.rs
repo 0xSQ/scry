@@ -1,11 +1,11 @@
 use std::error::Error;
 
 use scry::kit::seq_expr::{
-    EvalError, EvalErrorKind, IndexEvaluator, IntContext, IntEvalOptions, IntEvaluator, IntSeqExpr,
-    IntSequence, Span,
+    int_sequence, EvalError, EvalErrorKind, IndexEvaluator, IntContext, IntEvalOptions,
+    IntEvaluator, IntSeqExpr, Span,
 };
 use scry::node::Format;
-use scry::{Config, FromNode, FromNodeVia, KeyPath, Node, NodeError, ToNode};
+use scry::{Config, FromNode, KeyPath, Node, NodeError, ToNode};
 
 // ---------------------------------------------------------------------------------------------- //
 
@@ -69,7 +69,7 @@ fn single_accepts_unsuffixed_literals_and_matches_parsed_native_output() {
 #[test]
 fn single_accepts_every_native_integer_type_and_preserves_its_boundaries() {
     macro_rules! check_target {
-        ($($target:ty),+ $(,)?) => {
+        ($($target:ident),+ $(,)?) => {
             $(
                 for value in [<$target>::MIN, 0, <$target>::MAX] {
                     let expression: IntSeqExpr = IntSeqExpr::single(value);
@@ -81,11 +81,11 @@ fn single_accepts_every_native_integer_type_and_preserves_its_boundaries() {
                     let output = expression.to_node().unwrap();
                     assert_eq!(output.as_type::<String>().unwrap(), source);
                     assert_eq!(
-                        <IntSequence as FromNodeVia<Vec<$target>>>::from_node(&output).unwrap(),
+                        int_sequence::$target::from_node(&output).unwrap(),
                         [value],
                     );
                     assert_eq!(
-                        <IntSequence as FromNodeVia<Vec<$target>>>::from_node(
+                        int_sequence::$target::from_node(
                             &parsed.to_node().unwrap(),
                         ).unwrap(),
                         [value],
@@ -109,9 +109,7 @@ fn single_defers_target_narrowing_and_retains_the_canonical_diagnostic_span() {
     for expression in [IntSeqExpr::single(256_u16), IntSeqExpr::single(-1_i8)] {
         let mut input = Node::empty_map();
         input.set_node("value", expression.to_node().unwrap()).unwrap();
-        let error =
-            <IntSequence as FromNodeVia<Vec<u8>>>::from_node(input.req_node("value").unwrap())
-                .unwrap_err();
+        let error = int_sequence::u8::from_node(input.req_node("value").unwrap()).unwrap_err();
         assert_eq!(error.path(), Some(&KeyPath::from_keys(["value"])));
         let evaluation = error.source().unwrap().downcast_ref::<EvalError>().unwrap();
         assert_eq!(evaluation.kind(), &EvalErrorKind::IntegerOutOfRange { target_type: "u8" });

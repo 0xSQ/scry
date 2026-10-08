@@ -27,8 +27,12 @@ mod parse;
 /// directly, while tuples retain exact array arity. Positional renames and fallbacks are rejected.
 /// Generic declarations and user constraints are preserved. Native generic field operations add
 /// bounds on their complete types, while hooks replace the corresponding native requirements.
-/// `#[scry(via(Policy))]` selects `Policy: FromNodeVia<FieldType>` for complete present values.
-/// Via works in every field position and cannot be combined with operation hooks on that field.
+/// `#[scry(with(adapter))]` calls `adapter::from_node` for complete present values. The module
+/// only needs the functions requested by the selected derives. Module selections work in every
+/// field position and cannot be combined with individual operation hooks on that field.
+/// Individual hooks accept callable expressions, including closures and factories. Expressions
+/// run once per present field. Reader closures receive `&Node` and return the complete field type.
+/// Hooks with generic dependencies use the caller's explicit constraints.
 #[proc_macro_derive(FromNode, attributes(scry))]
 pub fn derive_from_node(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -63,7 +67,9 @@ pub fn derive_from_defaults(input: TokenStream) -> TokenStream {
 /// its serialized key or index, including for hooks. Transparent newtypes preserve child paths.
 /// Positional hooks receive references to the complete field type. Generic declarations and user
 /// constraints are preserved, adding complete-field `ToNode` bounds only for native operations.
-/// `#[scry(via(Policy))]` instead selects `Policy: ToNodeVia<FieldType>` and borrows that value.
+/// `#[scry(with(adapter))]` instead calls `adapter::to_node` with the borrowed complete value.
+/// Individual hooks accept callable expressions. Function paths and module functions preserve
+/// ordinary Rust argument coercions, while other expressions receive `&FieldType`.
 #[proc_macro_derive(ToNode, attributes(scry))]
 pub fn derive_to_node(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -94,9 +100,10 @@ pub fn derive_string_enum(input: TokenStream) -> TokenStream {
 /// Generic declarations and user constraints are preserved, adding complete-field `Describe`
 /// bounds for native operations. Type and positional field prose override delegated prose only
 /// when nonempty. Named field prose remains separate from its value's description.
-/// `#[scry(via(Policy))]` selects `Policy: DescribeVia<FieldType>` without a native description
-/// requirement. Adapted named fields retain omission metadata but suppress inferred target-domain
-/// default displays and directly described enum default markers.
+/// `#[scry(with(adapter))]` calls `adapter::describe` without a native description requirement.
+/// Module-adapted named fields retain omission metadata but suppress inferred target-domain
+/// default displays and directly described enum default markers. Individual hooks retain their
+/// existing default metadata and accept callable expressions returning `Desc`.
 #[proc_macro_derive(Describe, attributes(scry))]
 pub fn derive_describe(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);

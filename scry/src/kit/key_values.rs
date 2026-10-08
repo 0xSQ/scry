@@ -3,6 +3,11 @@
 //! Provides [`KeyValues<V>`], an ordered collection of string-keyed entries
 //! that accepts config input as either a map or a list of pairs.
 
+use crate::convert::{read, write};
+use crate::desc::Desc;
+use crate::node::{Kind, Node, NodeError};
+use crate::traits::{Describe, FromNode, ToNode};
+
 // ---------------------------------------------------------------------------------------------- //
 
 /// Ordered key-value entries used at the interface boundary.
@@ -53,6 +58,67 @@ impl<V> KeyValues<V> {
 }
 
 // ---------------------------------------------------------------------------------------------- //
+// Shared shape operations
+
+/// Reads a map or list of exact pairs using the supplied reader for each value.
+///
+/// Map keys become entry keys. Pair keys use native string decoding, and pair order and duplicate
+/// keys are preserved. Missing callback error locations gain the actual value Node's full path.
+/// The callback consumes accepted leaves through typed decoding or [`Node::read_leaf`].
+pub fn read_with<V>(
+    node: &Node,
+    mut read_value: impl FnMut(&Node) -> Result<V, NodeError>,
+) -> Result<KeyValues<V>, NodeError> {
+    match &node.kind {
+        Kind::Map(map) => {
+            let mut entries = Vec::with_capacity(map.len());
+            for (key, child) in map {
+                let value = read_value(child).map_err(|error| error.at_path(&child.path))?;
+                entries.push((key.clone(), value));
+            }
+            Ok(KeyValues::new(entries))
+        }
+        Kind::Vec(_) => read::vec(node, |entry| {
+            // Pair shape errors retain the established KeyValues diagnostic.
+            let pair = entry
+                .as_vec()
+                .map_err(|_| NodeError::invalid_value(&entry.path, "expected [key, value] pair"))?;
+            if pair.len() != 2 {
+                return Err(NodeError::array_length(&entry.path, 2, pair.len()));
+            }
+            let key = pair[0].as_type::<String>()?;
+            let value = read_value(&pair[1]).map_err(|error| error.at_path(&pair[1].path))?;
+            Ok((key, value))
+        })
+        .map(KeyValues::new),
+        Kind::Leaf(_) => Err(NodeError::invalid_value(
+            &node.path,
+            "expected map {k: v} or list of pairs [[k, v], ...]",
+        )),
+    }
+}
+
+/// Writes borrowed entries as pairs using the supplied writer for each value.
+///
+/// Preserves ordering and duplicate keys without constructing an owned representation collection.
+/// A value error receives its emitted `[entry][1]` position before any enclosing field location.
+pub fn write_with<V>(
+    values: &KeyValues<V>,
+    mut write_value: impl FnMut(&V) -> Result<Node, NodeError>,
+) -> Result<Node, NodeError> {
+    write::list(values.entries(), |entry| write::tuple2(entry, String::to_node, &mut write_value))
+}
+
+/// Builds the key-value label from the supplied value description.
+///
+/// Retains the container's existing label convention, including its fallback for unlabelled values.
+pub fn description(value: Desc) -> Desc {
+    let inner = value.type_label();
+    let value_part = if inner.is_empty() { "value" } else { &inner };
+    Desc::plain(format!("key_values[string → {}]", value_part))
+}
+
+// ---------------------------------------------------------------------------------------------- //
 // Iterator implementations
 
 impl<V> IntoIterator for KeyValues<V> {
@@ -82,57 +148,20 @@ impl<V> FromIterator<(String, V)> for KeyValues<V> {
 // ---------------------------------------------------------------------------------------------- //
 // Scry trait implementations
 
-use crate::desc::Desc;
-use crate::node::{Kind, Node, NodeError};
-use crate::traits::{Describe, FromNode, ToNode};
-
-// Accepts both map and list-of-pairs forms
 impl<V: FromNode> FromNode for KeyValues<V> {
     fn from_node(node: &Node) -> Result<Self, NodeError> {
-        match &node.kind {
-            Kind::Map(map) => {
-                let mut entries = Vec::with_capacity(map.len());
-                for (key, child) in map {
-                    let value = child.as_type::<V>()?;
-                    entries.push((key.clone(), value));
-                }
-                Ok(KeyValues::new(entries))
-            }
-            Kind::Vec(vec) => {
-                let mut entries = Vec::with_capacity(vec.len());
-                for (i, elem) in vec.iter().enumerate() {
-                    let elem_path = node.path.push_index(i);
-                    let pair = elem.as_vec().map_err(|_| {
-                        NodeError::invalid_value(&elem_path, "expected [key, value] pair")
-                    })?;
-                    if pair.len() != 2 {
-                        return Err(NodeError::array_length(&elem_path, 2, pair.len()));
-                    }
-                    let key = pair[0].as_type::<String>()?;
-                    let value = pair[1].as_type::<V>()?;
-                    entries.push((key, value));
-                }
-                Ok(KeyValues::new(entries))
-            }
-            Kind::Leaf(_) => Err(NodeError::invalid_value(
-                &node.path,
-                "expected map {k: v} or list of pairs [[k, v], ...]",
-            )),
-        }
+        read_with(node, Node::as_type)
     }
 }
 
 impl<V: Describe> Describe for KeyValues<V> {
     fn describe() -> Desc {
-        let inner = V::describe().type_label();
-        let value_part = if inner.is_empty() { "value" } else { &inner };
-        Desc::plain(format!("key_values[string → {}]", value_part))
+        description(V::describe())
     }
 }
 
-// Emits as list-of-pairs (preserves duplicates and ordering)
 impl<V: ToNode> ToNode for KeyValues<V> {
     fn to_node(&self) -> Result<Node, NodeError> {
-        self.0.to_node()
+        write_with(self, ToNode::to_node)
     }
 }

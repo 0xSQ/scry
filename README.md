@@ -401,6 +401,10 @@ defaults::base + #{
 ## Further
 
 - **[Core Concepts](docs/concepts.md)** - Explains the basics: how the `Node` tree works, how to implement `FromNode` manually, etc.
+- [Function adapters](docs/concepts.md#function-adapters) let fields use custom conversion functions
+  for external types. [Shared shape helpers](scry/src/convert.rs) reuse those conversions inside
+  containers. The [adapter example](scry/examples/function_adapters.rs) combines them with numeric
+  sequence input.
 - The [`kit`](scry/src/kit.rs) module provides reusable building blocks for configuration and CLI
   tools. [`Files`](scry/docs/kit/files.md) represents sets of files using config-file syntax,
   [`KeyValues<V>`](scry/src/kit/key_values.rs) provides key-value entries for initializing Rust map

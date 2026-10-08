@@ -1,8 +1,8 @@
 //! Reusable building blocks for configuration and CLI tools.
 
 pub mod files;
-mod key_values;
-mod one_or_many;
+pub mod key_values;
+pub mod one_or_many;
 pub mod seq_expr;
 
 pub use files::{Files, SourceSpec};

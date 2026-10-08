@@ -72,15 +72,15 @@ pub struct FieldAttrs {
     fallback_span: Option<Span>,
     pub rename: Option<String>,
     rename_span: Option<Span>,
-    /// Policy type selected by `via(...)` for all requested Scry operations.
-    pub via: Option<Type>,
-    via_span: Option<Span>,
-    /// Custom Node → T conversion function. Set by `from_node_with(...)`.
-    pub from_node_with: Option<syn::Path>,
-    /// Custom description function. Set by `describe_with(...)`.
-    pub describe_with: Option<syn::Path>,
-    /// Custom T → Node conversion function. Set by `to_node_with(...)`.
-    pub to_node_with: Option<syn::Path>,
+    /// Module supplying the requested operations for the complete field value.
+    pub with: Option<syn::Path>,
+    with_span: Option<Span>,
+    /// Callable Node-to-value expression selected by `from_node_with(...)`.
+    pub from_node_with: Option<Expr>,
+    /// Callable description expression selected by `describe_with(...)`.
+    pub describe_with: Option<Expr>,
+    /// Callable borrowed-value-to-Node expression selected by `to_node_with(...)`.
+    pub to_node_with: Option<Expr>,
 }
 
 #[derive(Default)]
@@ -130,49 +130,60 @@ impl FieldAttrs {
                     result.rename_span = Some(lit.span());
                     Ok(())
                 } else if meta.path.is_ident("via") {
+                    Err(meta.error("`via(...)` has been removed; use `with(module)` or individual function hooks"))
+                } else if meta.path.is_ident("with") {
                     let content;
                     syn::parenthesized!(content in meta.input);
                     if content.is_empty() {
-                        return Err(content.error("`via(...)` requires one Rust policy type"));
+                        return Err(content.error("`with(...)` requires one module path"));
                     }
-                    let policy: Type = content.parse()?;
+                    let module: syn::Path = content.parse()?;
                     if !content.is_empty() {
                         return Err(
-                            content.error("`via(...)` accepts exactly one Rust policy type")
+                            content.error("`with(...)` accepts exactly one module path")
                         );
                     }
-                    if let Some(first_span) = result.via_span {
+                    if let Some(first_span) = result.with_span {
                         return Err(conflicting_declaration_error(
                             meta.path.span(),
                             first_span,
-                            "duplicate `via` field attribute",
+                            "duplicate `with` field attribute",
                         ));
                     }
-                    result.via = Some(policy);
-                    result.via_span = Some(meta.path.span());
+                    result.with = Some(module);
+                    result.with_span = Some(meta.path.span());
                     Ok(())
                 } else if meta.path.is_ident("from_node_with") {
                     let content;
                     syn::parenthesized!(content in meta.input);
-                    let path: syn::Path = content.parse()?;
-                    set_field_hook(&mut result.from_node_with, path, "from_node_with")
+                    let expression: Expr = content.parse()?;
+                    if !content.is_empty() {
+                        return Err(content.error("`from_node_with(...)` accepts exactly one callable expression"));
+                    }
+                    set_field_hook(&mut result.from_node_with, expression, "from_node_with")
                 } else if meta.path.is_ident("describe_with") {
                     let content;
                     syn::parenthesized!(content in meta.input);
-                    let path: syn::Path = content.parse()?;
-                    set_field_hook(&mut result.describe_with, path, "describe_with")
+                    let expression: Expr = content.parse()?;
+                    if !content.is_empty() {
+                        return Err(content.error("`describe_with(...)` accepts exactly one callable expression"));
+                    }
+                    set_field_hook(&mut result.describe_with, expression, "describe_with")
                 } else if meta.path.is_ident("to_node_with") {
                     let content;
                     syn::parenthesized!(content in meta.input);
-                    let path: syn::Path = content.parse()?;
-                    set_field_hook(&mut result.to_node_with, path, "to_node_with")
+                    let expression: Expr = content.parse()?;
+                    if !content.is_empty() {
+                        return Err(content.error("`to_node_with(...)` accepts exactly one callable expression"));
+                    }
+                    set_field_hook(&mut result.to_node_with, expression, "to_node_with")
                 } else {
                     Err(meta.error("unknown scry field attribute"))
                 }
             })?;
         }
 
-        result.validate_via_hooks()?;
+        result.validate_module_hooks()?;
         Ok(result)
     }
 
@@ -210,8 +221,8 @@ impl FieldAttrs {
         Err(syn::Error::new(self.fallback_span.unwrap_or_else(Span::call_site), message))
     }
 
-    fn validate_via_hooks(&self) -> Result<()> {
-        let Some(via_span) = self.via_span else {
+    fn validate_module_hooks(&self) -> Result<()> {
+        let Some(module_span) = self.with_span else {
             return Ok(());
         };
 
@@ -222,8 +233,8 @@ impl FieldAttrs {
         ] {
             if let Some(hook) = hook {
                 let mut error = syn::Error::new(
-                    via_span,
-                    format!("`via` cannot be combined with `{name}` on the same field"),
+                    module_span,
+                    format!("`with` cannot be combined with `{name}` on the same field"),
                 );
                 error.combine(syn::Error::new(hook.span(), "conflicting hook is here"));
                 return Err(error);
@@ -257,16 +268,16 @@ impl FieldAttrs {
 }
 
 /// Sets a field hook once and identifies both declarations if it is repeated.
-fn set_field_hook(hook: &mut Option<syn::Path>, path: syn::Path, name: &str) -> Result<()> {
+fn set_field_hook(hook: &mut Option<Expr>, expression: Expr, name: &str) -> Result<()> {
     if let Some(first) = hook {
         return Err(conflicting_declaration_error(
-            path.span(),
+            expression.span(),
             first.span(),
             format!("duplicate `{name}` field attribute"),
         ));
     }
 
-    *hook = Some(path);
+    *hook = Some(expression);
     Ok(())
 }
 

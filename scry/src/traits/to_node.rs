@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use crate::convert::write;
 use crate::key_path::KeyPath;
 use crate::node::{Kind, Leaf, Node, NodeError, Value};
 
@@ -131,31 +132,19 @@ impl ToNode for isize {
 
 impl<T: ToNode> ToNode for Option<T> {
     fn to_node(&self) -> Result<Node, NodeError> {
-        match self {
-            Some(v) => v.to_node(),
-            None => Ok(leaf(Value::Null)),
-        }
+        write::option(self, ToNode::to_node)
     }
 }
 
 impl<T: ToNode> ToNode for Vec<T> {
     fn to_node(&self) -> Result<Node, NodeError> {
-        serialize_vec(self, ToNode::to_node)
+        write::list(self, ToNode::to_node)
     }
 }
 
 impl<T: ToNode, const N: usize> ToNode for [T; N] {
     fn to_node(&self) -> Result<Node, NodeError> {
-        let mut children = Vec::with_capacity(N);
-        for (index, item) in self.iter().enumerate() {
-            children.push(
-                item.to_node().map_err(|error| error.prepend_path(&KeyPath::from_index(index)))?,
-            );
-        }
-        Ok(Node {
-            path: KeyPath::new(),
-            kind: Kind::Vec(children),
-        })
+        write::list(self, ToNode::to_node)
     }
 }
 
@@ -164,40 +153,19 @@ impl<T: ToNode, const N: usize> ToNode for [T; N] {
 
 impl<A: ToNode, B: ToNode> ToNode for (A, B) {
     fn to_node(&self) -> Result<Node, NodeError> {
-        Ok(Node {
-            path: KeyPath::new(),
-            kind: Kind::Vec(vec![
-                self.0.to_node().map_err(|error| error.prepend_path(&KeyPath::from_index(0)))?,
-                self.1.to_node().map_err(|error| error.prepend_path(&KeyPath::from_index(1)))?,
-            ]),
-        })
+        write::tuple2(self, ToNode::to_node, ToNode::to_node)
     }
 }
 
 impl<A: ToNode, B: ToNode, C: ToNode> ToNode for (A, B, C) {
     fn to_node(&self) -> Result<Node, NodeError> {
-        Ok(Node {
-            path: KeyPath::new(),
-            kind: Kind::Vec(vec![
-                self.0.to_node().map_err(|error| error.prepend_path(&KeyPath::from_index(0)))?,
-                self.1.to_node().map_err(|error| error.prepend_path(&KeyPath::from_index(1)))?,
-                self.2.to_node().map_err(|error| error.prepend_path(&KeyPath::from_index(2)))?,
-            ]),
-        })
+        write::tuple3(self, ToNode::to_node, ToNode::to_node, ToNode::to_node)
     }
 }
 
 impl<A: ToNode, B: ToNode, C: ToNode, D: ToNode> ToNode for (A, B, C, D) {
     fn to_node(&self) -> Result<Node, NodeError> {
-        Ok(Node {
-            path: KeyPath::new(),
-            kind: Kind::Vec(vec![
-                self.0.to_node().map_err(|error| error.prepend_path(&KeyPath::from_index(0)))?,
-                self.1.to_node().map_err(|error| error.prepend_path(&KeyPath::from_index(1)))?,
-                self.2.to_node().map_err(|error| error.prepend_path(&KeyPath::from_index(2)))?,
-                self.3.to_node().map_err(|error| error.prepend_path(&KeyPath::from_index(3)))?,
-            ]),
-        })
+        write::tuple4(self, ToNode::to_node, ToNode::to_node, ToNode::to_node, ToNode::to_node)
     }
 }
 
@@ -214,22 +182,4 @@ impl<T: ToNode + ?Sized> ToNode for &mut T {
     fn to_node(&self) -> Result<Node, NodeError> {
         (**self).to_node()
     }
-}
-
-// ---------------------------------------------------------------------------------------------- //
-// Sequence Traversal
-
-/// Serializes borrowed elements into the final child vector with relative index locations.
-pub(crate) fn serialize_vec<T>(
-    values: &[T],
-    mut serialize_element: impl FnMut(&T) -> Result<Node, NodeError>,
-) -> Result<Node, NodeError> {
-    let mut children = Vec::with_capacity(values.len());
-    for (index, item) in values.iter().enumerate() {
-        children.push(
-            serialize_element(item)
-                .map_err(|error| error.prepend_path(&KeyPath::from_index(index)))?,
-        );
-    }
-    Ok(Node::new_vec(KeyPath::new(), children))
 }

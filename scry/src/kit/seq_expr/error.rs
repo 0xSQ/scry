@@ -294,12 +294,12 @@ pub enum EvalErrorKind {
     MissingFiniteContext,
     /// A retained integer value cannot be represented by its output type.
     IntegerOutOfRange {
-        /// The Rust integer type requested by the evaluator or Via policy.
+        /// The Rust integer type requested by the evaluator or sequence adapter.
         target_type: &'static str,
     },
     /// A retained exact real value cannot be converted to a finite value of its output type.
     RealValueNotFinite {
-        /// The Rust floating-point type requested by the evaluator or Via policy.
+        /// The Rust floating-point type requested by the evaluator or sequence adapter.
         target_type: &'static str,
     },
     /// The cumulative retained-value count exceeds the effective evaluation limit.

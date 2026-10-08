@@ -506,10 +506,10 @@ impl FromNode for Rectangle {
 For types you don't own (external crates), you can't implement `FromNode` due to Rust's orphan rules. Use `from_node_with` to specify a custom parsing function for individual fields:
 
 ```rust
-use scry::{Config, Node, NodeError};
+use scry::{FromNode, Node, NodeError};
 use some_crate::Color;
 
-#[derive(Config)]
+#[derive(FromNode)]
 struct Theme {
     #[scry(from_node_with(parse_color))]
     background: Color,
@@ -522,7 +522,7 @@ fn parse_color(node: &Node) -> Result<Color, NodeError> {
 }
 ```
 
-For reusable field behavior while retaining the external type, use a Via policy as described
+For input, output, and description together, group the functions in an adapter module as described
 below. A newtype wrapper remains useful when the value itself should enforce a domain invariant.
 
 The hook returns the complete field type, including `Option<T>`. Missing fields use their
@@ -572,60 +572,120 @@ those same input locations and serialization error prefixes as native operations
 Positional fields reject `rename`, `default = EXPR`, and `from_defaults`. They have no named key to
 rename or omit. A present null still goes through the complete field's parser or hook.
 
-### Via Policies
+### Function Adapters
 
-`#[scry(via(Policy))]` selects reusable Scry behavior for the complete field type. A local policy
-can support a foreign target while the field keeps its ordinary Rust type. Define the policy's
-capabilities using `FromNodeVia<T>`, `ToNodeVia<T>`, and `DescribeVia<T>`, available at the crate
-root and under `scry::via`. See the [Via module](../scry/src/via.rs) for a complete IP-address example.
+Use `#[scry(with(module))]` to select a module's `from_node`, `to_node`, and `describe` functions
+for a field. This keeps the field's ordinary Rust type, including types from another crate:
 
-Each derive requests only its own capability. `Config` needs input and description, while output
-requires a separate `ToNode` derive. Missing policy support is a compiler error. Via does not
-silently use the target's native implementation or require all three capabilities.
+```rust
+use std::net::IpAddr;
+use scry::{Config, ToNode};
 
-The annotation works on named fields, transparent newtypes, tuples, and enum payloads. It contains
-a Rust type, including qualified paths, generic types, or aliases. Repeated selections and
-combinations with any operation hook on the same field are rejected.
+#[derive(Config, ToNode)]
+struct Server {
+    #[scry(with(address_text))]
+    address: IpAddr,
+}
 
-Missing keys use their existing field fallback without calling the policy. A present null reaches
-the policy as part of the complete type, including outer `Option<T>`. Output borrows the stored
-value and serializes every named field. A policy may return null. Input errors use the full Node
-path, output errors are relative to the emitted value, and map policies validate their own keys.
+mod address_text {
+    use std::net::IpAddr;
+    use scry::{Desc, Node, NodeError, ToNode};
 
-Policy descriptions supply the complete value shape and nullability. Field prose and omission
-remain separate. Adapted fields suppress target-domain literal default displays and directly
-described enum default markers, because those do not establish a default in the policy's
-configuration representation. Defaults on nested described fields remain intact.
+    pub fn from_node(node: &Node) -> Result<IpAddr, NodeError> {
+        node.as_type::<String>()?.parse().map_err(|error| {
+            NodeError::invalid_value_with_source(&node.path, "invalid IP address", error)
+        })
+    }
 
-Generic requirements inspect both the policy type and target type. Recognizable recursive fields
-retain the existing inferred-bound exception and can require explicit caller constraints. Input
-narrows potentially unsized targets to `Sized`. Output and description retain unsized support.
+    pub fn to_node(value: &IpAddr) -> Result<Node, NodeError> {
+        value.to_string().to_node()
+    }
 
-Compose element policies explicitly with `Option<Policy>` and `Vec<Policy>`. Each container
-requires only the requested capability of its inner policy. `scry::via::Native` delegates to the
-target's ordinary Scry implementation, allowing native operations to participate in composition.
+    pub fn describe() -> Desc {
+        Desc::plain("IP address string")
+    }
+}
+```
 
-| Policy | Complete field type | Configuration value |
-| --- | --- | --- |
-| `Native` | `u16` | An ordinary integer. |
-| `Option<AddressText>` | `Option<IpAddr>` | A textual address or null. |
-| `Vec<Option<AddressText>>` | `Vec<Option<IpAddr>>` | An array of textual addresses and nulls. |
-| `Option<Vec<AddressText>>` | `Option<Vec<IpAddr>>` | An address array or null. |
+Each derive calls only its own function. `Config` needs input and description, while output
+requires a separate `ToNode` derive. A read-only module may omit `to_node`. A missing requested
+function is a compile error, and the target needs no native trait for that operation.
 
-`Option<Policy>` consumes null as `None` without invoking the inner policy. Non-null input delegates
-to that policy. Missing-key handling still belongs to the field. `None` output remains explicit
-null, and description preserves the inner shape and choices while marking it nullable.
+The module path works on named fields, transparent newtypes, tuples, and enum payloads.
+Repeated selections and combinations with individual operation hooks on the same field are rejected.
+Individual hooks remain useful for customizing one operation, such as validating an ordinary integer.
 
-`Vec<Policy>` requires an array and converts each element directly into the target vector. Output
-borrows each element and builds the resulting Node array. Inner errors retain their causes and
-gain the appropriate input location or relative output index. Descriptions retain their element
-structure, including nested nullable values.
+Missing keys use their existing fallback without calling the adapter. Every present value,
+including null, reaches the selected reader for the complete field type. Output borrows the value
+and serializes every named field. Input errors use the full Node path, output errors are relative
+to the emitted value, and map readers validate the shape they own.
 
-A direct policy can still adapt an entire vector, such as expanding one expression into many
-values. `Vec<WholeSequence>` over `Vec<Vec<u16>>` applies that policy to each complete inner vector.
-The policy type determines composition. The derive does not infer it from the stored field type.
-Define a local marker for custom whole-container behavior. Scry supplies the standard container
-policy implementations, while application markers can reuse ordinary representations internally.
+The module's description supplies the complete value shape and nullability. Field prose and
+omission remain separate. Module selections suppress target-derived literal default displays and
+direct enum default markers. Those displays may use a different representation. Defaults on nested
+described fields remain intact. Individual hooks retain their ordinary default-display behavior.
+
+### Shared Shape Helpers
+
+An element adapter can be reused inside a container through `scry::convert`:
+
+```rust
+use std::net::IpAddr;
+use scry::convert::{read, write};
+use scry::{Config, Desc, ToNode};
+
+#[derive(Config, ToNode)]
+struct Servers {
+    #[scry(
+        from_node_with(|node| read::vec(node, address_text::from_node)),
+        to_node_with(|values| write::list(values, address_text::to_node)),
+        describe_with(|| Desc::list(address_text::describe()))
+    )]
+    addresses: Vec<IpAddr>,
+}
+```
+
+The `address_text` module is the one defined above. Callable hooks accept ordinary function paths,
+closures, and expressions that produce callables. They run when that field operation runs.
+Missing defaults skip the reader expression. A traversal callback can keep mutable state during
+one operation, and output helpers borrow their elements without requiring `Clone`.
+
+| Shape | Input helper | Output helper | Description |
+| --- | --- | --- | --- |
+| `Vec<T>` | `read::vec(node, reader)` | `write::list(values, writer)` | `Desc::list(inner)` |
+| `Option<T>` | `read::option(node, reader)` | `write::option(value, writer)` | `inner.nullable()` |
+| `[T; N]` | `read::array(node, reader)` | `write::list(values, writer)` | `Desc::list(inner)` |
+| Tuples of two to four elements | `read::tuple2` through `tuple4` | `write::tuple2` through `tuple4` | `Desc::tuple(elements)` |
+| `KeyValues<T>` | `key_values::read_with` | `key_values::write_with` | `key_values::description(inner)` |
+| `OneOrMany<T>` | `one_or_many::read_with` | `one_or_many::write_with` | `one_or_many::description(inner)` |
+
+The kit namespaces are available under `scry::kit`. Native container implementations use these
+same operations with native child functions. They therefore share shape validation, error paths,
+and input consumption with custom compositions.
+
+Optional helpers consume null as `None` and write `None` as explicit null. Arrays and tuples
+check exact lengths before reading their children. Fixed-array descriptions currently use the
+same list shape as vectors. KeyValues accepts maps or exact pairs and writes ordered pairs.
+OneOrMany treats every array as an outer list, so a singleton array-valued element needs an
+additional array layer.
+
+Nested shapes are composed explicitly. For example, input for
+`KeyValues<Vec<Option<IpAddr>>>` can use:
+
+```rust
+key_values::read_with(node, |entry| {
+    read::vec(entry, |item| read::option(item, address_text::from_node))
+})
+```
+
+Its output and description compose the corresponding helpers in the same order. When that
+combination is reused, put the three compositions in a module and select it with `with(module)`.
+The leaf conversion and each container algorithm remain shared.
+
+For a custom generic container, publish callback-based read and write functions and a description
+constructor when substituted child conversions are useful. Its native trait implementations can
+then delegate to those same functions. A domain-specific type can keep ordinary native support
+without providing a generic adaptation interface.
 
 ## FromDefaults
 
@@ -742,10 +802,10 @@ impl ToNode for Rectangle {
 Use `to_node_with` to specify a custom serialization function for individual fields:
 
 ```rust
-use scry::{Config, Node, NodeError, ToNode};
+use scry::{FromNode, Node, NodeError, ToNode};
 use some_crate::Color;
 
-#[derive(Config, ToNode)]
+#[derive(FromNode, ToNode)]
 struct Theme {
     #[scry(from_node_with(parse_color), to_node_with(color_to_node))]
     background: Color,
@@ -844,9 +904,9 @@ value retains its children and enum choices. Repeated `Option` layers share one 
 This does not change how missing keys select defaults. A type alias hiding `Option<T>` still needs
 an explicit fallback to permit omission.
 
-Every field described by a derive needs `Describe` or a `describe_with` hook. A missing
-implementation is a compiler error. Use a labelled plain description for an intentionally opaque
-custom value.
+Every field described by a derive needs `Describe`, a `describe_with` hook, or a selected
+module's `describe` function. A missing implementation is a compiler error. Use a labelled plain
+description for an intentionally opaque custom value.
 
 ### Implementing Describe Manually
 

@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use crate::convert::read;
 use crate::node::{Kind, Node, NodeError, Value};
 
 // ---------------------------------------------------------------------------------------------- //
@@ -161,36 +162,19 @@ impl FromNode for PathBuf {
 
 impl<T: FromNode> FromNode for Option<T> {
     fn from_node(node: &Node) -> Result<Self, NodeError> {
-        // Null represents None and must be consumed even on direct trait calls.
-        if let Kind::Leaf(leaf) = &node.kind {
-            if matches!(leaf.value, Value::Null) {
-                node.read_leaf("optional value")?;
-                return Ok(None);
-            }
-        }
-        // Otherwise parse as T.
-        node.as_type().map(Some)
+        read::option(node, Node::as_type)
     }
 }
 
 impl<T: FromNode> FromNode for Vec<T> {
     fn from_node(node: &Node) -> Result<Self, NodeError> {
-        parse_vec(node, Node::as_type)
+        read::vec(node, Node::as_type)
     }
 }
 
 impl<T: FromNode, const N: usize> FromNode for [T; N] {
     fn from_node(node: &Node) -> Result<Self, NodeError> {
-        let entries = node.as_vec()?;
-        if entries.len() != N {
-            return Err(NodeError::array_length(&node.path, N, entries.len()));
-        }
-        let mut values = Vec::with_capacity(N);
-        for entry in entries {
-            values.push(entry.as_type()?);
-        }
-        // This cannot fail since we checked the length above
-        Ok(values.try_into().ok().unwrap())
+        read::array(node, Node::as_type)
     }
 }
 
@@ -199,48 +183,20 @@ impl<T: FromNode, const N: usize> FromNode for [T; N] {
 
 impl<A: FromNode, B: FromNode> FromNode for (A, B) {
     fn from_node(node: &Node) -> Result<Self, NodeError> {
-        let vec = node.as_vec()?;
-        if vec.len() != 2 {
-            return Err(NodeError::array_length(&node.path, 2, vec.len()));
-        }
-        Ok((vec[0].as_type()?, vec[1].as_type()?))
+        read::tuple2(node, Node::as_type, Node::as_type)
     }
 }
 
 impl<A: FromNode, B: FromNode, C: FromNode> FromNode for (A, B, C) {
     fn from_node(node: &Node) -> Result<Self, NodeError> {
-        let vec = node.as_vec()?;
-        if vec.len() != 3 {
-            return Err(NodeError::array_length(&node.path, 3, vec.len()));
-        }
-        Ok((vec[0].as_type()?, vec[1].as_type()?, vec[2].as_type()?))
+        read::tuple3(node, Node::as_type, Node::as_type, Node::as_type)
     }
 }
 
 impl<A: FromNode, B: FromNode, C: FromNode, D: FromNode> FromNode for (A, B, C, D) {
     fn from_node(node: &Node) -> Result<Self, NodeError> {
-        let vec = node.as_vec()?;
-        if vec.len() != 4 {
-            return Err(NodeError::array_length(&node.path, 4, vec.len()));
-        }
-        Ok((vec[0].as_type()?, vec[1].as_type()?, vec[2].as_type()?, vec[3].as_type()?))
+        read::tuple4(node, Node::as_type, Node::as_type, Node::as_type, Node::as_type)
     }
-}
-
-// ---------------------------------------------------------------------------------------------- //
-// Sequence Traversal
-
-/// Parses each array element directly into the final target vector.
-pub(crate) fn parse_vec<T>(
-    node: &Node,
-    mut parse_element: impl FnMut(&Node) -> Result<T, NodeError>,
-) -> Result<Vec<T>, NodeError> {
-    let entries = node.as_vec()?;
-    let mut result = Vec::with_capacity(entries.len());
-    for entry in entries {
-        result.push(parse_element(entry).map_err(|error| error.at_path(&entry.path))?);
-    }
-    Ok(result)
 }
 
 // ---------------------------------------------------------------------------------------------- //

@@ -1,16 +1,14 @@
 use std::error::Error;
 use std::num::{ParseFloatError, ParseIntError, TryFromIntError};
 
+use scry::convert::{read, write};
 use scry::desc::{DescKind, FieldDesc};
 use scry::kit::seq_expr::{
-    EvalError, EvalErrorKind, ExprBuildError, ExprBuildErrorKind, IntSequence, ParseErrorKind,
-    ProfileErrorKind, RealSequence, MAX_VALUES,
+    int_sequence, real_sequence, EvalError, EvalErrorKind, ExprBuildError, ExprBuildErrorKind,
+    ParseErrorKind, ProfileErrorKind, MAX_VALUES,
 };
 use scry::node::{Format, Kind, Value};
-use scry::{
-    Config, Desc, Describe, DescribeVia, FromNode, FromNodeVia, KeyPath, Node, NodeError, ToNode,
-    ToNodeVia,
-};
+use scry::{Config, Desc, Describe, FromNode, KeyPath, Node, NodeError, ToNode};
 
 // ---------------------------------------------------------------------------------------------- //
 
@@ -18,24 +16,24 @@ use scry::{
 fn equivalent_expression_and_array_inputs_emit_canonical_numeric_arrays() {
     for source in [r#""2,1,2""#, r#"[2, "1", 2]"#] {
         let input = node(source);
-        let values = <IntSequence as FromNodeVia<Vec<i64>>>::from_node(&input).unwrap();
+        let values = int_sequence::i64::from_node(&input).unwrap();
         assert_eq!(values, [2, 1, 2]);
         input.ensure_no_unknown_keys().unwrap();
-        let output = IntSequence::to_node(&values).unwrap();
+        let output = int_sequence::i64::to_node(&values).unwrap();
         assert_numeric_array(&output);
         assert_eq!(output.as_type::<Vec<i64>>().unwrap(), values);
-        assert_eq!(<IntSequence as FromNodeVia<Vec<i64>>>::from_node(&output).unwrap(), values);
+        assert_eq!(int_sequence::i64::from_node(&output).unwrap(), values);
     }
 
     for source in [r#""[0..0.3]:0.1,0.1""#, r#"[0.0, "0.1", 0.2, 0.3, 0.1]"#] {
         let input = node(source);
-        let values = <RealSequence as FromNodeVia<Vec<f64>>>::from_node(&input).unwrap();
+        let values = real_sequence::f64::from_node(&input).unwrap();
         assert_eq!(values, [0.0, 0.1, 0.2, 0.3, 0.1]);
         input.ensure_no_unknown_keys().unwrap();
-        let output = RealSequence::to_node(&values).unwrap();
+        let output = real_sequence::f64::to_node(&values).unwrap();
         assert_numeric_array(&output);
         assert_eq!(output.as_type::<Vec<f64>>().unwrap(), values);
-        assert_eq!(<RealSequence as FromNodeVia<Vec<f64>>>::from_node(&output).unwrap(), values);
+        assert_eq!(real_sequence::f64::from_node(&output).unwrap(), values);
     }
 }
 
@@ -44,38 +42,28 @@ fn shape_dispatch_does_not_expand_array_entries_or_treat_missing_values_as_empty
     for source in ["()", "7", "1.5", "true", "#{}"] {
         let input = node(source);
         assert!(
-            matches!(
-                <IntSequence as FromNodeVia<Vec<i64>>>::from_node(&input),
-                Err(NodeError::TypeMismatch { .. })
-            ),
+            matches!(int_sequence::i64::from_node(&input), Err(NodeError::TypeMismatch { .. })),
             "{source}"
         );
         assert!(
-            matches!(
-                <RealSequence as FromNodeVia<Vec<f64>>>::from_node(&input),
-                Err(NodeError::TypeMismatch { .. })
-            ),
+            matches!(real_sequence::f64::from_node(&input), Err(NodeError::TypeMismatch { .. })),
             "{source}"
         );
     }
-    assert_eq!(<IntSequence as FromNodeVia<Vec<i64>>>::from_node(&node(r#""7""#)).unwrap(), [7]);
-    assert_eq!(<RealSequence as FromNodeVia<Vec<f64>>>::from_node(&node(r#""7""#)).unwrap(), [7.0]);
-    assert!(<IntSequence as FromNodeVia<Vec<i64>>>::from_node(&node(r#"["1..3"]"#)).is_err());
-    assert!(<RealSequence as FromNodeVia<Vec<f64>>>::from_node(&node(r#"["[0..1]/2"]"#)).is_err());
-    assert!(<IntSequence as FromNodeVia<Vec<i64>>>::from_node(&node("[1.0]")).is_err());
-    assert_eq!(<RealSequence as FromNodeVia<Vec<f64>>>::from_node(&node("[1]")).unwrap(), [1.0]);
+    assert_eq!(int_sequence::i64::from_node(&node(r#""7""#)).unwrap(), [7]);
+    assert_eq!(real_sequence::f64::from_node(&node(r#""7""#)).unwrap(), [7.0]);
+    assert!(int_sequence::i64::from_node(&node(r#"["1..3"]"#)).is_err());
+    assert!(real_sequence::f64::from_node(&node(r#"["[0..1]/2"]"#)).is_err());
+    assert!(int_sequence::i64::from_node(&node("[1.0]")).is_err());
+    assert_eq!(real_sequence::f64::from_node(&node("[1]")).unwrap(), [1.0]);
 
-    assert!(<IntSequence as FromNodeVia<Vec<i64>>>::from_node(&node("[]")).unwrap().is_empty());
-    assert!(<RealSequence as FromNodeVia<Vec<f64>>>::from_node(&node("[]")).unwrap().is_empty());
-    assert!(<IntSequence as FromNodeVia<Vec<i64>>>::from_node(&node(r#""3..3""#))
-        .unwrap()
-        .is_empty());
-    assert!(<RealSequence as FromNodeVia<Vec<f64>>>::from_node(&node(r#""1..1:1""#))
-        .unwrap()
-        .is_empty());
+    assert!(int_sequence::i64::from_node(&node("[]")).unwrap().is_empty());
+    assert!(real_sequence::f64::from_node(&node("[]")).unwrap().is_empty());
+    assert!(int_sequence::i64::from_node(&node(r#""3..3""#)).unwrap().is_empty());
+    assert!(real_sequence::f64::from_node(&node(r#""1..1:1""#)).unwrap().is_empty());
     for error in [
-        <IntSequence as FromNodeVia<Vec<i64>>>::from_node(&node(r#""""#)).unwrap_err(),
-        <RealSequence as FromNodeVia<Vec<f64>>>::from_node(&node(r#""""#)).unwrap_err(),
+        int_sequence::i64::from_node(&node(r#""""#)).unwrap_err(),
+        real_sequence::f64::from_node(&node(r#""""#)).unwrap_err(),
     ] {
         assert_eq!(
             cause::<ExprBuildError>(&error).kind(),
@@ -114,14 +102,14 @@ fn string_failures_keep_build_or_evaluation_causes_and_full_nested_paths() {
 
     let path = KeyPath::from_keys(["scope", "real.sweep"]);
     let input = Node::new_leaf(path.clone(), Value::String("0..1".to_string()));
-    let error = <RealSequence as FromNodeVia<Vec<f64>>>::from_node(&input).unwrap_err();
+    let error = real_sequence::f64::from_node(&input).unwrap_err();
     assert_eq!(error.path(), Some(&path));
     assert_eq!(
         cause::<ExprBuildError>(&error).kind(),
         ExprBuildErrorKind::Profile(&ProfileErrorKind::MissingRealSampler),
     );
     let input = Node::new_leaf(path.clone(), Value::String("1e4000".to_string()));
-    let error = <RealSequence as FromNodeVia<Vec<f64>>>::from_node(&input).unwrap_err();
+    let error = real_sequence::f64::from_node(&input).unwrap_err();
     assert_eq!(error.path(), Some(&path));
     assert_eq!(
         cause::<EvalError>(&error).kind(),
@@ -132,13 +120,13 @@ fn string_failures_keep_build_or_evaluation_causes_and_full_nested_paths() {
 #[test]
 fn array_conversion_keeps_native_causes_and_stops_after_the_first_failure() {
     let input = node(r#"[1, "bad", 3]"#);
-    let error = <IntSequence as FromNodeVia<Vec<i64>>>::from_node(&input).unwrap_err();
+    let error = int_sequence::i64::from_node(&input).unwrap_err();
     assert_eq!(error.path(), Some(&KeyPath::from_index(1)));
     assert!(error.source().unwrap().is::<ParseIntError>());
     assert!(!is_visited(&input.as_vec().unwrap()[2]));
 
     let input = node(r#"[1, "bad", 3]"#);
-    let error = <RealSequence as FromNodeVia<Vec<f64>>>::from_node(&input).unwrap_err();
+    let error = real_sequence::f64::from_node(&input).unwrap_err();
     assert_eq!(error.path(), Some(&KeyPath::from_index(1)));
     assert!(error.source().unwrap().is::<ParseFloatError>());
     assert!(!is_visited(&input.as_vec().unwrap()[2]));
@@ -151,7 +139,7 @@ fn array_conversion_keeps_native_causes_and_stops_after_the_first_failure() {
             Node::new_leaf(path.push_index(1), Value::U64(u64::MAX)),
         ],
     );
-    let error = <IntSequence as FromNodeVia<Vec<i64>>>::from_node(&input).unwrap_err();
+    let error = int_sequence::i64::from_node(&input).unwrap_err();
     assert_eq!(error.path(), Some(&path.push_index(1)));
     assert!(error.source().unwrap().is::<TryFromIntError>());
 }
@@ -160,25 +148,24 @@ fn array_conversion_keeps_native_causes_and_stops_after_the_first_failure() {
 fn real_arrays_require_finite_values_and_preserve_native_signed_zero() {
     let values = vec![-0.0_f64, 0.0, f64::MAX];
     let input = values.to_node().unwrap();
-    let decoded = <RealSequence as FromNodeVia<Vec<f64>>>::from_node(&input).unwrap();
+    let decoded = real_sequence::f64::from_node(&input).unwrap();
     assert_eq!(
         decoded.iter().map(|value| value.to_bits()).collect::<Vec<_>>(),
         values.iter().map(|value| value.to_bits()).collect::<Vec<_>>()
     );
     input.ensure_no_unknown_keys().unwrap();
-    let output = RealSequence::to_node(&decoded).unwrap();
-    let roundtrip = <RealSequence as FromNodeVia<Vec<f64>>>::from_node(&output).unwrap();
+    let output = real_sequence::f64::to_node(&decoded).unwrap();
+    let roundtrip = real_sequence::f64::from_node(&output).unwrap();
     assert_eq!(roundtrip[0].to_bits(), (-0.0_f64).to_bits());
     assert_eq!(roundtrip[1].to_bits(), 0.0_f64.to_bits());
     assert_eq!(
-        <RealSequence as FromNodeVia<Vec<f64>>>::from_node(&node(r#""-0.0""#)).unwrap()[0]
-            .to_bits(),
+        real_sequence::f64::from_node(&node(r#""-0.0""#)).unwrap()[0].to_bits(),
         0.0_f64.to_bits()
     );
 
     for spelling in ["NaN", "inf", "-inf"] {
         let input = node(&format!(r#"[1, "{spelling}", 3]"#));
-        let error = <RealSequence as FromNodeVia<Vec<f64>>>::from_node(&input).unwrap_err();
+        let error = real_sequence::f64::from_node(&input).unwrap_err();
         assert!(matches!(error, NodeError::InvalidValue { .. }));
         assert_eq!(error.path(), Some(&KeyPath::from_index(1)));
         assert!(error.source().is_none());
@@ -189,11 +176,11 @@ fn real_arrays_require_finite_values_and_preserve_native_signed_zero() {
             KeyPath::new(),
             vec![Node::new_leaf(KeyPath::from_index(0), Value::F64(value))],
         );
-        let error = <RealSequence as FromNodeVia<Vec<f64>>>::from_node(&input).unwrap_err();
+        let error = real_sequence::f64::from_node(&input).unwrap_err();
         assert_eq!(error.path(), Some(&KeyPath::from_index(0)));
         assert!(error.source().is_none());
 
-        let error = RealSequence::to_node(&vec![1.0, value]).unwrap_err();
+        let error = real_sequence::f64::to_node(&[1.0, value]).unwrap_err();
         assert_eq!(error.path(), Some(&KeyPath::from_index(1)));
         assert!(error.source().is_none());
     }
@@ -202,9 +189,8 @@ fn real_arrays_require_finite_values_and_preserve_native_signed_zero() {
 #[test]
 fn count_caps_cover_expansion_and_array_preflight_at_the_whole_value_path() {
     for error in [
-        <IntSequence as FromNodeVia<Vec<i64>>>::from_node(&node(r#""0..1000001""#)).unwrap_err(),
-        <RealSequence as FromNodeVia<Vec<f64>>>::from_node(&node(r#""[0..1000000]:1""#))
-            .unwrap_err(),
+        int_sequence::i64::from_node(&node(r#""0..1000001""#)).unwrap_err(),
+        real_sequence::f64::from_node(&node(r#""[0..1000000]:1""#)).unwrap_err(),
     ] {
         assert_eq!(error.path(), Some(&KeyPath::new()));
         assert_eq!(
@@ -218,8 +204,8 @@ fn count_caps_cover_expansion_and_array_preflight_at_the_whole_value_path() {
     let leaf = Node::new_leaf(KeyPath::new(), Value::I64(1));
     let mut input = Node::new_vec(path.clone(), vec![leaf.clone(); MAX_VALUES + 1]);
     for error in [
-        <IntSequence as FromNodeVia<Vec<i64>>>::from_node(&input).unwrap_err(),
-        <RealSequence as FromNodeVia<Vec<f64>>>::from_node(&input).unwrap_err(),
+        int_sequence::i64::from_node(&input).unwrap_err(),
+        real_sequence::f64::from_node(&input).unwrap_err(),
     ] {
         assert!(matches!(error, NodeError::InvalidValue { .. }));
         assert_eq!(error.path(), Some(&path));
@@ -231,10 +217,10 @@ fn count_caps_cover_expansion_and_array_preflight_at_the_whole_value_path() {
         unreachable!();
     };
     children.pop();
-    let integers = <IntSequence as FromNodeVia<Vec<i64>>>::from_node(&input).unwrap();
+    let integers = int_sequence::i64::from_node(&input).unwrap();
     assert_eq!(integers.len(), MAX_VALUES);
     assert_eq!(integers.last(), Some(&1));
-    let reals = <RealSequence as FromNodeVia<Vec<f64>>>::from_node(&input).unwrap();
+    let reals = real_sequence::f64::from_node(&input).unwrap();
     assert_eq!(reals.len(), MAX_VALUES);
     assert_eq!(reals.last(), Some(&1.0));
 }
@@ -242,8 +228,8 @@ fn count_caps_cover_expansion_and_array_preflight_at_the_whole_value_path() {
 #[test]
 fn output_count_boundaries_match_accepted_input_boundaries() {
     // Each emitted tree is dropped before creating the next large boundary fixture.
-    assert_output_boundary::<i64, IntSequence>(1);
-    assert_output_boundary::<f64, RealSequence>(1.0);
+    assert_output_boundary(1_i64, int_sequence::i64::to_node);
+    assert_output_boundary(1.0_f64, real_sequence::f64::to_node);
 }
 
 #[test]
@@ -280,7 +266,7 @@ fn missing_null_and_explicit_defaults_keep_the_standard_field_rules() {
 }
 
 #[test]
-fn container_policies_adapt_each_complete_sequence_and_roundtrip_nulls() {
+fn shared_helpers_adapt_each_complete_sequence_and_roundtrip_nulls() {
     let input = node(r#"#{ "iterations.groups": ["1..3", [7,8], "3..3"] }"#);
     let config = IntegerGroups::from_node(&input).unwrap();
     assert_eq!(config.groups, [vec![1, 2], vec![7, 8], vec![]]);
@@ -305,10 +291,7 @@ fn container_policies_adapt_each_complete_sequence_and_roundtrip_nulls() {
     );
 
     let optional = node("()");
-    assert_eq!(
-        <Option<RealSequence> as FromNodeVia<Option<Vec<f64>>>>::from_node(&optional).unwrap(),
-        None
-    );
+    assert_eq!(read::option(&optional, real_sequence::f64::from_node).unwrap(), None);
     optional.ensure_no_unknown_keys().unwrap();
 }
 
@@ -343,14 +326,8 @@ fn nested_finiteness_and_count_failures_gain_each_output_prefix_once() {
 #[test]
 fn descriptions_expose_both_forms_without_claiming_an_array_shape() {
     for (description, hint) in [
-        (
-            <IntSequence as DescribeVia<Vec<i64>>>::describe(),
-            "integer sequence expression string or integer array",
-        ),
-        (
-            <RealSequence as DescribeVia<Vec<f64>>>::describe(),
-            "real sequence expression string or real array",
-        ),
+        (int_sequence::i64::describe(), "integer sequence expression string or integer array"),
+        (real_sequence::f64::describe(), "real sequence expression string or real array"),
     ] {
         assert!(!description.nullable);
         assert!(matches!(&description.kind, DescKind::Plain { .. }));
@@ -372,7 +349,7 @@ fn descriptions_expose_both_forms_without_claiming_an_array_shape() {
 
     let description = RealGroups::describe();
     let DescKind::List { item } = &field(&description, "sweeps.values").value.kind else {
-        panic!("outer policy composition must retain its list shape");
+        panic!("outer helper composition must retain its list shape");
     };
     assert!(item.nullable);
     assert!(matches!(&item.kind, DescKind::Plain { .. }));
@@ -384,33 +361,86 @@ fn descriptions_expose_both_forms_without_claiming_an_array_shape() {
 
 #[derive(Debug, Config, ToNode)]
 struct Sweeps {
-    #[scry(rename = "iterations.values", via(IntSequence))]
+    #[scry(rename = "iterations.values", with(int_sequence::i64))]
     values: Vec<i64>,
-    #[scry(via(Option<RealSequence>))]
+    #[scry(with(optional_reals))]
     optional: Option<Vec<f64>>,
-    #[scry(default = vec![7, 8], via(IntSequence))]
+    #[scry(default = vec![7, 8], with(int_sequence::i64))]
     fallback: Vec<i64>,
 }
 
 #[derive(Debug, Config, ToNode)]
 struct IntegerGroups {
-    #[scry(rename = "iterations.groups", via(Vec<IntSequence>))]
+    #[scry(rename = "iterations.groups", with(integer_groups))]
     groups: Vec<Vec<i64>>,
 }
 
 #[derive(Debug, Config, ToNode)]
 struct RealGroups {
-    #[scry(rename = "sweeps.values", via(Vec<Option<RealSequence>>))]
+    #[scry(rename = "sweeps.values", with(real_groups))]
     groups: Vec<Option<Vec<f64>>>,
 }
 
-fn assert_output_boundary<T: Clone, A: ToNodeVia<Vec<T>>>(value: T) {
+mod optional_reals {
+    use super::*;
+
+    pub fn from_node(node: &Node) -> Result<Option<Vec<f64>>, NodeError> {
+        read::option(node, real_sequence::f64::from_node)
+    }
+
+    pub fn to_node(values: &Option<Vec<f64>>) -> Result<Node, NodeError> {
+        write::option(values, |values| real_sequence::f64::to_node(values))
+    }
+
+    pub fn describe() -> Desc {
+        real_sequence::f64::describe().nullable()
+    }
+}
+
+mod integer_groups {
+    use super::*;
+
+    pub fn from_node(node: &Node) -> Result<Vec<Vec<i64>>, NodeError> {
+        read::vec(node, int_sequence::i64::from_node)
+    }
+
+    pub fn to_node(values: &[Vec<i64>]) -> Result<Node, NodeError> {
+        write::list(values, |values| int_sequence::i64::to_node(values))
+    }
+
+    pub fn describe() -> Desc {
+        Desc::list(int_sequence::i64::describe())
+    }
+}
+
+mod real_groups {
+    use super::*;
+
+    pub fn from_node(node: &Node) -> Result<Vec<Option<Vec<f64>>>, NodeError> {
+        read::vec(node, |node| read::option(node, real_sequence::f64::from_node))
+    }
+
+    pub fn to_node(values: &[Option<Vec<f64>>]) -> Result<Node, NodeError> {
+        write::list(values, |values| {
+            write::option(values, |values| real_sequence::f64::to_node(values))
+        })
+    }
+
+    pub fn describe() -> Desc {
+        Desc::list(real_sequence::f64::describe().nullable())
+    }
+}
+
+fn assert_output_boundary<T: Clone>(
+    value: T,
+    mut serialize: impl FnMut(&[T]) -> Result<Node, NodeError>,
+) {
     let mut values = vec![value; MAX_VALUES];
-    let output = A::to_node(&values).unwrap();
+    let output = serialize(&values).unwrap();
     assert_eq!(output.as_vec().unwrap().len(), MAX_VALUES);
     drop(output);
     values.push(values[0].clone());
-    let error = A::to_node(&values).unwrap_err();
+    let error = serialize(&values).unwrap_err();
     assert!(matches!(error, NodeError::InvalidValue { .. }));
     assert_eq!(error.path(), Some(&KeyPath::new()));
     assert!(error.source().is_none());

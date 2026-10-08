@@ -891,7 +891,7 @@ fn generate_field_desc(field: &FieldInfo, scry: &TokenStream) -> TokenStream {
     // Only simple literals are honest config-oriented display values. Arbitrary Rust syntax is
     // construction machinery rather than user-facing configuration documentation.
     let default_display = match &field.attrs.fallback {
-        _ if field.attrs.via.is_some() => quote! {},
+        _ if field.attrs.with.is_some() => quote! {},
         FieldFallback::Expression(expr) => literal_default_display(expr)
             .map(|display| quote! { .with_default(#display) })
             .unwrap_or_default(),
@@ -907,7 +907,7 @@ fn generate_field_desc(field: &FieldInfo, scry: &TokenStream) -> TokenStream {
 
     // Custom desc function overrides normal type-based desc generation
     let value_expr = generate_value_desc(field, scry);
-    let value_expr = if field.attrs.via.is_none()
+    let value_expr = if field.attrs.with.is_none()
         && matches!(field.attrs.fallback, FieldFallback::FromDefaults)
     {
         value_expr
@@ -1048,13 +1048,18 @@ fn generate_present_field_parser(
 ) -> TokenStream {
     let ty = &field.ty;
     match Operation::FromNode.select(field) {
-        FieldOperation::Via(policy) => quote! {
-            <#policy as #scry::FromNodeVia<#ty>>::from_node(#input)
+        FieldOperation::Module(module) => quote! {
+            (#module::from_node)(#input)
                 .map_err(|error| error.at_path(&(#input).path))
         },
-        FieldOperation::Hook(func_path) => quote! {
-            #func_path(#input).map_err(|error| error.at_path(&(#input).path))
-        },
+        FieldOperation::Hook(expression) => {
+            let call = if is_path_expression(expression) {
+                quote! { (#expression)(#input) }
+            } else {
+                quote! { #scry::_private::call_reader::<#ty>(#input, #expression) }
+            };
+            quote! { (#call).map_err(|error| error.at_path(&(#input).path)) }
+        }
         FieldOperation::Native => quote! { (#input).as_type::<#ty>() },
     }
 }
@@ -1067,10 +1072,15 @@ fn generate_field_output(
 ) -> TokenStream {
     let ty = &field.ty;
     match Operation::ToNode.select(field) {
-        FieldOperation::Via(policy) => {
-            quote! { <#policy as #scry::ToNodeVia<#ty>>::to_node(#value) }
+        FieldOperation::Module(module) => {
+            quote! { (#module::to_node)(#value) }
         }
-        FieldOperation::Hook(func_path) => quote! { #func_path(#value) },
+        FieldOperation::Hook(expression) if is_path_expression(expression) => {
+            quote! { (#expression)(#value) }
+        }
+        FieldOperation::Hook(expression) => {
+            quote! { #scry::_private::call_writer::<#ty>(#value, #expression) }
+        }
         FieldOperation::Native => quote! { #scry::ToNode::to_node(#value) },
     }
 }
@@ -1079,11 +1089,26 @@ fn generate_field_output(
 fn generate_value_desc(field: &FieldInfo, scry: &TokenStream) -> TokenStream {
     let ty = &field.ty;
     match Operation::Describe.select(field) {
-        FieldOperation::Via(policy) => {
-            quote! { <#policy as #scry::DescribeVia<#ty>>::describe() }
+        FieldOperation::Module(module) => {
+            quote! { (#module::describe)() }
         }
-        FieldOperation::Hook(func_path) => quote! { #func_path() },
+        FieldOperation::Hook(expression) if is_path_expression(expression) => {
+            quote! { (#expression)() }
+        }
+        FieldOperation::Hook(expression) => {
+            quote! { #scry::_private::call_describer(#expression) }
+        }
         FieldOperation::Native => quote! { <#ty as #scry::Describe>::describe() },
+    }
+}
+
+/// Preserves ordinary call coercions for paths wrapped in grouping expressions.
+fn is_path_expression(expression: &syn::Expr) -> bool {
+    match expression {
+        syn::Expr::Path(_) => true,
+        syn::Expr::Paren(expression) => is_path_expression(&expression.expr),
+        syn::Expr::Group(expression) => is_path_expression(&expression.expr),
+        _ => false,
     }
 }
 
@@ -1116,8 +1141,8 @@ enum Operation {
 impl Operation {
     /// Selects the same field operation for emitted calls and inferred requirements.
     fn select(self, field: &FieldInfo) -> FieldOperation<'_> {
-        if let Some(policy) = &field.attrs.via {
-            return FieldOperation::Via(policy);
+        if let Some(module) = &field.attrs.with {
+            return FieldOperation::Module(module);
         }
         let hook = match self {
             Self::FromNode => &field.attrs.from_node_with,
@@ -1137,21 +1162,13 @@ impl Operation {
             Self::Describe => quote! { #scry::Describe },
         }
     }
-
-    fn via_trait(self, scry: &TokenStream) -> TokenStream {
-        match self {
-            Self::FromNode => quote! { #scry::FromNodeVia },
-            Self::ToNode => quote! { #scry::ToNodeVia },
-            Self::Describe => quote! { #scry::DescribeVia },
-        }
-    }
 }
 
 #[derive(Clone, Copy)]
 enum FieldOperation<'a> {
     Native,
-    Hook(&'a syn::Path),
-    Via(&'a syn::Type),
+    Hook(&'a syn::Expr),
+    Module(&'a syn::Path),
 }
 
 fn struct_generics(info: &StructInfo, operation: Operation, scry: &TokenStream) -> Generics {
@@ -1206,20 +1223,9 @@ fn operation_generics<'a>(
         };
         usage.visit_type(&field.ty);
         let selected = operation.select(field);
-        let mut policy_generic = false;
-        if let FieldOperation::Via(policy) = selected {
-            let mut policy_usage = TypeUsage {
-                generic_names: &generic_names,
-                target,
-                generic: false,
-                recursive: false,
-            };
-            policy_usage.visit_type(policy);
-            policy_generic = policy_usage.generic;
-        }
         // A complete recursive-field predicate would require the impl being defined to prove
         // itself. Its body can use the current impl, plus the caller's explicit constraints.
-        if (!usage.generic && !policy_generic) || usage.recursive {
+        if !usage.generic || usage.recursive {
             continue;
         }
         let ty = &field.ty;
@@ -1229,15 +1235,7 @@ fn operation_generics<'a>(
                 let required = operation.native_trait(scry);
                 predicates.push(syn::parse_quote_spanned!(ty.span()=> #ty: #required));
             }
-            FieldOperation::Via(policy) => {
-                let required = operation.via_trait(scry);
-                if matches!(operation, Operation::FromNode) {
-                    predicates
-                        .push(syn::parse_quote_spanned!(ty.span()=> #ty: ::core::marker::Sized));
-                }
-                predicates.push(syn::parse_quote_spanned!(policy.span()=> #policy: #required<#ty>));
-            }
-            FieldOperation::Hook(_) => {}
+            FieldOperation::Hook(_) | FieldOperation::Module(_) => {}
         }
         if matches!(operation, Operation::FromNode)
             && matches!(field.attrs.fallback, FieldFallback::FromDefaults)
