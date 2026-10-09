@@ -276,7 +276,7 @@ fn optional_adapters_receive_present_null_and_missing_keys_use_target_fallbacks(
     let address = field(&desc, "address");
     assert!(address.optional);
     assert!(address.value.nullable);
-    assert_eq!(address.value.type_label(), "IP address | null");
+    assert_eq!(address.value.type_label(), "IP address");
 }
 
 #[test]

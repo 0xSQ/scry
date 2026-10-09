@@ -205,7 +205,7 @@ fn descriptions_keep_plain_expression_shapes_and_container_metadata() {
         panic!("native expression vectors must retain their list shape");
     };
     assert!(item.nullable);
-    assert_eq!(item.type_label(), "real sequence expression string | null");
+    assert_eq!(item.type_label(), "real sequence expression string");
     expressions.validate_path(r#"["experiments.values"][2]"#).unwrap();
     assert!(expressions.validate_path(r#"["experiments.values"][2][0]"#).is_err());
 }

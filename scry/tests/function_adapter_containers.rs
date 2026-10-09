@@ -215,7 +215,7 @@ fn composition_keeps_structural_descriptions_child_defaults_and_cli_choices() {
         panic!("expected list");
     };
     assert!(item.nullable);
-    assert_eq!(item.type_label(), "IP address | null");
+    assert_eq!(item.type_label(), "IP address");
     let fallback = field(&desc, "fallback");
     assert!(fallback.optional);
     assert!(fallback.value.nullable);

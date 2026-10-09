@@ -1,25 +1,102 @@
+use indoc::indoc;
+
 use super::*;
 
 // ---------------------------------------------------------------------------------------------- //
 
 #[test]
-fn nullable_labels_preserve_shapes_without_implying_omission() {
+fn nullable_metadata_preserves_shapes_without_changing_help_labels_or_omission() {
     let cases = [
-        (Desc::plain("u32"), "u32 | null"),
-        (Desc::default(), "value | null"),
-        (Desc::structure(vec![]), "struct | null"),
-        (Desc::enumeration(vec![]), "enum | null"),
-        (Desc::tuple(vec![]), "tuple | null"),
-        (Desc::list(Desc::plain("u32")), "list[u32] | null"),
+        (Desc::plain("u32"), "u32"),
+        (Desc::default(), ""),
+        (Desc::structure(vec![]), ""),
+        (Desc::enumeration(vec![]), ""),
+        (Desc::tuple(vec![]), "tuple"),
+        (Desc::list(Desc::plain("u32")), "list[u32]"),
     ];
     for (desc, expected) in cases {
         assert!(!desc.nullable);
         let desc = desc.nullable().nullable();
+        assert!(desc.nullable);
         assert_eq!(desc.type_label(), expected);
         assert!(desc.is_leaf());
         assert!(!FieldDesc::new("value", desc).optional);
     }
     assert!(!Desc::default().nullable);
+}
+
+#[test]
+fn help_rendering_keeps_useful_hints_children_and_defaults() {
+    let desc = Desc::structure(vec![
+        FieldDesc::new(
+            "comfy",
+            Desc::structure(vec![
+                FieldDesc::new("url", Desc::plain("string").nullable()).optional(),
+                FieldDesc::new("keep", Desc::plain("bool")).with_default("false"),
+            ])
+            .nullable(),
+        )
+        .optional(),
+        FieldDesc::new(
+            "resume",
+            Desc::enumeration(vec![
+                VariantDesc::unit("latest", false),
+                VariantDesc::payload("directory", false, Desc::plain("path").nullable()),
+                VariantDesc::payload(
+                    "custom",
+                    false,
+                    Desc::structure(vec![FieldDesc::new("count", Desc::plain("u32"))]).nullable(),
+                ),
+            ])
+            .nullable(),
+        )
+        .optional(),
+        FieldDesc::new(
+            "samples",
+            Desc::list(Desc::list(Desc::plain("u32").nullable()).nullable()).nullable(),
+        ),
+        FieldDesc::new(
+            "pair",
+            Desc::tuple(vec![
+                Desc::plain("u32").nullable(),
+                Desc::structure(vec![FieldDesc::new("count", Desc::plain("u32"))]).nullable(),
+            ])
+            .nullable(),
+        ),
+    ]);
+
+    let expected = indoc! {"
+        ◇ comfy
+        ┊  ◇ url: string
+        ┊  ◇ keep: bool → false
+        ◇ resume
+        ┊  › latest
+        ┊  › directory: path
+        ┊  › custom
+        ┊     ◆ count: u32
+        ◆ samples: list[list[u32]]
+        ◆ pair: tuple
+           ◆ 0: u32
+           ◆ 1
+              ◆ count: u32
+    "};
+    assert_eq!(desc.display(), expected);
+    for max_depth in [1, 2, 3] {
+        let config = DisplayConfig::default().with_max_depth(max_depth);
+        assert_eq!(desc.clone().nullable().display_with(&config), desc.display_with(&config));
+    }
+}
+
+#[test]
+fn standalone_plain_help_preserves_hints_and_docs_regardless_of_nullability() {
+    let plain = Desc::plain("u32").with_doc("Number of attempts.");
+    assert_eq!(plain.display(), "u32   ‣ Number of attempts.\n");
+    assert_eq!(plain.clone().nullable().display(), plain.display());
+    assert_eq!(Desc::default().display(), "");
+    assert_eq!(Desc::default().nullable().display(), "");
+    assert_eq!(Desc::default().with_doc("Custom value.").display(), "   ‣ Custom value.\n");
+    assert_eq!(Desc::plain("null").nullable().display(), "null\n");
+    assert_eq!(Desc::plain("string | null").nullable().display(), "string | null\n");
 }
 
 #[test]

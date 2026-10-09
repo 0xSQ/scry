@@ -101,7 +101,7 @@ fn named_fields_compose_their_complete_types_and_aliases_identically() {
     let desc = Shapes::describe();
     assert_eq!(field(&desc, "direct").value.type_label(), "list[list[u32]]");
     assert_eq!(field(&desc, "alias").value.type_label(), "list[list[u32]]");
-    assert_eq!(field(&desc, "array").value.type_label(), "list[list[u32 | null]]");
+    assert_eq!(field(&desc, "array").value.type_label(), "list[list[u32]]");
 
     for path in [
         "direct[0][1]",
@@ -148,9 +148,9 @@ fn nullability_and_omission_describe_different_policies() {
     assert!(input.as_type::<NullPolicies>().is_err());
 
     let rendered = desc.display();
-    assert!(rendered.contains("◆ samples: list[u32 | null]"));
-    assert!(rendered.contains("◇ threshold: u32 | null"));
-    assert!(rendered.contains("◆ alias: u32 | null"));
+    assert!(rendered.contains("◆ samples: list[u32]"));
+    assert!(rendered.contains("◇ threshold: u32"));
+    assert!(rendered.contains("◆ alias: u32"));
     assert!(rendered.contains("◇ retries: u32 → 0"));
 }
 
@@ -158,11 +158,11 @@ fn nullability_and_omission_describe_different_policies() {
 fn owning_and_borrowed_wrappers_forward_shape_and_nullability() {
     let desc = Wrappers::describe();
     assert_eq!(field(&desc, "owned").value.type_label(), Matrix::describe().type_label());
-    assert_eq!(field(&desc, "borrowed").value.type_label(), "list[u32 | null]");
+    assert_eq!(field(&desc, "borrowed").value.type_label(), "list[u32]");
     assert_eq!(field(&desc, "text").value.type_label(), "string");
     assert_eq!(field(&desc, "mutable").value.type_label(), "list[u32]");
     assert_eq!(field(&desc, "path").value.type_label(), "path");
-    assert_eq!(field(&desc, "raw").value.type_label(), "value | null");
+    assert_eq!(field(&desc, "raw").value.type_label(), "value");
     for path in ["shared[2].count", "owned[0][1]", "local.count"] {
         desc.validate_path(path).unwrap();
         assert!(desc.entry_at_path(path).is_some());
@@ -191,7 +191,7 @@ fn positional_descriptions_use_the_same_complete_type_composition() {
     }
     assert_eq!(
         desc.entry_at_path("named.child").unwrap().display().lines().next(),
-        Some("◇ child: struct | null")
+        Some("◇ child")
     );
 }
 
@@ -200,7 +200,7 @@ fn nullable_structures_and_enums_keep_children_and_contextual_defaults() {
     let child = Option::<Child>::describe();
     assert!(child.nullable);
     assert!(!child.is_leaf());
-    assert!(child.display().starts_with("struct | null\n"));
+    assert_eq!(child.display(), "◆ count: u32\n");
     child.validate_path("count").unwrap();
     assert!(child.entry_at_path("count").is_some());
 
@@ -221,8 +221,9 @@ fn nullable_structures_and_enums_keep_children_and_contextual_defaults() {
 #[test]
 fn repeated_options_share_one_nullable_shape() {
     let desc = Option::<Option<u32>>::describe();
-    assert_eq!(desc.type_label(), "u32 | null");
-    assert_eq!(desc.display(), "u32 | null\n");
+    assert!(desc.nullable);
+    assert_eq!(desc.type_label(), "u32");
+    assert_eq!(desc.display(), "u32\n");
     assert!(desc.is_leaf());
     assert!(desc.validate_path("child").is_err());
 }
@@ -231,19 +232,16 @@ fn repeated_options_share_one_nullable_shape() {
 fn custom_descriptions_replace_the_complete_value_without_native_bounds() {
     let desc = Hooked::describe();
     let custom = field(&desc, r#"["encoded.samples"]"#);
-    assert_eq!(custom.value.type_label(), "encoded samples | null");
+    assert_eq!(custom.value.type_label(), "encoded samples");
     assert!(custom.optional);
     assert_eq!(custom.doc, "Samples in a custom encoding.");
-    assert!(desc.display().contains("encoded.samples: encoded samples | null"));
+    assert!(desc.display().contains("encoded.samples: encoded samples"));
 }
 
 #[test]
-fn cli_description_queries_accept_deep_lists_and_display_nullable_items() {
+fn cli_description_queries_accept_deep_lists_and_keep_useful_item_hints() {
     let query = QueryArgs::new().desc("desc", None);
-    for (path, expected) in [
-        ("direct[0][1]", "◆ 1: u32"),
-        ("array[0][1]", "◆ 1: u32 | null"),
-    ] {
+    for (path, expected) in [("direct[0][1]", "◆ 1: u32"), ("array[0][1]", "◆ 1: u32")] {
         let matches = query
             .augment(Command::new("test"))
             .try_get_matches_from(["test", "--desc", path])
@@ -251,6 +249,27 @@ fn cli_description_queries_accept_deep_lists_and_display_nullable_items() {
         let output = query.check_desc::<Shapes>(&matches).unwrap().unwrap();
         assert_eq!(output.trim(), expected);
     }
+}
+
+#[test]
+fn cli_description_queries_show_optional_struct_fields_and_enum_choices() {
+    let query = QueryArgs::new().desc("desc", None);
+    let command = query.augment(Command::new("test"));
+    let matches = command.clone().try_get_matches_from(["test", "--desc"]).unwrap();
+    assert_eq!(query.check_desc::<Option<Child>>(&matches).unwrap().unwrap(), "◆ count: u32\n");
+    assert_eq!(query.check_desc::<Option<Mode>>(&matches).unwrap().unwrap(), "» fast\n› careful\n");
+
+    let matches = command.clone().try_get_matches_from(["test", "--desc", "named.child"]).unwrap();
+    assert_eq!(
+        query.check_desc::<Payloads>(&matches).unwrap().unwrap(),
+        "◇ child\n   ◆ count: u32\n"
+    );
+
+    let matches = command.try_get_matches_from(["test", "--desc", "optional"]).unwrap();
+    assert_eq!(
+        query.check_desc::<EnumContexts>(&matches).unwrap().unwrap(),
+        "◇ optional\n   › fast\n   › careful\n"
+    );
 }
 
 #[test]

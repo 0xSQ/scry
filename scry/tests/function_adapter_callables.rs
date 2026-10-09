@@ -110,7 +110,7 @@ fn nested_callbacks_require_only_the_requested_capability() {
         panic!("expected a list description");
     };
     assert!(item.nullable);
-    assert_eq!(item.type_label(), "address string | null");
+    assert_eq!(item.type_label(), "address string");
 }
 
 #[test]

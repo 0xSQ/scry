@@ -179,7 +179,7 @@ Let's look at what these options do.
 
 #### `--desc` Option
 
-`--desc` is the `--help` equivalent for your config file. It displays the expected config file format as a fancy schema-like description tree:
+`--desc` is the `--help` equivalent for your config file. It shows a human-readable overview of config fields, value hints, and defaults:
 
 ```
 $ deploy --desc
@@ -197,6 +197,8 @@ $ deploy --desc
 ```
 
 Required fields (`◆`), optional fields (`◇`), enum variants (`›`/`»`), and (displayable) default values (`→`) are all indicated visually. Comments are pulled from your struct's doc comments automatically. Symbols, spacing, and other formatting details can be customized if desired.
+
+Nested fields and enum choices show the structure directly. Value hints omit nullability to keep the overview concise.
 
 Subsections can be queried by path:
 

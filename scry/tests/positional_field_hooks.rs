@@ -162,7 +162,7 @@ fn positional_hooks_receive_the_complete_optional_type() {
     assert_eq!(value.0, Some(DomainValue(23)));
     assert_eq!(OptionalTransparent(None).to_node().unwrap().as_type::<String>().unwrap(), "none");
     assert_eq!(value.to_node().unwrap().as_type::<u16>().unwrap(), 23);
-    assert_eq!(OptionalTransparent::describe().type_label(), "encoded integer | null");
+    assert_eq!(OptionalTransparent::describe().type_label(), "encoded integer");
 }
 
 #[test]

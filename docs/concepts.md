@@ -837,7 +837,8 @@ destination as before.
 
 ## Describe
 
-`Describe` generates type descriptions for documentation (used by the CLI `--desc` flag):
+`Describe` generates descriptions for human-readable configuration help, including the CLI `--desc`
+overview:
 
 ```rust
 pub trait Describe {
@@ -861,7 +862,9 @@ struct ServerConfig {
 println!("{}", ServerConfig::describe().display());
 ```
 
-Doc comments on fields become descriptions in the output.
+Doc comments on fields become descriptions in the output. The display combines concise value hints
+with required/optional markers, defaults, and nested fields or enum choices. Structured groups do
+not need a `struct` or `enum` label because their children show the structure.
 
 The first paragraph of a type's documentation becomes the root description. Named fields keep
 their own prose separately from the value's type description. A positional field's nonempty prose
@@ -872,8 +875,8 @@ separate.
 
 Descriptions compose through the complete Rust type. `Vec<Vec<u32>>` and a type alias for it both
 produce `list[list[u32]]`, and paths such as `samples[0][1]` can select the inner element description.
-References, `Box`, `Rc`, and `Arc` forward the inner description. Raw `Node` fields have an opaque
-`value | null` description because their contents can have any shape.
+References, `Box`, `Rc`, and `Arc` forward the inner description. Raw `Node` fields use the opaque
+`value` hint because their contents can have any shape.
 
 Nullability belongs to the value description and is separate from field omission:
 
@@ -889,11 +892,11 @@ struct Samples {
 }
 ```
 
-The resulting field labels are:
+The help overview favors concise hints over listing every accepted value, so it omits nullability:
 
 ```text
-◆ values: list[u32 | null]
-◇ limit: u32 | null
+◆ values: list[u32]
+◇ limit: u32
 ◇ retries: u32 → 0
 ```
 

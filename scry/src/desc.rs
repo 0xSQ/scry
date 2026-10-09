@@ -1,7 +1,7 @@
 //! Description types for Scry configurations.
 //!
 //! Provides a single tree structure ([`Desc`]) for documenting config shapes,
-//! with integrated rendering and path traversal.
+//! with human-readable help rendering and path traversal.
 
 use crate::key_path::{KeyPathError, Segment, TryIntoKeyPath};
 
@@ -16,6 +16,8 @@ pub struct Desc {
     /// The structural kind of this value.
     pub kind: DescKind,
     /// True if null is accepted in addition to the described shape.
+    ///
+    /// Retained as metadata rather than included in help output.
     pub nullable: bool,
 }
 
@@ -173,17 +175,17 @@ impl Desc {
         self
     }
 
-    /// Returns the type label for display purposes.
+    /// Returns a concise value hint for help output.
     ///
-    /// - Plain: returns the hint if present, else empty string
-    /// - List: returns "list\[hint\]" if item has a hint, else "list"
-    /// - Tuple: returns "tuple"
-    /// - Struct/Enum: returns empty string unless nullable
+    /// - Plain: returns the hint if present, else an empty string.
+    /// - List: returns `list[hint]` if the item has a hint, else `list`.
+    /// - Tuple: returns `tuple`.
+    /// - Struct/Enum: returns an empty string. Their children describe the structure.
     ///
-    /// Nullable values append ` | null`. Nullable structs, enums, and unlabelled plain values
-    /// use `struct`, `enum`, and `value` respectively before that suffix.
+    /// Nullability is omitted at every level. This label is a reading aid, rather than a complete
+    /// account of accepted values. Exact null acceptance remains available in [`Self::nullable`].
     pub fn type_label(&self) -> String {
-        let label = match &self.kind {
+        match &self.kind {
             DescKind::Plain { hint } => hint.clone().unwrap_or_default(),
             DescKind::Struct { .. } => String::new(),
             DescKind::Enum { .. } => String::new(),
@@ -196,21 +198,7 @@ impl Desc {
                     format!("list[{}]", inner)
                 }
             }
-        };
-        if !self.nullable {
-            return label;
         }
-
-        let label = if label.is_empty() {
-            match self.kind {
-                DescKind::Struct { .. } => "struct",
-                DescKind::Enum { .. } => "enum",
-                _ => "value",
-            }
-        } else {
-            &label
-        };
-        format!("{label} | null")
     }
 
     /// Returns true if this description has no expandable children.
@@ -420,7 +408,7 @@ struct LineData {
 }
 
 impl Desc {
-    /// Formats the description as a string with default config.
+    /// Formats a human-readable help overview with default config.
     pub fn display(&self) -> String {
         self.display_with(&DisplayConfig::default())
     }
@@ -429,11 +417,14 @@ impl Desc {
     pub fn display_with(&self, config: &DisplayConfig) -> String {
         // First pass: collect all lines
         let mut lines = Vec::new();
-        if self.nullable {
-            lines.push(LineData {
-                left_side: self.type_label(),
-                doc: self.doc.clone(),
-            });
+        if matches!(self.kind, DescKind::Plain { .. }) {
+            let label = self.type_label();
+            if !label.is_empty() || !self.doc.is_empty() {
+                lines.push(LineData {
+                    left_side: label,
+                    doc: self.doc.clone(),
+                });
+            }
         }
         self.collect_lines(&mut lines, &[], config);
 

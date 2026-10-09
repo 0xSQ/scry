@@ -339,9 +339,9 @@ fn kit_descriptions_keep_their_existing_labels_and_fallbacks() {
     let value = Desc::plain("foreign value").nullable();
     assert_eq!(
         key_values::description(value.clone()).type_label(),
-        "key_values[string → foreign value | null]"
+        "key_values[string → foreign value]"
     );
-    assert_eq!(one_or_many::description(value).type_label(), "foreign value | null…");
+    assert_eq!(one_or_many::description(value).type_label(), "foreign value…");
     let unlabelled = Desc::structure(Vec::new());
     assert_eq!(
         key_values::description(unlabelled.clone()).type_label(),
