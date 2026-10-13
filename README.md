@@ -198,8 +198,6 @@ $ deploy --desc
 
 Required fields (`◆`), optional fields (`◇`), enum variants (`›`/`»`), and (displayable) default values (`→`) are all indicated visually. Comments are pulled from your struct's doc comments automatically. Symbols, spacing, and other formatting details can be customized if desired.
 
-Nested fields and enum choices show the structure directly. Value hints omit nullability to keep the overview concise.
-
 Subsections can be queried by path:
 
 ```
