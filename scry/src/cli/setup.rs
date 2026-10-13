@@ -209,11 +209,11 @@ impl Setup {
         if let Some(source) = &self.config_source {
             cmd = source.augment(cmd);
         }
-        cmd = self.gateway.augment(cmd);
         cmd = self.expose_map.augment(cmd, desc);
         for arg in &self.extra_args {
             cmd = cmd.arg(arg.clone());
         }
+        cmd = self.gateway.augment(cmd);
         if let Err(error) = check_collisions(&cmd) {
             panic!("CLI argument collision: {error}");
         }

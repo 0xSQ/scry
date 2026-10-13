@@ -152,16 +152,18 @@ Sending notifications to: https://hooks.slack.com/myhook
 
 ### Configuration Toolbox
 
-Every Setup command provides a configuration toolbox behind `--scry` or its short alias `-S`. The ordinary help shows its entrance:
+Every Setup command provides a configuration toolbox behind `--scry` or its short alias `-S`. The ordinary help lists config-file selection among the command options and the toolbox entrance in a closing `Configuration tools` section:
 
 ```
 $ deploy --help
 Usage: deploy [OPTIONS]
 
 Options:
-  -C, --config-file <config-file>  Path to config file.
-  -S, --scry [<TOOLS>...]          Inspects and adjusts this command's configuration.
-  -h, --help                      Print help
+  -C, --config-file <FILE>  Path to config file.
+  -h, --help                Print help
+
+Configuration tools:
+  -S, --scry [<TOOLS>...]  Inspects and adjusts this command's configuration.
 ```
 
 Put application arguments before `-S`. Everything after it belongs to the toolbox, which has its own help:

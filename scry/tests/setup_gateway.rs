@@ -6,7 +6,7 @@ use std::convert::Infallible;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use clap::{Arg, Command};
+use clap::{Arg, ArgAction, Command};
 use scry::cli::setup::{ConfigSource, Gateway, Setup, SetupError};
 use scry::cli::Bundle;
 use scry::node::{Format, NodeError};
@@ -502,22 +502,39 @@ fn gateway_does_not_hide_incomplete_parent_argument_groups() {
 }
 
 #[test]
-fn parent_help_advertises_one_gateway_and_keeps_application_options() {
+fn parent_help_keeps_the_gateway_in_a_closing_configuration_tools_section() {
     let bundle = Setup::new("test")
         .config_source(|_| ConfigSource::new().option("config-file", Some('C'), "Loads input."))
         .expose(|expose| {
             expose.option("value");
         })
+        .arg(
+            Arg::new("trace")
+                .long("trace")
+                .action(ArgAction::SetTrue)
+                .help("Prints diagnostic details.")
+                .help_heading("Diagnostics"),
+        )
         .into_bundle(|input: Input| input);
-    let help = bundle.command().clone().render_help().to_string();
-
-    assert!(help.contains("--scry"), "{help}");
-    assert_eq!(help.matches("--scry").count(), 1, "{help}");
-    assert!(help.contains("--config-file"), "{help}");
-    assert!(help.contains("--value"), "{help}");
-    assert!(!help.contains("--get"), "{help}");
-    assert!(!help.contains("--set"), "{help}");
-    assert!(!help.contains("Config options:"), "{help}");
+    for help in [
+        bundle.command().clone().render_help().to_string(),
+        bundle.command().clone().render_long_help().to_string(),
+    ] {
+        assert_eq!(help.matches("Configuration tools:").count(), 1, "{help}");
+        let (ordinary, toolbox) = help.split_once("Configuration tools:").unwrap();
+        let (options, diagnostics) = ordinary.split_once("Diagnostics:").unwrap();
+        for flag in ["--config-file <FILE>", "--value", "--help"] {
+            assert!(options.contains(flag), "{help}");
+            assert!(!toolbox.contains(flag), "{help}");
+        }
+        assert!(diagnostics.contains("--trace"), "{help}");
+        assert!(!ordinary.contains("--scry"), "{help}");
+        assert!(toolbox.contains("--scry"), "{help}");
+        assert_eq!(help.matches("--scry").count(), 1, "{help}");
+        assert!(!help.contains("--get"), "{help}");
+        assert!(!help.contains("--set"), "{help}");
+        assert!(!help.contains("Config options:"), "{help}");
+    }
 }
 
 #[test]

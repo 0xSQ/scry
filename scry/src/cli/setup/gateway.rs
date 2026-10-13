@@ -73,6 +73,7 @@ impl Gateway {
             .long(self.long.clone())
             .num_args(0..)
             .value_name("TOOLS")
+            .help_heading("Configuration tools")
             .value_parser(OsStringValueParser::new())
             .allow_hyphen_values(true)
             .help("Inspects and adjusts this command's configuration.");

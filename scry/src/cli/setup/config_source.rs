@@ -258,8 +258,10 @@ impl ConfigSource {
         // Add --config option if specified.
         if let Some(opt) = &self.option {
             let long = opt.long.clone();
-            let mut arg =
-                Arg::new(long.clone()).long(long).value_parser(clap::value_parser!(PathBuf));
+            let mut arg = Arg::new(long.clone())
+                .long(long)
+                .value_name("FILE")
+                .value_parser(clap::value_parser!(PathBuf));
 
             if let Some(short) = opt.short {
                 arg = arg.short(short);
