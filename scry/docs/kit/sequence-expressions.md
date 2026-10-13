@@ -453,7 +453,7 @@ or `real sequence expression string`. Adapter descriptions add the array alterna
 `integer sequence expression string or integer array` and
 `real sequence expression string or real array`. Descriptions do not evaluate expressions.
 
-Scry's CLI `--get` reads the original Node before typed conversion. An expression input therefore
+Scry's CLI `-S get` reads the edited Node before typed conversion. An expression input therefore
 remains a string in queries, and child-index queries work only for original arrays. `ToNode`
 serializes the decoded fields using the representations in the table above.
 

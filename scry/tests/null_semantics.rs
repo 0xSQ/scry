@@ -2,10 +2,9 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use clap::{ArgMatches, Command};
-use scry::cli::setup::{ExposeMap, OverrideArgs, QueryArgs};
+use scry::cli::setup::{format_node_at_path, GetFormat, Setup};
 use scry::node::{Format, Value};
-use scry::{Config, Describe, FromNode, Node, NodeError, ToNode};
+use scry::{Config, Desc, Describe, FromNode, Node, NodeError, ToNode};
 
 // ---------------------------------------------------------------------------------------------- //
 
@@ -278,20 +277,11 @@ fn aliases_can_decode_null_but_need_an_explicit_omission_policy() {
 fn null_flags_disable_defaults_while_removal_restores_them_in_cli_order() {
     for (args, expected) in [
         (vec!["test", "--no-timeout"], None),
-        (vec!["test", "--no-timeout", "--remove", "timeout"], Some(30)),
-        (
-            vec![
-                "test",
-                "--timeout",
-                "10",
-                "--remove",
-                "timeout",
-                "--no-timeout",
-            ],
-            None,
-        ),
+        (vec!["test", "--no-timeout", "--scry", "--remove", "timeout"], Some(30)),
+        (vec!["test", "--timeout", "10", "--no-timeout"], None),
+        (vec!["test", "--no-timeout", "--timeout", "10"], Some(10)),
     ] {
-        let (node, _) = apply_cli(&args);
+        let node = apply_cli(&args);
         assert_eq!(node.as_type::<Timeout>().unwrap().timeout, expected);
     }
 }
@@ -303,15 +293,17 @@ fn queries_distinguish_explicit_null_from_missing_without_typed_conversion() {
         timeout: u64,
     }
 
-    let queries = QueryArgs::standard();
-    let (node, matches) = apply_cli(&["test", "--no-timeout", "--get-as", "rhai", "timeout"]);
-    let output = queries.check_get::<Concrete>(&node, &matches).unwrap().unwrap();
+    let node = apply_cli(&["test", "--no-timeout"]);
+    let output =
+        format_node_at_path::<Concrete>(&node, "timeout", GetFormat::Format(Format::Rhai)).unwrap();
     assert!(matches!(parse(&output).read_leaf("queried value").unwrap(), Value::Null));
     assert!(node.ensure_no_unknown_keys().is_err(), "queries must not consume null");
     assert!(node.as_type::<Concrete>().is_err());
 
-    let (node, matches) = apply_cli(&["test", "--get-as", "rhai", "timeout"]);
-    let error = queries.check_get::<Timeout>(&node, &matches).unwrap_err().to_string();
+    let node = apply_cli(&["test"]);
+    let error = format_node_at_path::<Timeout>(&node, "timeout", GetFormat::Format(Format::Rhai))
+        .unwrap_err()
+        .to_string();
     assert!(error.contains("does not exist"), "{error}");
     assert_eq!(node.as_type::<Timeout>().unwrap().timeout, Some(30));
 
@@ -322,10 +314,10 @@ fn queries_distinguish_explicit_null_from_missing_without_typed_conversion() {
 #[test]
 fn cli_values_that_spell_null_are_still_literal_strings() {
     for args in [
-        vec!["test", "--set", "timeout", "null"],
+        vec!["test", "--scry", "--set", "timeout", "null"],
         vec!["test", "--timeout", "()"],
     ] {
-        let (node, _) = apply_cli(&args);
+        let node = apply_cli(&args);
         assert_eq!(node.req::<String>("timeout").unwrap(), *args.last().unwrap());
         assert!(node.as_type::<Timeout>().is_err());
     }
@@ -402,15 +394,28 @@ fn decode<T: FromNode>(source: &str) -> T {
     value
 }
 
-fn apply_cli(args: &[&str]) -> (Node, ArgMatches) {
-    let mut expose = ExposeMap::new();
-    expose.option("timeout");
-    expose.flag("timeout", None::<u64>).long("no-timeout");
-    let overrides = OverrideArgs::standard();
-    let command = QueryArgs::standard()
-        .augment(overrides.augment(expose.augment(Command::new("test"), &Timeout::describe())));
-    let matches = command.try_get_matches_from(args).unwrap();
-    let mut node = Node::empty_map();
-    overrides.apply::<Timeout>(&mut node, &expose, &matches).unwrap();
-    (node, matches)
+fn apply_cli(args: &[&str]) -> Node {
+    Setup::new("test")
+        .expose(|expose| {
+            expose.option("timeout");
+            expose.flag("timeout", None::<u64>).long("no-timeout");
+        })
+        .into_bundle(|input: RawInput| input.0)
+        .run_from(args)
+        .unwrap()
+        .expect("edit-only invocations execute the handler")
+}
+
+struct RawInput(Node);
+
+impl FromNode for RawInput {
+    fn from_node(node: &Node) -> Result<Self, NodeError> {
+        Ok(Self(node.clone()))
+    }
+}
+
+impl Describe for RawInput {
+    fn describe() -> Desc {
+        Timeout::describe()
+    }
 }

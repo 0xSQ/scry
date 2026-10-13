@@ -485,7 +485,7 @@ impl Default for FormatParserRegistryBuilder {
 // ---------------------------------------------------------------------------------------------- //
 // FormatWriterRegistry
 
-/// Immutable writer registry used for `--get-as` and generic format output.
+/// Immutable writer registry used for `-S get --as` and generic format output.
 pub struct FormatWriterRegistry {
     writers: IndexMap<Format, Box<dyn ConfigFormatWriter>>,
 }

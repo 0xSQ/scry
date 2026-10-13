@@ -6,4 +6,4 @@
 mod bundle;
 pub mod setup;
 
-pub use bundle::{Bundle, Dispatcher};
+pub use bundle::Bundle;

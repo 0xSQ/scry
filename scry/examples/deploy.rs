@@ -1,7 +1,7 @@
 //! Deploy example - demonstrates building a config-driven CLI with Scry.
 //!
 //! Run with: cargo run --example deploy -- --help
-//! Or: cargo run --example deploy -- examples/deploy.json
+//! Or: cargo run --example deploy -- -C examples/deploy.json
 #![allow(dead_code)]
 
 use scry::cli::setup::{Setup, SetupError};

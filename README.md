@@ -138,51 +138,57 @@ fn main() -> Result<(), SetupError> {
 }
 ```
 
-`Setup` comes with sensible defaults that can be overridden. By default, it takes the config file path as a positional argument and uses `Node::parse_file` to load it.
+`Setup::standard` accepts a config file through `-C, --config-file` and uses `Node::parse_file` to load it. `Setup::new` starts with an empty map instead. Both constructors include the `--scry, -S` configuration toolbox. The builder can customize the input source, loader, exposed arguments, and toolbox entrance.
 
 The `into_bundle` method combines your setup with a target *payload* function and returns a `Bundle` - an object that pairs the generated clap command with its dispatch logic. Calling `run()` parses arguments and dispatches to the target function. Running it shows:
 
 ```
-$ deploy deploy.json
+$ deploy -C deploy.json
 Deploying to: app.example.com
 Environment: dev
 Retries: 3
 Sending notifications to: https://hooks.slack.com/myhook
 ```
 
-### Support Options
+### Configuration Toolbox
 
-By default, the setup builder augments your clap command with a set of standard support options for inspecting and overriding config values at runtime. These are enabled by default with the `standard` constructor above. They are shown in the help output:
+Every Setup command provides a configuration toolbox behind `--scry` or its short alias `-S`. The ordinary help shows its entrance:
 
 ```
 $ deploy --help
-Usage: deploy [OPTIONS] [CONFIG]
-
-Arguments:
-  [CONFIG]  Path to config file
+Usage: deploy [OPTIONS]
 
 Options:
-  -h, --help  Print help
-
-Config options:
-      --desc [<KEY>]           Prints config description and exits (no key = full description)
-      --set <KEY> <VALUE>      Sets a config value (can be repeated)
-      --remove <KEY>           Removes a config value (can be repeated)
-      --get [<KEY>]            Prints config value and exits (no key = whole config)
-      --get-flat [<KEY>]       Prints config as flat key=value lines
-      --get-as <FORMAT> <KEY>  Prints config in specified format (json, rhai, etc.)
+  -C, --config-file <config-file>  Path to config file.
+  -S, --scry [<TOOLS>...]          Inspects and adjusts this command's configuration.
+  -h, --help                      Print help
 ```
 
-To disable these options, use the vanilla `Setup::new` constructor instead of `Setup::standard`.
-
-Let's look at what these options do.
-
-#### `--desc` Option
-
-`--desc` is the `--help` equivalent for your config file. It shows a human-readable overview of config fields, value hints, and defaults:
+Put application arguments before `-S`. Everything after it belongs to the toolbox, which has its own help:
 
 ```
-$ deploy --desc
+$ deploy -S
+Inspects and adjusts this command's configuration.
+
+Usage: deploy --scry [OPTIONS] [COMMAND]
+
+Commands:
+  get   Displays the raw edited configuration without decoding or executing.
+  desc  Describes the configuration type without loading or executing.
+
+Edits:
+      --set <KEY> <VALUE>  Sets a config value to a literal string before execution or get (repeatable).
+      --remove <KEY>       Removes a config value before execution or get (repeatable).
+```
+
+Use `-S get --help` or `-S desc --help` for action-specific help. Toolbox help and descriptions do not resolve or load the input source. `Gateway` lets an application customize the entrance's long name and short alias. The operation names inside the toolbox are fixed.
+
+#### `desc`
+
+`-S desc` is the `--help` equivalent for your config file. It shows a human-readable overview of config fields, value hints, and defaults:
+
+```
+$ deploy -S desc
 ◆ target: string                     ‣ Target server hostname.
 ◆ environment: string                ‣ Deployment environment (e.g. "dev", "staging", "prod").
 ◇ retries: u32 → 3                   ‣ Number of retry attempts on failure.
@@ -201,39 +207,39 @@ Required fields (`◆`), optional fields (`◇`), enum variants (`›`/`»`), an
 Subsections can be queried by path:
 
 ```
-$ deploy --desc notify
+$ deploy -S desc notify
 ◇ notify                             ‣ Notification settings.
    ◆ slack_url: string               ‣ Slack webhook URL.
    ◇ on_failure_only: bool → false   ‣ Only notify on failure.
 ```
 
-#### `--get` Options
+#### `get`
 
-These options print the config and exit rather than running the command. Useful for a final check on what you're actually about to execute before it's too late. They come in a few flavors.
+`get` prints the raw input after applying exposed arguments and toolbox edits, then exits. It does not decode the input into the application's type or materialize typed defaults. This helps inspect what the command will receive, including input that is incomplete or invalid for execution.
 
-`--get` outputs in a simple tree format:
+The default output is a simple tree format:
 
 ```
-$ deploy deploy.json --get
+$ deploy -C deploy.json -S get
 ▸ target "app.example.com"
 ▸ environment "dev"
 ▾ notify
    ▸ slack_url "https://hooks.slack.com/myhook"
 ```
 
-`--get-flat` outputs everything as `key = value` lines, giving the full key paths:
+`get --flat` outputs everything as `key = value` lines, giving the full key paths:
 
 ```
-$ deploy deploy.json --get-flat
+$ deploy -C deploy.json -S get --flat
 target = "app.example.com"
 environment = "dev"
 notify.slack_url = "https://hooks.slack.com/myhook"
 ```
 
-`--get-as` outputs in a specific writer format (`json`, `rhai`, or custom registered formats). TOML and YAML writers are optionally available via the `format-toml` and `format-yaml` features.
+`get --as FORMAT` outputs in a supported writer format, such as `json` or `rhai`. TOML and YAML writers are optionally available via the `format-toml` and `format-yaml` features. The toolbox lists formats from the default writer registry.
 
 ```
-$ deploy deploy.json --get-as json
+$ deploy -C deploy.json -S get --as json
 {
   "target": "app.example.com",
   "environment": "dev",
@@ -246,19 +252,19 @@ $ deploy deploy.json --get-as json
 Format support is registry-based, so built-ins and custom formats use the same parser/writer
 registration path.
 
-All three support querying specific paths:
+Every output format supports querying specific paths:
 
 ```
-$ deploy deploy.json --get notify.slack_url
+$ deploy -C deploy.json -S get notify.slack_url
 "https://hooks.slack.com/myhook"
 ```
 
-#### `--set` Option
+#### Editing Input
 
-`--set` allows you to override config values on the fly before execution:
+Toolbox `--set` edits a config value before execution. Values are literal strings, so `true`, `5`, and `null` are not parsed as config expressions. Typed conversion interprets those strings according to the target field:
 
 ```
-$ deploy deploy.json --set dry_run true --set retries 5
+$ deploy -C deploy.json -S --set dry_run true --set retries 5
 Performing dry run...
 Deploying to: app.example.com
 Environment: dev
@@ -266,12 +272,19 @@ Retries: 5
 Sending notifications to: https://hooks.slack.com/myhook
 ```
 
-You can combine `--set` with `--get` to check whether your overrides have worked as intended.
+Put edits before `get` to inspect their result. An edit-only suffix executes the application with the edited input:
+
+```
+$ deploy -C deploy.json -S --set retries 5 get retries
+"5"
+```
+
+`--remove KEY` removes a value from the input. Typed conversion can then apply that field's missing-value fallback. Edits affect this invocation and never write the config file. `desc` cannot be combined with edits because descriptions do not load configuration.
 
 Typos produce helpful errors that reference the input description:
 
 ```
-$ deploy deploy.json  --set notify.on_failure_olny true
+$ deploy -C deploy.json -S --set notify.on_failure_olny true
 Error: Unknown key 'on_failure_olny' in 'notify'
 
 Available fields:
@@ -279,12 +292,12 @@ Available fields:
 ◇ on_failure_only: bool → false   ‣ Only notify on failure.
 ```
 
-The same validation happens for config files themselves - unknown keys are caught during parsing, not silently ignored.
+The same validation happens for config files themselves - unknown keys are caught during typed conversion, not silently ignored.
 
 ### Exposing Config Values as CLI Arguments
 
 Frequently used values can be promoted to proper CLI arguments via the `expose` method. Value-taking
-arguments use `option`, while `flag`  applies a predeclared `--set PATH VALUE` operation:
+arguments use `option`, while `flag` applies a predeclared assignment:
 
 ```rust
 use scry::cli::setup::{Setup, SetupError};
@@ -315,12 +328,12 @@ Note that config key names will be kebab-cased automatically (see `--dry-run` ab
 Now users can write:
 
 ```
-$ deploy deploy.json -n -e production
+$ deploy -C deploy.json -n -e production
 ```
 
 Flags can assign any value, not only boolean `true`. For example,
 `e.flag("notify.on_failure_only", false).long("always-notify")` creates `--always-notify` as a
-zero-argument shorthand for `--set notify.on_failure_only false`. If the flag is absent, the loaded
+zero-argument shorthand for assigning `false` to `notify.on_failure_only`. If the flag is absent, the loaded
 config remains unchanged.
 
 When several fixed assignments form one named CLI concept, declare a preset instead:
@@ -333,8 +346,8 @@ e.preset("safe")
     .help("Runs one operation at a time without applying changes.");
 ```
 
-Flags, presets, and `--set` can be used together. Each operation is applied in command-line order,
-so the later argument wins when several operations target the same path.
+Flags and presets apply in application argument order. Toolbox edits apply afterward, in suffix
+order. The later operation wins when several operations target the same path.
 
 ## Rhai
 
@@ -379,7 +392,7 @@ let env = "prod"; // "dev", "staging", or "prod"
 You can use it just like the JSON file before:
 
 ```
-$ deploy deploy.rhai --get environment
+$ deploy -C deploy.rhai -S get environment
 "prod"
 ```
 

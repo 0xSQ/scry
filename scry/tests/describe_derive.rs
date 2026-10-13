@@ -6,7 +6,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use clap::Command;
-use scry::cli::setup::{ExposeMap, QueryArgs};
+use scry::cli::setup::{format_description, ExposeMap};
 use scry::desc::{DescKind, EntryRef, FieldDesc};
 use scry::node::Format;
 use scry::{Config, Desc, Describe, Node, ToNode};
@@ -239,35 +239,25 @@ fn custom_descriptions_replace_the_complete_value_without_native_bounds() {
 }
 
 #[test]
-fn cli_description_queries_accept_deep_lists_and_keep_useful_item_hints() {
-    let query = QueryArgs::new().desc("desc", None);
+fn description_queries_accept_deep_lists_and_keep_useful_item_hints() {
     for (path, expected) in [("direct[0][1]", "◆ 1: u32"), ("array[0][1]", "◆ 1: u32")] {
-        let matches = query
-            .augment(Command::new("test"))
-            .try_get_matches_from(["test", "--desc", path])
-            .unwrap();
-        let output = query.check_desc::<Shapes>(&matches).unwrap().unwrap();
+        let output = format_description::<Shapes>(path).unwrap();
         assert_eq!(output.trim(), expected);
     }
 }
 
 #[test]
-fn cli_description_queries_show_optional_struct_fields_and_enum_choices() {
-    let query = QueryArgs::new().desc("desc", None);
-    let command = query.augment(Command::new("test"));
-    let matches = command.clone().try_get_matches_from(["test", "--desc"]).unwrap();
-    assert_eq!(query.check_desc::<Option<Child>>(&matches).unwrap().unwrap(), "◆ count: u32\n");
-    assert_eq!(query.check_desc::<Option<Mode>>(&matches).unwrap().unwrap(), "» fast\n› careful\n");
+fn description_queries_show_optional_struct_fields_and_enum_choices() {
+    assert_eq!(format_description::<Option<Child>>("").unwrap(), "◆ count: u32\n");
+    assert_eq!(format_description::<Option<Mode>>("").unwrap(), "» fast\n› careful\n");
 
-    let matches = command.clone().try_get_matches_from(["test", "--desc", "named.child"]).unwrap();
     assert_eq!(
-        query.check_desc::<Payloads>(&matches).unwrap().unwrap(),
+        format_description::<Payloads>("named.child").unwrap(),
         "◇ child\n   ◆ count: u32\n"
     );
 
-    let matches = command.try_get_matches_from(["test", "--desc", "optional"]).unwrap();
     assert_eq!(
-        query.check_desc::<EnumContexts>(&matches).unwrap().unwrap(),
+        format_description::<EnumContexts>("optional").unwrap(),
         "◇ optional\n   › fast\n   › careful\n"
     );
 }

@@ -4,7 +4,7 @@
 use std::io;
 use std::path::Path;
 
-use scry::cli::setup::{ConfigSource, OverrideArgs, QueryArgs, Required, Setup, SetupError};
+use scry::cli::setup::{ConfigSource, Setup, SetupError};
 use scry::node::Format;
 use scry::{Config, Node};
 
@@ -23,10 +23,8 @@ struct TestConfig {
 #[test]
 fn handler_error_is_in_returned_type() {
     let bundle = Setup::new("test")
-        .override_args(OverrideArgs::new())
-        .query_args(QueryArgs::new())
         .config_source(|c| {
-            c.positional("CONFIG", "Path to config file", Required::Yes).loader(
+            c.positional("CONFIG", "Path to config file").loader(
                 |_path: &Path| -> Result<Node, std::convert::Infallible> {
                     Ok(Node::parse_str(r#"{"value": "test"}"#, Format::Json).unwrap())
                 },
@@ -53,10 +51,8 @@ fn handler_error_is_in_returned_type() {
 #[test]
 fn infallible_handler_succeeds() {
     let bundle = Setup::new("test")
-        .override_args(OverrideArgs::new())
-        .query_args(QueryArgs::new())
         .config_source(|c| {
-            c.positional("CONFIG", "Path to config file", Required::Yes).loader(
+            c.positional("CONFIG", "Path to config file").loader(
                 |_path: &Path| -> Result<Node, std::convert::Infallible> {
                     Ok(Node::parse_str(r#"{"value": "test"}"#, Format::Json).unwrap())
                 },
@@ -79,10 +75,8 @@ fn infallible_handler_succeeds() {
 #[test]
 fn loader_error_is_config_error() {
     let bundle = Setup::new("test")
-        .override_args(OverrideArgs::new())
-        .query_args(QueryArgs::new())
         .config_source(|c| {
-            c.positional("CONFIG", "Path to config file", Required::Yes).loader(
+            c.positional("CONFIG", "Path to config file").loader(
                 |path: &Path| -> Result<Node, io::Error> {
                     Err(io::Error::new(
                         io::ErrorKind::NotFound,
@@ -123,14 +117,12 @@ fn default_loader_uses_parse_file() {
     std::fs::write(&config_path, r#"{"value": "from file"}"#).unwrap();
 
     let bundle = Setup::standard("test")
-        .override_args(OverrideArgs::new())
-        .query_args(QueryArgs::new())
         // No loader configured - should use default Node::parse_file
         .into_bundle(|cfg: TestConfig| {
             assert_eq!(cfg.value, "from file");
         });
 
-    let result = bundle.run_from(["test", config_path.to_str().unwrap()]);
+    let result = bundle.run_from(["test", "-C", config_path.to_str().unwrap()]);
 
     // Clean up
     let _ = std::fs::remove_file(&config_path);
@@ -144,10 +136,8 @@ fn default_loader_uses_parse_file() {
 #[test]
 fn anyhow_handler_works() {
     let bundle = Setup::new("test")
-        .override_args(OverrideArgs::new())
-        .query_args(QueryArgs::new())
         .config_source(|c| {
-            c.positional("CONFIG", "Path to config file", Required::Yes).loader(
+            c.positional("CONFIG", "Path to config file").loader(
                 |_path: &Path| -> Result<Node, std::convert::Infallible> {
                     Ok(Node::parse_str(r#"{"value": "test"}"#, Format::Json).unwrap())
                 },
@@ -174,10 +164,8 @@ fn anyhow_handler_works() {
 #[test]
 fn anyhow_loader_works() {
     let bundle = Setup::new("test")
-        .override_args(OverrideArgs::new())
-        .query_args(QueryArgs::new())
         .config_source(|c| {
-            c.positional("CONFIG", "Path to config file", Required::Yes).loader(
+            c.positional("CONFIG", "Path to config file").loader(
                 |path: &Path| -> anyhow::Result<Node> {
                     anyhow::bail!("failed to load: {}", path.display())
                 },
@@ -214,8 +202,6 @@ fn collision_panics() {
 
     // Create a deliberate collision - should panic
     let _bundle = Setup::new("test")
-        .override_args(OverrideArgs::new())
-        .query_args(QueryArgs::new())
         .arg(Arg::new("output").long("output"))
         .arg(Arg::new("output").long("other")) // Same ID, different long
         .into_bundle(|_cfg: TestConfig| {});
@@ -227,20 +213,18 @@ fn collision_panics() {
 #[test]
 fn query_command_returns_handled() {
     let bundle = Setup::new("test")
-        .override_args(OverrideArgs::new())
-        .query_args(QueryArgs::new().desc("desc", None))
         .config_source(|_| {
-            ConfigSource::new().positional("CONFIG", "Path to config file", Required::No).loader(
+            ConfigSource::new().positional("CONFIG", "Path to config file").loader(
                 |_path: &Path| -> Result<Node, std::convert::Infallible> {
-                    panic!("loader should not be called for --desc")
+                    panic!("descriptions must not call the loader")
                 },
             )
         })
         .into_bundle(|_cfg: TestConfig| -> Result<(), io::Error> {
-            panic!("handler should not be called for --desc")
+            panic!("descriptions must not call the handler")
         });
 
-    let result = bundle.run_from(["test", "--desc"]);
+    let result = bundle.run_from(["test", "--scry", "desc"]);
 
     // Query command handled the request - returns Ok(Payload::Handled)
     assert!(matches!(result, Ok(None)));
@@ -257,10 +241,8 @@ fn handler_result_type_preserved() {
     }
 
     let bundle = Setup::new("test")
-        .override_args(OverrideArgs::new())
-        .query_args(QueryArgs::new())
         .config_source(|c| {
-            c.positional("CONFIG", "Path to config file", Required::Yes).loader(
+            c.positional("CONFIG", "Path to config file").loader(
                 |_path: &Path| -> Result<Node, std::convert::Infallible> {
                     Ok(Node::parse_str(r#"{"value": "test"}"#, Format::Json).unwrap())
                 },

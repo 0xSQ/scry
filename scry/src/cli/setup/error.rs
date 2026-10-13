@@ -18,6 +18,10 @@ use crate::BoxedError;
 /// Each variant transparently wraps a dedicated error type.
 #[derive(thiserror::Error)]
 pub enum SetupError {
+    /// The toolbox arguments are invalid.
+    #[error(transparent)]
+    Gateway(#[from] clap::Error),
+
     /// Error from node operations.
     #[error(transparent)]
     Node(#[from] NodeError),
@@ -82,10 +86,6 @@ pub enum SetupError {
     /// Parsed CLI values do not carry the positions needed for ordered overrides.
     #[error("invalid parsed values for argument '{argument}': {message}")]
     InvalidCliMatches { argument: String, message: String },
-
-    /// Invalid format string for `--get-as` argument. (TODO: print format list automatically).
-    #[error("unknown config format '{format_str}'")]
-    UnknownGetAsFormat { format_str: String },
 }
 
 impl fmt::Debug for SetupError {

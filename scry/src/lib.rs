@@ -24,7 +24,7 @@
 //! # Modules
 //!
 //! - [`node`] - The [`Node`] tree, an intermediate representation for configuration data.
-//! - [`desc`] - Description types for documenting config shapes (powers `--desc`).
+//! - [`desc`] - Description types for documenting config shapes (powers `-S desc`).
 //! - [`convert`] - Shared shape operations for composing custom field conversions.
 //! - [`key_path`] - Path navigation for addressing locations in a config tree.
 //! - [`cli`] - CLI utilities, including the [`Setup`](cli::setup::Setup) builder for assembling

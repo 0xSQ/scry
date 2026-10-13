@@ -669,7 +669,7 @@ fn parse_rename_all(lit: &LitStr) -> Result<RenameAll> {
 ///
 /// Only the first paragraph - the lines up to the first blank doc line - is kept, following
 /// rustdoc's convention: the first paragraph is the short description, and everything after it
-/// is elaboration for source readers that would bloat `--desc` output and error field listings.
+/// is elaboration for source readers that would bloat `-S desc` output and error field listings.
 pub fn extract_doc(attrs: &[Attribute]) -> String {
     let docs: Vec<String> = attrs
         .iter()

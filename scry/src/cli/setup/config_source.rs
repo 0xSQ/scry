@@ -5,7 +5,6 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use super::error::SetupError;
-use super::query_args::QueryArgs;
 use crate::node::{default_format_parser_registry, FormatParserRegistry, Node, NodeError};
 use crate::rhai::eval_script_var;
 use crate::util::PathExt;
@@ -26,7 +25,7 @@ use crate::BoxedError;
 ///
 /// ```ignore
 /// ConfigSource::new()
-///     .positional("CONFIG", "Path to config file", Required::No)
+///     .positional("CONFIG", "Path to config file.")
 ///     .discover(|cmd| discover_config(cmd))
 /// ```
 pub struct ConfigSource {
@@ -60,8 +59,6 @@ impl Default for ConfigSource {
 pub(crate) struct PositionalConfig {
     /// The clap argument ID/name for this positional.
     pub name: String,
-    /// Whether this argument is required.
-    pub required: bool,
     /// Custom help text.
     pub help: Option<String>,
 }
@@ -76,18 +73,6 @@ pub(crate) struct OptionConfig {
     pub short: Option<char>,
     /// Custom help text.
     pub help: Option<String>,
-}
-
-// ---------------------------------------------------------------------------------------------- //
-
-/// Specifies whether an argument is required or optional.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum Required {
-    /// The argument is required.
-    #[default]
-    Yes,
-    /// The argument is optional.
-    No,
 }
 
 // ---------------------------------------------------------------------------------------------- //
@@ -162,15 +147,12 @@ impl ConfigSource {
     }
 
     /// Sets a positional argument for the config path.
-    pub fn positional(
-        mut self,
-        name: impl Into<String>,
-        help: impl Into<String>,
-        required: Required,
-    ) -> Self {
+    ///
+    /// The parser accepts an omitted path. Source resolution applies the missing-config policy
+    /// when the invocation needs input.
+    pub fn positional(mut self, name: impl Into<String>, help: impl Into<String>) -> Self {
         self.positional = Some(PositionalConfig {
             name: name.into(),
-            required: matches!(required, Required::Yes),
             help: Some(help.into()),
         });
         self
@@ -254,24 +236,14 @@ impl ConfigSource {
     /// This adds the configured positional argument (e.g., `CONFIG`) and/or named option
     /// (e.g., `--config`) for specifying the config file path.
     ///
-    /// The `query_args` parameter is used to check if `--desc` is available, which allows
-    /// the config path to be optional when `--desc` is present.
+    /// Both arguments are optional in the parser. Source resolution applies the missing-config
+    /// policy when the invocation needs input.
     #[must_use]
-    pub fn augment(&self, mut cmd: Command, query_args: &QueryArgs) -> Command {
+    pub fn augment(&self, mut cmd: Command) -> Command {
         // Add positional config path argument.
         if let Some(pos) = &self.positional {
             let name = pos.name.clone();
             let mut arg = Arg::new(name).value_parser(clap::value_parser!(PathBuf));
-
-            // If --desc is available, make CONFIG not required when --desc is present.
-            let desc_arg_name = query_args.desc.as_ref().map(|d| &d.long);
-            if pos.required {
-                if let Some(desc_name) = desc_arg_name {
-                    arg = arg.required_unless_present(desc_name.clone());
-                } else {
-                    arg = arg.required(true);
-                }
-            }
 
             // Add help text (custom or default).
             let help_text = match &pos.help {

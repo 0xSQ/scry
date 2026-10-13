@@ -7,9 +7,9 @@
 //! - Parent/child command composition
 //!
 //! Run with: cargo run --example cli_bundling_styles -- --help
-//! Or: cargo run --example cli_bundling_styles -- serve examples/server.json
-//! Or: cargo run --example cli_bundling_styles -- check examples/check.json
-//! Or: cargo run --example cli_bundling_styles -- migrate examples/server.json
+//! Or: cargo run --example cli_bundling_styles -- serve -C examples/server.json
+//! Or: cargo run --example cli_bundling_styles -- check -C examples/check.json
+//! Or: cargo run --example cli_bundling_styles -- migrate -C examples/server.json
 
 use std::error::Error;
 use std::fmt;
@@ -113,7 +113,7 @@ fn migrate_handler(config: ServerConfig) -> anyhow::Result<()> {
 
 fn build_anyhow_cli() -> Bundle<Option<anyhow::Result<()>>, SetupError> {
     // Serve command - wrap ServeError in anyhow
-    let serve = Setup::new("serve").about("Start the server").into_bundle(
+    let serve = Setup::standard("serve").about("Start the server").into_bundle(
         |config: ServerConfig| -> anyhow::Result<()> {
             serve_handler(config)?;
             Ok(())
@@ -121,7 +121,7 @@ fn build_anyhow_cli() -> Bundle<Option<anyhow::Result<()>>, SetupError> {
     );
 
     // Check command - infallible, wrap in Ok(())
-    let check = Setup::new("check").about("Check configuration").into_bundle(
+    let check = Setup::standard("check").about("Check configuration").into_bundle(
         |config: CheckConfig| -> anyhow::Result<()> {
             check_handler(config);
             Ok(())
@@ -129,7 +129,7 @@ fn build_anyhow_cli() -> Bundle<Option<anyhow::Result<()>>, SetupError> {
     );
 
     // Status command - wrap io::Error in anyhow
-    let status = Setup::new("status").about("Show server status").into_bundle(
+    let status = Setup::standard("status").about("Show server status").into_bundle(
         |config: ServerConfig| -> anyhow::Result<()> {
             status_handler(config)?;
             Ok(())
@@ -138,7 +138,7 @@ fn build_anyhow_cli() -> Bundle<Option<anyhow::Result<()>>, SetupError> {
 
     // Migrate command - already returns anyhow::Result
     let migrate =
-        Setup::new("migrate").about("Run database migrations").into_bundle(migrate_handler);
+        Setup::standard("migrate").about("Run database migrations").into_bundle(migrate_handler);
 
     // Parent command grouping all subcommands
     Bundle::group("server", "Server management tool", vec![serve, check, status, migrate])
@@ -151,7 +151,7 @@ fn build_anyhow_cli() -> Bundle<Option<anyhow::Result<()>>, SetupError> {
 
 #[allow(dead_code)]
 fn build_infallible_cli() -> Bundle<Option<()>, SetupError> {
-    let check = Setup::new("check").about("Check configuration").into_bundle(check_handler);
+    let check = Setup::standard("check").about("Check configuration").into_bundle(check_handler);
 
     Bundle::group("tools", "Tool commands", vec![check])
 }
@@ -174,7 +174,7 @@ fn handle_cli_result(result: Result<Option<anyhow::Result<()>>, SetupError>) {
             std::process::exit(1);
         }
         Ok(None) => {
-            // Support command handled the request (--desc, --get, etc.)
+            // A toolbox action handled the request, such as -S desc or -S get.
         }
         Err(e) => {
             // Setup/pipeline error (config loading, CLI parsing, etc.)
@@ -188,10 +188,10 @@ fn handle_cli_result(result: Result<Option<anyhow::Result<()>>, SetupError>) {
 // Main
 
 fn main() -> anyhow::Result<()> {
-    // run() returns Result<Payload<anyhow::Result<()>>, SetupError>
+    // run() returns Result<Option<anyhow::Result<()>>, SetupError>.
     // - Err(e): pipeline error (config loading, CLI parsing)
-    // - Ok(Payload::Skipped): support command handled (--desc, --get, etc.)
-    // - Ok(Payload::Executed(result)): handler ran and returned result
+    // - Ok(None): a toolbox action handled the request.
+    // - Ok(Some(result)): the handler ran and returned its result.
     if let Some(handler_result) = build_anyhow_cli().run()? {
         handler_result?;
     }

@@ -1,17 +1,15 @@
-//! Builder and utilities for setting up clap-based CLI commands.
+//! Builds commands around a shared configuration input pipeline.
 //!
-//! The [`Setup`] builder creates CLI command [`Bundle`]s that can:
-//! - Load configuration from files (with auto-discovery)
-//! - Provide config description (--desc) and querying (--get)
-//! - Apply CLI overrides (--set, --remove)
+//! [`Setup`] combines input sources, exposed arguments, and configuration support tools.
+//! Every command includes a `--scry` / `-S` gateway for inspecting and editing its input.
 //!
 //! Use [`Setup::into_bundle`] or [`Setup::into_bundle_with_matches`] to create bundles.
 
 mod config_source;
+mod edits;
 mod error;
 mod expose_map;
-mod override_args;
-mod query_args;
+mod gateway;
 mod redirect;
 
 use std::collections::HashSet;
@@ -19,95 +17,71 @@ use std::collections::HashSet;
 use clap::{Arg, ArgMatches, Command};
 
 use super::bundle::Bundle;
-use crate::desc::Desc;
-use crate::node::Node;
-use crate::{Describe, FromNode};
+use crate::desc::{Desc, DescPathError};
+use crate::node::{Format, Node};
+use crate::{Describe, FromNode, KeyPath};
 
 pub use config_source::{
     find_config, find_config_default, find_config_with_registry, home_config_dir,
     load_rhai_var_node, ConfigPathPolicy, ConfigSource, DiscoverFn, FindConfigError,
-    MissingConfigPolicy, MultiSourcePolicy, NodeLoaderFn, Required, ResolvedConfigInput,
+    MissingConfigPolicy, MultiSourcePolicy, NodeLoaderFn, ResolvedConfigInput,
 };
 pub use error::SetupError;
 pub use expose_map::{
     Arity, ExposeEntry, ExposeKind, ExposeMap, FixedAssignment, Long, ValueShape,
 };
-pub use override_args::OverrideArgs;
-pub use query_args::{handle_get_request, GetFormat, GetRequest, QueryArgs};
+pub use gateway::Gateway;
 pub use redirect::{require_command_config, resolve_command_config, RedirectError, RedirectSpec};
 
 // ---------------------------------------------------------------------------------------------- //
 
-/// Builder type for setting up CLI commands using Scry's core traits.
+/// Configures a command's input and configuration support tools.
 ///
-/// The `Setup` builder is targeted towards setting up CLI commands for calling payload functions
-/// whose main input type `T` implements the core Scry traits `FromNode` and `Describe`. We then
-/// leverage these traits to automatically augment a CLI command with standard functionality
-/// for inspecting, querying, and overriding the input configuration. In particular, we provide:
-/// - Different ways to query and override the loaded config values
-/// - Printing helpful descriptions of the config structure
-/// - Different ways to locate and load the config file
+/// The input type implements [`FromNode`] and [`Describe`]. A [`ConfigSource`] supplies the
+/// initial [`Node`], and exposed arguments edit it. A [`Gateway`] provides configuration tools
+/// with fixed operation names.
 ///
-/// Two constructors are available:
-/// - [`Setup::new`]: Barebones default - no config source, no query/override args. Use this
-///   for CLI-only commands where all input comes from exposed options and `--set`.
-/// - [`Setup::standard`]: Batteries-included - positional `CONFIG` argument, standard query
-///   and override options. Use this as the go-to default for config-driven commands.
+/// Each invocation first selects its action. Help and descriptions finish without loading
+/// input. Other actions load the input and apply command-line edits, then either inspect the
+/// raw Node or decode it for the payload function.
 ///
-/// You can call the builder methods to customize these defaults and then call the `into_bundle`
-/// methods to create a runnable `Bundle` instance. The bundle's handler function then calls
-/// the user payload function with an instance of its input target type, `T`.
+/// [`Setup::new`] starts with an empty Node. [`Setup::standard`] accepts a config file through
+/// `-C` / `--config-file`. Both include the default gateway. Builder methods customize either
+/// starting point before [`into_bundle`](Self::into_bundle) creates a command.
 ///
-/// The handler function returns a result of type `Bundle<Option<R>, SetupError>`.
-/// The `Option` distinguishes whether the user payload function was executed or skipped
-/// (e.g., due to the use of query options). Framework-level errors (config loading,
-/// overrides, etc.) are reported via the `SetupError` type.
+/// Running the resulting bundle returns `Result<Option<R>, SetupError>`. `Some(R)` holds the
+/// payload's result. `None` means a support action completed without running the payload.
 pub struct Setup {
-    pub(crate) command_name: String,
-    pub(crate) about: Option<String>,
-    pub(crate) config_source: Option<ConfigSource>,
-    pub(crate) override_args: OverrideArgs,
-    pub(crate) query_args: QueryArgs,
-    pub(crate) expose_map: ExposeMap,
-    pub(crate) extra_args: Vec<Arg>,
+    command_name: String,
+    about: Option<String>,
+    config_source: Option<ConfigSource>,
+    gateway: Gateway,
+    expose_map: ExposeMap,
+    extra_args: Vec<Arg>,
 }
 
 // ---------------------------------------------------------------------------------------------- //
 
 impl Setup {
-    /// Creates a barebones builder with no config source and no query/override args.
+    /// Creates a command with the default gateway and an empty input Node.
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             command_name: name.into(),
             about: None,
             config_source: None,
-            override_args: OverrideArgs::default(),
-            query_args: QueryArgs::default(),
+            gateway: Gateway::default(),
             expose_map: ExposeMap::default(),
             extra_args: Vec::new(),
         }
     }
 
-    /// Creates a batteries-included builder with standard config source and query/override args.
+    /// Creates a command that loads input through `-C` / `--config-file`.
     ///
-    /// Defaults:
-    /// - Positional `CONFIG` argument for the config file path
-    /// - `Node::parse_file` as the loader
-    /// - Standard query and override options (`--desc`, `--get`, `--set`, etc.)
+    /// The source uses [`Node::parse_file`] and reports an error when an input action has no path.
+    /// Help and description actions do not need a config file.
     pub fn standard(name: impl Into<String>) -> Self {
-        Self {
-            command_name: name.into(),
-            about: None,
-            config_source: Some(ConfigSource::new().positional(
-                "CONFIG",
-                "Path to config file.",
-                Required::Yes,
-            )),
-            override_args: OverrideArgs::standard(),
-            query_args: QueryArgs::standard(),
-            expose_map: ExposeMap::default(),
-            extra_args: Vec::new(),
-        }
+        Self::new(name)
+            .config_source(|source| source.option("config-file", Some('C'), "Path to config file."))
     }
 
     /// Sets the command description shown in --help.
@@ -134,23 +108,25 @@ impl Setup {
         self
     }
 
-    /// Sets override arguments (--set, --remove).
+    /// Configures the gateway flag names.
     ///
-    /// If not called, defaults depend on the constructor:
-    /// - `new()`: No override args.
-    /// - `standard()`: Standard override args (`--set`, `--remove`).
-    pub fn override_args(mut self, args: OverrideArgs) -> Self {
-        self.override_args = args;
-        self
-    }
-
-    /// Sets query arguments (--desc, --get, --get-flat, --get-as).
+    /// The default flags are `--scry` and `-S`. Application arguments come before the flag.
+    /// The suffix accepts `--set`, `--remove`, `get`, and `desc`. Edits come before `get`,
+    /// and an edit-only suffix runs the payload with the edited input.
     ///
-    /// If not called, defaults depend on the constructor:
-    /// - `new()`: No query args.
-    /// - `standard()`: Standard query args (`--desc`, `--get`, etc.).
-    pub fn query_args(mut self, args: QueryArgs) -> Self {
-        self.query_args = args;
+    /// [`Gateway`] configures the long flag name and optional short alias. The operation names
+    /// within the suffix are fixed.
+    ///
+    /// Application arguments are optional in the parser. Source resolution and typed decoding
+    /// enforce the payload's input requirements.
+    ///
+    /// ```
+    /// use scry::cli::setup::{Gateway, Setup};
+    ///
+    /// let setup = Setup::new("resize").gateway(Gateway::new().long("look"));
+    /// ```
+    pub fn gateway(mut self, gateway: Gateway) -> Self {
+        self.gateway = gateway;
         self
     }
 
@@ -163,7 +139,9 @@ impl Setup {
         self
     }
 
-    /// Adds a raw clap Arg for CLI-only arguments not in config.
+    /// Adds an optional clap argument outside the configuration input.
+    ///
+    /// The payload can read it through [`into_bundle_with_matches`](Self::into_bundle_with_matches).
     pub fn arg(mut self, arg: Arg) -> Self {
         self.extra_args.push(arg);
         self
@@ -178,6 +156,7 @@ impl Setup {
     ///
     /// Panics if argument names collide (duplicate IDs, long options, or short flags), an exposure
     /// declaration is invalid, or a positional array uses an unsupported positional layout.
+    /// Application arguments must be optional so support actions can run without payload input.
     pub fn into_bundle<T, R>(
         self,
         func: impl FnOnce(T) -> R + 'static,
@@ -186,11 +165,7 @@ impl Setup {
         T: FromNode + Describe + 'static,
         R: 'static,
     {
-        let cmd = self.build_command(&T::describe());
-        Bundle::single(cmd, move |matches| match self.prepare_input::<T>(matches)? {
-            Some(input) => Ok(Some(func(input))),
-            None => Ok(None),
-        })
+        self.into_bundle_with_matches(move |input, _| func(input))
     }
 
     /// Creates a bundle with a function that takes the target type and CLI matches.
@@ -199,6 +174,7 @@ impl Setup {
     ///
     /// Panics if argument names collide (duplicate IDs, long options, or short flags), an exposure
     /// declaration is invalid, or a positional array uses an unsupported positional layout.
+    /// Application arguments must be optional so support actions can run without payload input.
     pub fn into_bundle_with_matches<T, R>(
         self,
         func: impl FnOnce(T, &ArgMatches) -> R + 'static,
@@ -208,9 +184,11 @@ impl Setup {
         R: 'static,
     {
         let cmd = self.build_command(&T::describe());
-        Bundle::single(cmd, move |matches| match self.prepare_input::<T>(matches)? {
-            Some(input) => Ok(Some(func(input, matches))),
-            None => Ok(None),
+        Bundle::single_with_command(cmd, move |matches, command| {
+            match self.prepare_input::<T>(matches, command)? {
+                Some(input) => Ok(Some(func(input, matches))),
+                None => Ok(None),
+            }
         })
     }
 
@@ -224,152 +202,80 @@ impl Setup {
     /// Panics if argument names collide (duplicate IDs, long options, or short flags), an exposure
     /// declaration is invalid, or a positional array uses an unsupported positional layout.
     fn build_command(&self, desc: &Desc) -> Command {
-        if let Err(e) = check_collisions(
-            self.config_source.as_ref(),
-            &self.override_args,
-            &self.query_args,
-            &self.expose_map,
-            &self.extra_args,
-        ) {
-            panic!("CLI argument collision: {e}");
-        }
-
         let mut cmd = Command::new(self.command_name.clone());
         if let Some(about) = &self.about {
             cmd = cmd.about(about.clone());
         }
         if let Some(source) = &self.config_source {
-            cmd = source.augment(cmd, &self.query_args);
+            cmd = source.augment(cmd);
         }
-        cmd = self.override_args.augment(cmd);
-        cmd = self.query_args.augment(cmd);
+        cmd = self.gateway.augment(cmd);
         cmd = self.expose_map.augment(cmd, desc);
         for arg in &self.extra_args {
             cmd = cmd.arg(arg.clone());
         }
-        self.configure_positional_arrays(cmd)
-    }
-
-    fn configure_positional_arrays(&self, mut cmd: Command) -> Command {
-        let arrays: Vec<_> = self
-            .expose_map
-            .entries
-            .iter()
-            .filter(|entry| {
-                matches!(entry.kind, ExposeKind::Positional { .. })
-                    && entry.shape == ValueShape::Array
-            })
-            .collect();
-        if arrays.is_empty() {
-            return cmd;
-        }
-        assert!(arrays.len() == 1, "only one exposed positional array is supported");
-        let array_name = arrays[0].arg_name();
-        assert!(
-            self.config_source.as_ref().is_none_or(|source| source.positional.is_none()),
-            "positional array '{array_name}' cannot share a command with a config positional. Use a named config option instead"
-        );
-
-        // Reserve explicit indices before assigning implicit positions, including raw arguments
-        // added after the exposures. This lets a required raw prefix use index 1.
-        let mut reserved = HashSet::new();
-        for arg in cmd.get_positionals() {
-            if let Some(index) = arg.get_index() {
-                assert!(
-                    index > 0 && reserved.insert(index),
-                    "invalid or duplicate positional index {index}"
-                );
-            }
-        }
-        let mut next = 1;
-        let implicit: Vec<_> = cmd
-            .get_positionals()
-            .filter(|arg| arg.get_index().is_none())
-            .map(|arg| arg.get_id().clone())
-            .collect();
-        for id in implicit {
-            while reserved.contains(&next) {
-                next += 1;
-            }
-            cmd = cmd.mut_arg(id, |arg| arg.index(next));
-            reserved.insert(next);
-            next += 1;
-        }
-
-        let mut positionals: Vec<_> = cmd.get_positionals().collect();
-        positionals.sort_by_key(|arg| arg.get_index());
-        for (offset, arg) in positionals.iter().enumerate() {
-            assert!(arg.get_index() == Some(offset + 1), "positional indices must be contiguous");
+        if let Err(error) = check_collisions(&cmd) {
+            panic!("CLI argument collision: {error}");
         }
         assert!(
-            positionals.last().is_some_and(|arg| arg.get_id().as_str() == array_name),
-            "positional array '{array_name}' must be the final positional argument"
+            cmd.get_arguments().all(|arg| !arg.is_required_set()),
+            "Setup arguments must be optional. Validate payload requirements during execution"
         );
-        for arg in &positionals[..positionals.len() - 1] {
-            // Clap infers arity from plural labels or the action when num_args is unset.
-            let single_value = arg.get_num_args().map_or_else(
-                || arg.get_value_names().is_none_or(|names| names.len() == 1),
-                |arity| arity.min_values() == 1 && arity.max_values() == 1,
-            );
-            assert!(
-                arg.is_required_set()
-                    && arg.get_action().takes_values()
-                    && single_value
-                    && arg.get_value_delimiter().is_none()
-                    && !arg.is_last_set()
-                    && !arg.is_trailing_var_arg_set(),
-                "positional argument '{}' before array '{array_name}' must be required and take exactly one value",
-                arg.get_id()
-            );
-        }
+        validate_positional_arrays(&cmd, &self.expose_map);
         cmd
     }
 
     /// Prepares an instance of the payload input type `T`.
     ///
-    /// Returns `Ok(None)` if a query command (--desc, --get) was handled.
+    /// Returns `Ok(None)` if a support action was handled.
     /// Returns `Ok(Some(input))` if the input is ready for the user's function.
     fn prepare_input<T: FromNode + Describe>(
         &self,
         matches: &ArgMatches,
+        command: &Command,
     ) -> Result<Option<T>, SetupError> {
-        // Handle --desc (no config file needed).
-        if let Some(output) = self.query_args.check_desc::<T>(matches)? {
-            println!("{}", output);
+        let invocation =
+            self.gateway.parse(matches, command.get_bin_name().unwrap_or(command.get_name()))?;
+        match &invocation.action {
+            Action::Help(output) => {
+                print!("{output}");
+                return Ok(None);
+            }
+            Action::Describe(path) => {
+                println!("{}", format_description::<T>(path)?);
+                return Ok(None);
+            }
+            Action::Execute | Action::Get(_) => {}
+        }
+
+        let mut node = self.load_node(matches)?;
+        self.expose_map.apply::<T>(&mut node, matches)?;
+        edits::apply::<T>(&mut node, invocation.edits)?;
+        if let Action::Get(request) = invocation.action {
+            println!("{}", format_node_at_path::<T>(&node, &request.path, request.format)?);
             return Ok(None);
         }
 
-        // Load config node from file or start with an empty map.
-        let mut node = match &self.config_source {
-            Some(source) => match source.resolve_input(&self.command_name, matches)? {
-                ResolvedConfigInput::Path(path) => {
-                    (source.loader)(&path).map_err(|e| SetupError::LoadConfigFile {
-                        path: path.to_path_buf(),
-                        source: e,
-                    })?
-                }
-                ResolvedConfigInput::Empty => Node::empty_map(),
-            },
-            None => Node::empty_map(),
+        T::from_node(&node).map(Some).map_err(|error| SetupError::EvaluateInputConfig {
+            source: Box::new(error),
+        })
+    }
+
+    fn load_node(&self, matches: &ArgMatches) -> Result<Node, SetupError> {
+        let Some(source) = &self.config_source else {
+            return Ok(Node::empty_map());
         };
-
-        // Apply overrides.
-        self.override_args.apply::<T>(&mut node, &self.expose_map, matches)?;
-
-        // Handle --get variants.
-        if let Some(output) = self.query_args.check_get::<T>(&node, matches)? {
-            println!("{}", output);
-            return Ok(None);
+        match source.resolve_input(&self.command_name, matches)? {
+            ResolvedConfigInput::Path(path) => {
+                (source.loader)(&path).map_err(|error| SetupError::LoadConfigFile {
+                    path,
+                    source: error,
+                })
+            }
+            ResolvedConfigInput::Empty => Ok(Node::empty_map()),
         }
-
-        let input: T = T::from_node(&node).map_err(|e| SetupError::EvaluateInputConfig {
-            source: Box::new(e),
-        })?;
-
-        Ok(Some(input))
     }
 }
-
 // ---------------------------------------------------------------------------------------------- //
 // Setup Bundle
 
@@ -390,126 +296,166 @@ where
 }
 
 // ---------------------------------------------------------------------------------------------- //
-// Collision Detection
+// Gateway Invocation
 
-/// Checks for argument name collisions across all configured arguments.
+struct Invocation {
+    action: Action,
+    edits: Vec<edits::Edit>,
+}
+
+enum Action {
+    Execute,
+    Describe(String),
+    Get(GetRequest),
+    Help(String),
+}
+
+// ---------------------------------------------------------------------------------------------- //
+// Input Inspection
+
+/// An input inspection request.
+struct GetRequest {
+    /// The key path to retrieve.
+    path: String,
+    /// The output format.
+    format: GetFormat,
+}
+
+/// Selects the output view for input inspection.
+#[derive(Clone)]
+pub enum GetFormat {
+    /// Tree-structured output.
+    Tree,
+    /// Flat key=value output.
+    Flat,
+    /// Format-specific serialized output.
+    Format(Format),
+}
+
+/// Formats the complete description or one validated branch.
+pub fn format_description<T: Describe>(path: &str) -> Result<String, SetupError> {
+    let desc = T::describe();
+    if path.is_empty() {
+        return Ok(desc.display().to_string());
+    }
+    desc.validate_path(path).map_err(|source| SetupError::DescPath { source })?;
+    let entry = desc.entry_at_path(path).expect("validated description path must exist");
+    Ok(entry.display().to_string())
+}
+
+/// Formats the input Node or a selected subtree.
+pub fn format_node_at_path<T>(
+    node: &Node,
+    path: &str,
+    format: GetFormat,
+) -> Result<String, SetupError>
+where
+    T: Describe,
+{
+    // Attempt to get a node at this path.
+    let opt_node = if path.is_empty() {
+        Some(node)
+    } else {
+        let key_path: KeyPath = path.parse().map_err(|e| SetupError::KeyPath { source: e })?;
+        node.opt_node(key_path)?
+    };
+
+    let Some(target) = opt_node else {
+        // Path not in tree. Check desc for a helpful hint, then return an appropriate error.
+        let mut message = format!("cannot get '{path}': path does not exist");
+        let desc = T::describe();
+        if let Err(DescPathError::UnknownPath(upe)) = desc.validate_path(path) {
+            message.push_str(&format!("\n\n{upe}"));
+        }
+        return Err(SetupError::GetNotFound { message });
+    };
+
+    match format {
+        GetFormat::Tree => Ok(target.to_tree_string()),
+        GetFormat::Flat => Ok(target.to_flat_string()),
+        GetFormat::Format(format_id) => {
+            let registry = crate::node::default_format_writer_registry();
+            Ok(target.to_format_string(format_id, &registry)?)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------- //
+// Command Validation
+
+/// Checks an assembled command for conflicting argument names.
 ///
-/// Returns an error if any argument IDs, long options, or short flags collide.
-pub fn check_collisions(
-    config_source: Option<&ConfigSource>,
-    override_args: &OverrideArgs,
-    query_args: &QueryArgs,
-    expose: &ExposeMap,
-    extra_args: &[Arg],
-) -> Result<(), ArgCollisionError> {
-    let mut seen_ids: HashSet<String> = HashSet::new();
-    let mut seen_longs: HashSet<String> = HashSet::new();
-    let mut seen_shorts: HashSet<char> = HashSet::new();
+/// Validates argument IDs, long options, short flags, and their aliases. Built-in help and version
+/// names are reserved when enabled. Call this before clap builds the command or parses arguments.
+pub fn check_collisions(command: &Command) -> Result<(), ArgCollisionError> {
+    let mut ids = HashSet::new();
+    let mut longs = HashSet::new();
+    let mut shorts = HashSet::new();
 
-    if let Some(config) = config_source {
-        // Config positional arg (uses name as ID, no long flag).
-        if let Some(pos) = &config.positional {
-            seen_ids.insert(pos.name.clone());
+    if !command.is_multicall_set() {
+        if !command.is_disable_help_flag_set() {
+            ids.insert("help");
+            longs.insert("help");
+            shorts.insert('h');
         }
+        if !command.is_disable_version_flag_set() {
+            ids.insert("version");
+            longs.insert("version");
+            shorts.insert('V');
+        }
+    }
 
-        // Config option arg (ID = long).
-        if let Some(opt) = &config.option {
-            if !seen_ids.insert(opt.long.clone()) {
-                return Err(ArgCollisionError::Id(opt.long.clone()));
-            }
-            if !seen_longs.insert(opt.long.clone()) {
-                return Err(ArgCollisionError::Long(opt.long.clone()));
-            }
-            if let Some(short) = opt.short {
-                if !seen_shorts.insert(short) {
-                    return Err(ArgCollisionError::Short(short));
-                }
+    for arg in command.get_arguments() {
+        let id = arg.get_id().as_str();
+        if !ids.insert(id) {
+            return Err(ArgCollisionError::Id(id.to_owned()));
+        }
+        for long in arg.get_long().into_iter().chain(arg.get_all_aliases().into_iter().flatten()) {
+            if !longs.insert(long) {
+                return Err(ArgCollisionError::Long(long.to_owned()));
             }
         }
-    }
-
-    // Override args (ID = long).
-    for name in override_args.all_names() {
-        let name_str = name.to_string();
-        if !seen_ids.insert(name_str.clone()) {
-            return Err(ArgCollisionError::Id(name_str));
-        }
-        if !seen_longs.insert(name.to_string()) {
-            return Err(ArgCollisionError::Long(name.to_string()));
-        }
-    }
-    for short in override_args.all_shorts() {
-        if !seen_shorts.insert(short) {
-            return Err(ArgCollisionError::Short(short));
-        }
-    }
-
-    // Query args (ID = long).
-    for name in query_args.all_names() {
-        let name_str = name.to_string();
-        if !seen_ids.insert(name_str.clone()) {
-            return Err(ArgCollisionError::Id(name_str));
-        }
-        if !seen_longs.insert(name.to_string()) {
-            return Err(ArgCollisionError::Long(name.to_string()));
-        }
-    }
-    for short in query_args.all_shorts() {
-        if !seen_shorts.insert(short) {
-            return Err(ArgCollisionError::Short(short));
-        }
-    }
-
-    // Exposed entries (ID = arg_name).
-    for entry in &expose.entries {
-        let arg_name = entry.arg_name();
-        if !seen_ids.insert(arg_name.clone()) {
-            return Err(ArgCollisionError::Id(arg_name));
-        }
-        if !matches!(entry.long, Long::None) && !seen_longs.insert(arg_name.clone()) {
-            return Err(ArgCollisionError::Long(arg_name));
-        }
-        if let Some(short) = entry.short {
-            if !seen_shorts.insert(short) {
+        for short in
+            arg.get_short().into_iter().chain(arg.get_all_short_aliases().into_iter().flatten())
+        {
+            if !shorts.insert(short) {
                 return Err(ArgCollisionError::Short(short));
             }
         }
     }
-
-    // User's extra args (ID and long are separate).
-    for arg in extra_args {
-        let id = arg.get_id().as_str().to_string();
-        if !seen_ids.insert(id.clone()) {
-            return Err(ArgCollisionError::Id(id));
-        }
-        if let Some(long) = arg.get_long() {
-            let long_str = long.to_string();
-            if !seen_longs.insert(long_str.clone()) {
-                return Err(ArgCollisionError::Long(long_str));
-            }
-        }
-        if let Some(short) = arg.get_short() {
-            if !seen_shorts.insert(short) {
-                return Err(ArgCollisionError::Short(short));
-            }
-        }
-    }
-
     Ok(())
 }
 
-/// Errors from argument name/id collisions when building a CLI command.
+/// Reports conflicting argument names in an assembled command.
 #[derive(Debug, thiserror::Error)]
 pub enum ArgCollisionError {
     /// Two arguments have the same argument ID.
     #[error("duplicate arg id: {0}")]
     Id(String),
-
     /// Two arguments have the same long option name.
     #[error("duplicate long option: --{0}")]
     Long(String),
-
     /// Two arguments have the same short option character.
     #[error("duplicate short option: -{0}")]
     Short(char),
+}
+
+// ---------------------------------------------------------------------------------------------- //
+
+/// Validates the supported exposed positional array layout.
+fn validate_positional_arrays(command: &Command, expose: &ExposeMap) {
+    let arrays = expose
+        .entries
+        .iter()
+        .filter(|entry| {
+            matches!(entry.kind, ExposeKind::Positional { .. }) && entry.shape == ValueShape::Array
+        })
+        .count();
+    if arrays > 0 {
+        assert!(arrays == 1, "only one exposed positional array is supported");
+        assert!(
+            command.get_positionals().count() == 1,
+            "an exposed positional array must be the command's only positional argument"
+        );
+    }
 }

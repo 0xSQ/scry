@@ -1,9 +1,9 @@
 //! App-level redirect files for command config discovery.
 //!
-//! A redirect file replaces per-command "trampoline" configs under `~/.config/<app>/` with a
-//! single app-named file that points command config discovery elsewhere. The file simply *is*
-//! the redirect value - the final expression for Rhai (or a conventional `config` export), the
-//! document root for other formats. A string is shorthand for the default directory:
+//! An app-named file under `~/.config/<app>/` directs command config discovery to a directory
+//! or explicit per-command files. The redirect value is the final expression for Rhai (or a
+//! conventional `config` export), or the document root for other formats. A string is shorthand
+//! for the default directory:
 //!
 //! ```rhai
 //! // ~/.config/myapp/myapp.rhai - the entire file:

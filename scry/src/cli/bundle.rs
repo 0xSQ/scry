@@ -1,68 +1,41 @@
-//! Provides [`Bundle`] for combining clap commands with dispatch logic.
+//! Provides `Bundle` for pairing clap commands with handlers.
 
 use clap::{ArgMatches, Command};
 
 // ---------------------------------------------------------------------------------------------- //
 
-/// A clap command paired with its dispatch logic.
+/// A clap command paired with its handler and subcommand handlers.
 ///
-/// The type parameters are:
-/// - `R` - what the handler function returns (typically a Result type, or `()`)
-/// - `E` - the error type
-///
-/// When `run()` is called, it returns `Result<R, E>`.
+/// Running the bundle consumes it and returns the selected handler's result.
 pub struct Bundle<R, E> {
-    pub(crate) command: Command,
-    pub(crate) dispatcher: Dispatcher<R, E>,
+    command: Command,
+    dispatcher: Dispatcher<R, E>,
 }
-
-/// Dispatches argument matches to the appropriate handler.
-pub struct Dispatcher<R, E> {
-    name: String,
-    kind: Kind<R, E>,
-}
-
-enum Kind<R, E> {
-    Single(HandlerFn<R, E>),
-    Group(Group<R, E>),
-}
-
-struct Group<R, E> {
-    children: Vec<Dispatcher<R, E>>,
-    fallback: Option<HandlerFn<R, E>>,
-}
-
-type HandlerFn<R, E> = Box<dyn FnMut(&ArgMatches) -> Result<R, E>>;
-
-// ---------------------------------------------------------------------------------------------- //
-// Bundle<R, E>
 
 impl<R: 'static, E: 'static> Bundle<R, E> {
-    /// Creates a bundle for a single command with the given handler.
-    ///
-    /// The handler receives `&ArgMatches` and returns `Result<R, E>`.
-    pub fn single<F>(command: Command, handler: F) -> Self
-    where
-        F: FnOnce(&ArgMatches) -> Result<R, E> + 'static,
-    {
-        let name = command.get_name().to_string();
-        let mut handler = Some(handler);
-        Bundle {
+    /// Creates a command with a handler that receives its parsed arguments.
+    pub fn single(
+        command: Command,
+        handler: impl FnOnce(&ArgMatches) -> Result<R, E> + 'static,
+    ) -> Self {
+        Self::single_with_command(command, move |matches, _| handler(matches))
+    }
+
+    /// Creates a handler that also receives the parsed command's metadata.
+    pub(crate) fn single_with_command(
+        command: Command,
+        handler: impl FnOnce(&ArgMatches, &Command) -> Result<R, E> + 'static,
+    ) -> Self {
+        Self {
             command,
             dispatcher: Dispatcher {
-                name,
-                kind: Kind::Single(Box::new(move |matches| {
-                    let f = handler.take().expect("handler called more than once");
-                    f(matches)
-                })),
+                handler: Some(Box::new(handler)),
+                children: Vec::new(),
             },
         }
     }
 
-    /// Creates a bundle that groups other bundles as subcommands.
-    ///
-    /// By default, a subcommand is required. Use [`fallback`](Self::fallback)
-    /// to allow running without a subcommand.
+    /// Creates a command group that requires a subcommand unless a fallback is supplied.
     pub fn group(
         name: impl Into<String>,
         about: impl Into<String>,
@@ -71,133 +44,86 @@ impl<R: 'static, E: 'static> Bundle<R, E> {
         Self::group_with(Command::new(name.into()).about(about.into()), bundles)
     }
 
-    /// Creates a bundle that groups other bundles as subcommands, with full control
-    /// over the parent command.
-    ///
-    /// Use this when you need to configure additional arguments, styles, or other
-    /// settings on the parent command.
+    /// Creates a command group from a configured clap command.
     pub fn group_with(command: Command, bundles: Vec<Bundle<R, E>>) -> Self {
-        let name = command.get_name().to_string();
-        let mut command = command.subcommand_required(true);
-
-        let mut children = Vec::new();
-        for bundle in bundles {
-            command = command.subcommand(bundle.command);
-            children.push(bundle.dispatcher);
-        }
-
-        Bundle {
+        Self {
             command,
             dispatcher: Dispatcher {
-                name,
-                kind: Kind::Group(Group {
-                    children,
-                    fallback: None,
-                }),
+                handler: None,
+                children: Vec::new(),
             },
         }
+        .with_subcommands(bundles)
     }
 
-    /// Adds a fallback handler for when no subcommand is given.
+    /// Adds subcommands while retaining this command's existing handler and children.
     ///
-    /// This makes the subcommand optional - the fallback runs when the user
-    /// runs the parent command without specifying a subcommand.
-    pub fn fallback<F>(mut self, fallback: F) -> Self
-    where
-        F: FnOnce(&ArgMatches) -> Result<R, E> + 'static,
-    {
-        // Make subcommand optional
-        self.command = self.command.subcommand_required(false);
-
-        // Set the fallback on the dispatcher
-        let mut fallback = Some(fallback);
-        self.dispatcher.set_fallback(Box::new(move |matches| {
-            let f = fallback.take().expect("fallback called more than once");
-            f(matches)
-        }));
-
+    /// The command's own handler runs when no subcommand is selected.
+    /// Commands without their own handler require a subcommand.
+    pub fn with_subcommands(mut self, bundles: Vec<Bundle<R, E>>) -> Self {
+        for bundle in bundles {
+            let name = bundle.command.get_name().to_owned();
+            self.command = self.command.subcommand(bundle.command);
+            self.dispatcher.children.push((name, bundle.dispatcher));
+        }
+        self.command = self.command.subcommand_required(self.dispatcher.handler.is_none());
         self
     }
 
-    /// Runs the CLI by parsing arguments and dispatching to the handler.
-    pub fn run(self) -> Result<R, E> {
-        let Bundle {
-            command,
-            mut dispatcher,
-        } = self;
-        let matches = command.get_matches();
-        dispatcher.dispatch(&matches)
+    /// Sets the handler used when no subcommand is selected.
+    pub fn fallback(mut self, handler: impl FnOnce(&ArgMatches) -> Result<R, E> + 'static) -> Self {
+        self.dispatcher.handler = Some(Box::new(move |matches, _| handler(matches)));
+        self.command = self.command.subcommand_required(false);
+        self
     }
 
-    /// Runs with custom arguments instead of reading from the command line.
-    ///
-    /// Useful for testing.
-    pub fn run_from<I, S>(self, args: I) -> Result<R, E>
+    /// Parses the process arguments and runs the selected handler.
+    pub fn run(mut self) -> Result<R, E> {
+        let matches = self.command.get_matches_mut();
+        self.dispatcher.dispatch(&matches, &self.command)
+    }
+
+    /// Parses supplied arguments and runs the selected handler.
+    pub fn run_from<I, S>(mut self, args: I) -> Result<R, E>
     where
         I: IntoIterator<Item = S>,
         S: Into<std::ffi::OsString> + Clone,
     {
-        let Bundle {
-            command,
-            mut dispatcher,
-        } = self;
-        let matches = command.get_matches_from(args);
-        dispatcher.dispatch(&matches)
+        let matches =
+            self.command.try_get_matches_from_mut(args).unwrap_or_else(|error| error.exit());
+        self.dispatcher.dispatch(&matches, &self.command)
     }
 
-    /// Returns a reference to the underlying clap Command.
-    ///
-    /// Useful for introspection in tests.
+    /// Returns the underlying clap command for inspection.
     pub fn command(&self) -> &Command {
         &self.command
     }
 }
 
 // ---------------------------------------------------------------------------------------------- //
-// Dispatcher<R, E>
 
-impl<R: 'static, E: 'static> Dispatcher<R, E> {
-    /// Creates a dispatcher with the given handler function.
-    pub fn new(
-        name: impl Into<String>,
-        handler: impl FnMut(&ArgMatches) -> Result<R, E> + 'static,
-    ) -> Self {
-        Dispatcher {
-            name: name.into(),
-            kind: Kind::Single(Box::new(handler)),
-        }
-    }
+struct Dispatcher<R, E> {
+    handler: Option<HandlerFn<R, E>>,
+    children: Vec<(String, Dispatcher<R, E>)>,
+}
 
-    /// Sets the fallback handler for a group dispatcher.
-    ///
-    /// # Panics
-    ///
-    /// Panics if this dispatcher is not a group.
-    fn set_fallback(&mut self, fallback: HandlerFn<R, E>) {
-        match &mut self.kind {
-            Kind::Group(group) => group.fallback = Some(fallback),
-            Kind::Single(_) => panic!("cannot set fallback on a single dispatcher"),
-        }
-    }
-
-    /// Dispatches to the appropriate handler based on the argument matches.
-    pub fn dispatch(&mut self, matches: &ArgMatches) -> Result<R, E> {
-        match &mut self.kind {
-            Kind::Single(handler) => handler(matches),
-            Kind::Group(group) => {
-                if let Some((sub_name, sub_matches)) = matches.subcommand() {
-                    for child in &mut group.children {
-                        if child.name == sub_name {
-                            return child.dispatch(sub_matches);
-                        }
-                    }
-                    unreachable!("unknown subcommand: {}", sub_name);
-                }
-                match &mut group.fallback {
-                    Some(fallback_fn) => fallback_fn(matches),
-                    None => unreachable!("no subcommand provided and no fallback"),
-                }
+impl<R, E> Dispatcher<R, E> {
+    fn dispatch(self, matches: &ArgMatches, command: &Command) -> Result<R, E> {
+        if !self.children.is_empty() {
+            if let Some((name, child_matches)) = matches.subcommand() {
+                let (_, child) = self
+                    .children
+                    .into_iter()
+                    .find(|(child_name, _)| child_name == name)
+                    .expect("parsed subcommand must have a registered handler");
+                let child_command =
+                    command.find_subcommand(name).expect("parsed subcommand must exist");
+                return child.dispatch(child_matches, child_command);
             }
         }
+        let handler = self.handler.expect("command without a handler requires a subcommand");
+        handler(matches, command)
     }
 }
+
+type HandlerFn<R, E> = Box<dyn FnOnce(&ArgMatches, &Command) -> Result<R, E>>;

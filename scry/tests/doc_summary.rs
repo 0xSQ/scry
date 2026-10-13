@@ -1,7 +1,7 @@
 //! The derive keeps only a doc comment's first paragraph as the description.
 //!
 //! Rustdoc convention: the first paragraph is the summary, later paragraphs are elaboration for
-//! source readers. Descriptions (`--desc`, error field listings) show only the summary.
+//! source readers. Descriptions (`-S desc`, error field listings) show only the summary.
 
 use scry::Describe;
 

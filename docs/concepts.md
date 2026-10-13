@@ -275,7 +275,7 @@ deliberate meaning on a unit enum variant, as described below.
 
 Descriptions automatically show only simple literal defaults such as `false`, `3`, `-0.5`, and
 `"cache"`. Constructor calls, enum paths, constants, and other Rust expressions still make the
-field omittable, but `--desc` does not present their source text as if it were a config value.
+field omittable, but `-S desc` does not present their source text as if it were a config value.
 The description's optional marker means a field can be omitted, not that it accepts null.
 
 ### The `rename` Attribute
@@ -354,7 +354,7 @@ enum ProcessOrder {
 
 You do not need any extra attributes just to use an enum in config. `#[derive(Config)]`
 already teaches Scry how to read enum variants from a `Node`, how to describe them for
-`--desc`, and how to expose unit enums as CLI possible values.
+`-S desc`, and how to expose unit enums as CLI possible values.
 
 Add `#[scry(from_str)]` only when your Rust code also wants ordinary string conversion:
 
@@ -439,7 +439,7 @@ teaches the CLI layer the variant names, and the exposed option gets them as pos
 
 For data-carrying enums, `.variant(key)` wraps the supplied value in the enum's single-key map
 and replaces the whole field. This lets selecting a variant displace the previous one, instead
-of adding a second variant key through `--set`.
+of adding a second variant key through a toolbox `--set` edit.
 
 ```rust
 Setup::standard("app")
@@ -837,7 +837,7 @@ destination as before.
 
 ## Describe
 
-`Describe` generates descriptions for human-readable configuration help, including the CLI `--desc`
+`Describe` generates descriptions for human-readable configuration help, including `-S desc`
 overview:
 
 ```rust

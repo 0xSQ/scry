@@ -2,15 +2,12 @@
 #![cfg(feature = "format-json")]
 
 use std::convert::Infallible;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use clap::{Arg, Command};
-use scry::cli::setup::{
-    Arity, ConfigSource, ExposeMap, OverrideArgs, QueryArgs, Required, Setup, SetupError,
-    ValueShape,
-};
+use scry::cli::setup::{Arity, ConfigSource, ExposeMap, Setup, SetupError, ValueShape};
 use scry::node::{Format, Value};
-use scry::{Config, Describe, Node};
+use scry::{Config, Desc, Describe, FromNode, Node, NodeError};
 
 // ---------------------------------------------------------------------------------------------- //
 
@@ -60,7 +57,6 @@ fn array_queries_run_before_typed_conversion_or_the_handler() {
     }
 
     let result = Setup::new("test")
-        .query_args(QueryArgs::standard())
         .expose(|e| {
             e.option("values").array(1..);
         })
@@ -70,9 +66,11 @@ fn array_queries_run_before_typed_conversion_or_the_handler() {
             "--values",
             "001",
             "not-a-number",
-            "--get-as",
-            "json",
+            "--scry",
+            "get",
             "values",
+            "--as",
+            "json",
         ])
         .unwrap();
     assert!(result.is_none());
@@ -215,7 +213,7 @@ fn append_rejects_existing_scalar_map_and_null_values() {
 }
 
 #[test]
-fn arrays_and_flat_appends_interleave_with_set_and_remove() {
+fn array_replacement_and_appends_precede_suffix_edits() {
     let node = apply(
         r#"{ "values": ["loaded"] }"#,
         &[
@@ -223,14 +221,15 @@ fn arrays_and_flat_appends_interleave_with_set_and_remove() {
             "--values",
             "a",
             "b",
+            "--extra",
+            "c",
+            "d",
+            "--scry",
             "--set",
             "values[0]",
             "edited",
             "--remove",
             "values[1]",
-            "--extra",
-            "c",
-            "d",
         ],
         |e| {
             e.option("values").array(2);
@@ -242,7 +241,7 @@ fn arrays_and_flat_appends_interleave_with_set_and_remove() {
 }
 
 #[test]
-fn grouped_appends_interleave_with_mutations_without_losing_occurrences() {
+fn grouped_appends_keep_occurrences_before_suffix_mutations() {
     let node = apply(
         "{}",
         &[
@@ -250,16 +249,17 @@ fn grouped_appends_interleave_with_mutations_without_losing_occurrences() {
             "--values",
             "a",
             "b",
-            "--set",
-            "values[0][1]",
-            "edited",
             "--values",
             "c",
-            "--remove",
-            "values[0]",
             "--values",
             "d",
             "e",
+            "--scry",
+            "--set",
+            "values[0][1]",
+            "edited",
+            "--remove",
+            "values[0]",
         ],
         |e| {
             e.option("values").array(1..).append();
@@ -270,16 +270,17 @@ fn grouped_appends_interleave_with_mutations_without_losing_occurrences() {
 }
 
 #[test]
-fn remove_then_append_recreates_an_array() {
+fn suffix_removal_discards_parent_appends_and_restores_the_default() {
     let node = apply(
         r#"{ "values": ["loaded"] }"#,
-        &["test", "--remove", "values", "--values", "new"],
+        &["test", "--values", "new", "--scry", "--remove", "values"],
         |e| {
             e.option("values").append();
         },
     )
     .unwrap();
-    assert_eq!(node.req::<Vec<String>>("values").unwrap(), ["new"]);
+    assert!(node.opt_node("values").unwrap().is_none());
+    assert_eq!(node.as_type::<ValuesConfig>().unwrap().values, ["default"]);
 }
 
 #[test]
@@ -400,7 +401,7 @@ fn clap_defaults_do_not_become_config_operations() {
             .mut_arg("values", |arg| arg.default_value("clap-default"));
         let matches = command.try_get_matches_from(["test"]).unwrap();
         let mut node = Node::parse_str(r#"{ "values": ["loaded"] }"#, Format::Json).unwrap();
-        OverrideArgs::new().apply::<ValuesConfig>(&mut node, &expose, &matches).unwrap();
+        expose.apply::<ValuesConfig>(&mut node, &matches).unwrap();
         assert_eq!(node.req::<Vec<String>>("values").unwrap(), ["loaded"]);
     }
 }
@@ -414,7 +415,7 @@ fn malformed_scalar_matches_return_an_error_before_applying_overrides() {
         .mut_arg("output", |arg| arg.num_args(2));
     let matches = command.try_get_matches_from(["test", "--output", "one", "two"]).unwrap();
     let mut node = Node::parse_str(r#"{ "output": "loaded" }"#, Format::Json).unwrap();
-    let result = OverrideArgs::new().apply::<ValuesConfig>(&mut node, &expose, &matches);
+    let result = expose.apply::<ValuesConfig>(&mut node, &matches);
     assert!(result.is_err());
     assert_eq!(node.req::<String>("output").unwrap(), "loaded");
 }
@@ -432,21 +433,10 @@ fn fixed_assignments_reject_missing_argument_ids_and_wrong_match_types() {
     ];
     for matches in matches {
         let mut node = Node::parse_str(r#"{ "output": "loaded" }"#, Format::Json).unwrap();
-        let error =
-            OverrideArgs::new().apply::<ValuesConfig>(&mut node, &expose, &matches).unwrap_err();
+        let error = expose.apply::<ValuesConfig>(&mut node, &matches).unwrap_err();
         assert!(matches!(error, SetupError::InvalidCliMatches { .. }));
         assert_eq!(node.req::<String>("output").unwrap(), "loaded");
     }
-}
-
-#[test]
-fn public_override_application_rejects_missing_override_argument_ids() {
-    let matches = Command::new("test").try_get_matches_from(["test"]).unwrap();
-    let mut node = Node::empty_map();
-    let error = OverrideArgs::standard()
-        .apply::<ValuesConfig>(&mut node, &ExposeMap::new(), &matches)
-        .unwrap_err();
-    assert!(matches!(error, SetupError::InvalidCliMatches { .. }));
 }
 
 #[test]
@@ -456,16 +446,16 @@ fn positional_array_collects_runs_and_assigns_at_its_final_value() {
         &[
             "test",
             "first",
-            "--set",
-            "values[0]",
-            "intermediate",
+            "--preset",
             "second",
+            "--scry",
             "--set",
             "values[1]",
             "final",
         ],
         |e| {
             e.positional("values").array(1..);
+            e.preset("preset").set("values", vec!["intermediate"]);
         },
     )
     .unwrap();
@@ -509,26 +499,23 @@ fn end_of_options_routes_hyphenated_values_to_positional_array() {
 }
 
 #[test]
-fn positional_array_supports_named_config_and_a_preceding_required_scalar() {
+fn positional_array_supports_a_named_config_source() {
     let result = Setup::new("test")
         .config_source(|_| {
-            ConfigSource::new().option("config", Some('C'), "Loads the config.").loader(
+            ConfigSource::new().option("config-file", Some('C'), "Loads the config.").loader(
                 |_: &Path| -> Result<Node, Infallible> {
                     Ok(Node::parse_str(r#"{ "values": ["loaded"] }"#, Format::Json).unwrap())
                 },
             )
         })
-        .arg(Arg::new("command-input").index(1).required(true))
         .expose(|e| {
             e.positional("values").array(1..);
         })
-        .into_bundle_with_matches(|cfg: ValuesConfig, matches| {
-            (cfg.values, matches.get_one::<String>("command-input").unwrap().clone())
-        })
-        .run_from(["test", "-C", "config.json", "input", "a", "b"])
+        .into_bundle(|cfg: ValuesConfig| cfg.values)
+        .run_from(["test", "-C", "config.json", "a", "b"])
         .unwrap()
         .unwrap();
-    assert_eq!(result, (vec!["a".to_string(), "b".to_string()], "input".to_string()));
+    assert_eq!(result, ["a", "b"]);
 }
 
 #[test]
@@ -693,14 +680,7 @@ fn positional_arrays_reject_ambiguous_layouts() {
         },
         || {
             Setup::new("test")
-                .config_source(|c| c.positional("CONFIG", "Loads the config.", Required::Yes))
-                .expose(|e| {
-                    e.positional("values").array(1..);
-                })
-        },
-        || {
-            Setup::new("test")
-                .config_source(|c| c.positional("CONFIG", "Loads the config.", Required::No))
+                .config_source(|c| c.positional("CONFIG", "Loads the config."))
                 .expose(|e| {
                     e.positional("values").array(1..);
                 })
@@ -756,13 +736,31 @@ fn apply(
     args: &[&str],
     configure: impl FnOnce(&mut ExposeMap),
 ) -> Result<Node, Box<dyn std::error::Error>> {
-    let mut expose = ExposeMap::new();
-    configure(&mut expose);
-    let overrides = OverrideArgs::standard();
-    let command =
-        overrides.augment(expose.augment(Command::new("test"), &ValuesConfig::describe()));
-    let matches = command.try_get_matches_from(args)?;
-    let mut node = Node::parse_str(json, Format::Json)?;
-    overrides.apply::<ValuesConfig>(&mut node, &expose, &matches)?;
-    Ok(node)
+    let json = json.to_owned();
+    let result = Setup::new("test")
+        .config_source(|source| {
+            source
+                .discover(|_| -> Result<Option<PathBuf>, Infallible> {
+                    Ok(Some(PathBuf::from("input.json")))
+                })
+                .loader(move |_: &Path| Node::parse_str(&json, Format::Json))
+        })
+        .expose(configure)
+        .into_bundle(|input: RawInput| input.0)
+        .run_from(args)?;
+    Ok(result.expect("edit-only invocations execute the handler"))
+}
+
+struct RawInput(Node);
+
+impl FromNode for RawInput {
+    fn from_node(node: &Node) -> Result<Self, NodeError> {
+        Ok(Self(node.clone()))
+    }
+}
+
+impl Describe for RawInput {
+    fn describe() -> Desc {
+        ValuesConfig::describe()
+    }
 }

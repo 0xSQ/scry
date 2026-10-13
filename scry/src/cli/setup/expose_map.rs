@@ -3,13 +3,14 @@
 use std::ops::{RangeFrom, RangeInclusive};
 
 use clap::builder::PossibleValue;
-use clap::{Arg, ArgAction, Command};
+use clap::{Arg, ArgAction, ArgMatches, Command};
 
 use heck::{ToKebabCase, ToShoutySnakeCase};
 
+use super::{edits, SetupError};
 use crate::desc::{EntryRef, VariantDesc, VariantRepr};
 use crate::node::Node;
-use crate::{Desc, ToNode};
+use crate::{Desc, Describe, ToNode};
 
 // ---------------------------------------------------------------------------------------------- //
 
@@ -93,11 +94,11 @@ impl ExposeMap {
     /// Exposes a config field as a positional CLI argument.
     ///
     /// The display name is derived from the field path via SCREAMING_SNAKE_CASE conversion
-    /// (for example, `"prefix"` becomes `[PREFIX]`). It is not required by default because the
+    /// (for example, `"prefix"` becomes `[PREFIX]`). It is optional because the
     /// config file may already provide the value. A final `.array(1..)` positional replaces the
     /// configured array with all its values, including values separated by named options.
-    /// Only one positional array is supported. It must be final, cannot coexist with a positional
-    /// config path, and may follow only required single-value positionals.
+    /// In [`super::Setup`], an array must be the command's only positional argument.
+    /// Use named options for a config path or other inputs alongside it.
     pub fn positional(&mut self, path: impl Into<String>) -> &mut ExposeEntry {
         let path = path.into();
         self.push_entry(
@@ -117,7 +118,7 @@ impl ExposeMap {
         for entry in &self.entries {
             entry.validate();
             let arg_name = entry.arg_name();
-            let mut arg = Arg::new(arg_name.clone());
+            let mut arg = Arg::new(arg_name.clone()).global(entry.global);
 
             match &entry.kind {
                 ExposeKind::Positional { .. } => {
@@ -183,6 +184,19 @@ impl ExposeMap {
         cmd
     }
 
+    /// Applies exposed configuration edits in application argument order.
+    ///
+    /// Scalar values use their individual parser positions. Grouped values are assigned when
+    /// their final value is consumed. A positional array forms one assignment at its final
+    /// value, including values separated by named options.
+    pub fn apply<T: Describe>(
+        &self,
+        node: &mut Node,
+        matches: &ArgMatches,
+    ) -> Result<(), SetupError> {
+        edits::apply::<T>(node, edits::collect_exposed(self, matches)?)
+    }
+
     fn push_entry(
         &mut self,
         name: String,
@@ -200,6 +214,7 @@ impl ExposeMap {
             help_path,
             long,
             short: None,
+            global: false,
             help: None,
             value_name: None,
             value_names: None,
@@ -233,6 +248,8 @@ pub struct ExposeEntry {
     pub long: Long,
     /// Short option character.
     pub short: Option<char>,
+    /// Makes this named argument available to descendant commands.
+    pub global: bool,
     /// Custom help text.
     pub help: Option<String>,
     /// Display name repeated for each consumed value.
@@ -384,6 +401,21 @@ impl ExposeEntry {
         self
     }
 
+    /// Makes this named argument available to descendant commands.
+    ///
+    /// Values are shared between the defining command and its selected descendants, whether the
+    /// argument appears before or after a subcommand. Child handlers can read the inherited
+    /// argument from their matches. Only the selected handler applies config assignments.
+    ///
+    /// # Panics
+    ///
+    /// Panics when enabling this for a positional argument.
+    pub fn global(&mut self, yes: bool) -> &mut Self {
+        self.validate_global(yes);
+        self.global = yes;
+        self
+    }
+
     /// Sets custom help text, overriding config-derived fallback help.
     pub fn help(&mut self, text: impl Into<String>) -> &mut Self {
         self.help = Some(text.into());
@@ -442,6 +474,7 @@ impl ExposeEntry {
 
     fn validate(&self) {
         let arg_name = self.arg_name();
+        self.validate_global(self.global);
         assert!(
             matches!(self.kind, ExposeKind::Positional { .. })
                 || !matches!(self.long, Long::None)
@@ -520,6 +553,14 @@ impl ExposeEntry {
                 "exposed argument '{arg_name}' cannot have an empty value label"
             );
         }
+    }
+
+    fn validate_global(&self, global: bool) {
+        assert!(
+            !global || !matches!(self.kind, ExposeKind::Positional { .. }),
+            "exposed positional '{}' cannot be global: only named arguments can be inherited by subcommands",
+            self.arg_name()
+        );
     }
 
     fn validate_fixed(&self, assignments: &[FixedAssignment]) {
