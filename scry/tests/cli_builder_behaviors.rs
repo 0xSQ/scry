@@ -509,7 +509,7 @@ mod gateway_actions {
                 panic!("handler should not be called");
             });
 
-        let result = bundle.run_from(["test", "config.json", "--scry", "get", "--flat"]);
+        let result = bundle.run_from(["test", "config.json", "--scry", "get", "--as", "flat"]);
         assert!(result.is_ok());
     }
 

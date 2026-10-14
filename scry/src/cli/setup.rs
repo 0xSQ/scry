@@ -234,11 +234,10 @@ impl Setup {
         matches: &ArgMatches,
         command: &Command,
     ) -> Result<Option<T>, SetupError> {
-        let invocation =
-            self.gateway.parse(matches, command.get_bin_name().unwrap_or(command.get_name()))?;
+        let invocation = self.gateway.parse(matches, command)?;
         match &invocation.action {
             Action::Help(output) => {
-                print!("{output}");
+                output.print().map_err(|source| SetupError::PrintHelp { source })?;
                 return Ok(None);
             }
             Action::Describe(path) => {
@@ -307,7 +306,7 @@ enum Action {
     Execute,
     Describe(String),
     Get(GetRequest),
-    Help(String),
+    Help(clap::Error),
 }
 
 // ---------------------------------------------------------------------------------------------- //
@@ -326,7 +325,7 @@ struct GetRequest {
 pub enum GetFormat {
     /// Tree-structured output.
     Tree,
-    /// Flat key=value output.
+    /// Flat key-value output with a space between each path and value.
     Flat,
     /// Format-specific serialized output.
     Format(Format),

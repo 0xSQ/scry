@@ -1,7 +1,7 @@
-//! Flat key=value format serialization.
+//! Flat key-value format serialization.
 //!
 //! Provides [`FlatWriter`] for serializing Node trees to a simple flat format
-//! where each leaf value is output as `path.to.key = "value"`.
+//! where each leaf value is output as `path.to.key "value"`.
 
 use crate::key_path::KeyPath;
 use crate::node::{Kind, Node};
@@ -11,9 +11,9 @@ use super::format_value;
 // ---------------------------------------------------------------------------------------------- //
 // FlatWriter
 
-/// Writer for serializing Node trees to flat key=value format.
+/// Writer for serializing Node trees to flat key-value format.
 ///
-/// Each leaf value is output as a single line: `path.to.key = "value"`
+/// Each leaf value is output as a single line: `path.to.key "value"`.
 pub struct FlatWriter {
     output: String,
     config: FlatConfig,
@@ -81,12 +81,12 @@ impl Default for FlatWriter {
 /// Configuration for flat output formatting.
 #[derive(Debug, Clone)]
 pub struct FlatConfig {
-    /// The separator between key and value (default: " = ").
+    /// The separator between key and value (default: a single space).
     pub separator: &'static str,
 }
 
 impl Default for FlatConfig {
     fn default() -> Self {
-        Self { separator: " = " }
+        Self { separator: " " }
     }
 }

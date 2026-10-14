@@ -229,16 +229,16 @@ $ deploy -C deploy.json -S get
    ▸ slack_url "https://hooks.slack.com/myhook"
 ```
 
-`get --flat` outputs everything as `key = value` lines, giving the full key paths:
+`get --as flat` outputs everything as `key value` lines, giving the full key paths with a space between each path and value:
 
 ```
-$ deploy -C deploy.json -S get --flat
-target = "app.example.com"
-environment = "dev"
-notify.slack_url = "https://hooks.slack.com/myhook"
+$ deploy -C deploy.json -S get --as flat
+target "app.example.com"
+environment "dev"
+notify.slack_url "https://hooks.slack.com/myhook"
 ```
 
-`get --as FORMAT` outputs in a supported writer format, such as `json` or `rhai`. TOML and YAML writers are optionally available via the `format-toml` and `format-yaml` features. The toolbox lists formats from the default writer registry.
+`get --as FORMAT` also supports writer formats such as `json` or `rhai`. TOML and YAML writers are optionally available via the `format-toml` and `format-yaml` features. The toolbox lists `tree`, `flat`, and formats from the default writer registry.
 
 ```
 $ deploy -C deploy.json -S get --as json

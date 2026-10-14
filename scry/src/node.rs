@@ -676,9 +676,9 @@ impl Node {
         self.to_format_string(format_id, &registry)
     }
 
-    /// Converts this Node tree to flat key=value format.
+    /// Converts this Node tree to flat key-value format.
     ///
-    /// Each leaf value is output on its own line as `path.to.key = "value"`.
+    /// Each leaf value is output on its own line as `path.to.key "value"`.
     /// Empty containers produce no output.
     pub fn to_flat_string(&self) -> String {
         self.to_flat_string_with_config(FlatConfig::default())

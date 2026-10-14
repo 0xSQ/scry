@@ -15,12 +15,18 @@ use crate::BoxedError;
 /// Unified error type for running CLI bundles created via [`Setup`](super::Setup).
 ///
 /// Aggregates all error types that can occur when running a setup-composed bundle.
-/// Each variant transparently wraps a dedicated error type.
 #[derive(thiserror::Error)]
 pub enum SetupError {
     /// The toolbox arguments are invalid.
     #[error(transparent)]
     Gateway(#[from] clap::Error),
+
+    /// Failed to print configuration toolbox help.
+    #[error("failed to print configuration toolbox help")]
+    PrintHelp {
+        #[source]
+        source: std::io::Error,
+    },
 
     /// Error from node operations.
     #[error(transparent)]

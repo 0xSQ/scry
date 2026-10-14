@@ -2,7 +2,7 @@
 //!
 //! Provides:
 //! - [`RhaiWriter`] for serializing values to Rhai syntax
-//! - [`FlatWriter`] for serializing Node trees to flat key=value format
+//! - [`FlatWriter`] for serializing Node trees to flat key-value format
 //! - [`TreeWriter`] for serializing Node trees to visual tree format
 
 mod flat;
@@ -131,9 +131,9 @@ mod tests {
         assert_eq!(
             output,
             indoc! {r#"
-                name = "test"
-                count = 42
-                enabled = true"#}
+                name "test"
+                count 42
+                enabled true"#}
         );
     }
 
@@ -144,8 +144,8 @@ mod tests {
         assert_eq!(
             output,
             indoc! {r#"
-                database.host = "localhost"
-                database.port = 5432"#}
+                database.host "localhost"
+                database.port 5432"#}
         );
     }
 
@@ -156,9 +156,9 @@ mod tests {
         assert_eq!(
             output,
             indoc! {r#"
-                tags[0] = "alpha"
-                tags[1] = "beta"
-                tags[2] = "gamma""#}
+                tags[0] "alpha"
+                tags[1] "beta"
+                tags[2] "gamma""#}
         );
     }
 
@@ -171,10 +171,10 @@ mod tests {
         assert_eq!(
             output,
             indoc! {r#"
-                servers[0].host = "a.example.com"
-                servers[0].port = 80
-                servers[1].host = "b.example.com"
-                servers[1].port = 443"#}
+                servers[0].host "a.example.com"
+                servers[0].port 80
+                servers[1].host "b.example.com"
+                servers[1].port 443"#}
         );
     }
 
@@ -185,10 +185,10 @@ mod tests {
         assert_eq!(
             output,
             indoc! {"
-                matrix[0][0] = 1
-                matrix[0][1] = 2
-                matrix[1][0] = 3
-                matrix[1][1] = 4"}
+                matrix[0][0] 1
+                matrix[0][1] 2
+                matrix[1][0] 3
+                matrix[1][1] 4"}
         );
     }
 
@@ -197,14 +197,14 @@ mod tests {
         let node = node_from_json(r#"{"empty_map": {}, "empty_vec": [], "name": "test"}"#);
         let output = node.to_flat_string();
         // Empty containers should produce no output
-        assert_eq!(output, r#"name = "test""#);
+        assert_eq!(output, r#"name "test""#);
     }
 
     #[test]
     fn flat_null_value() {
         let node = node_from_json(r#"{"timeout": null}"#);
         let output = node.to_flat_string();
-        assert_eq!(output, r#"timeout = null"#);
+        assert_eq!(output, r#"timeout null"#);
     }
 
     #[test]
@@ -242,17 +242,17 @@ mod tests {
         assert_eq!(
             output,
             indoc! {r#"
-                name = "my-project"
-                version = "1.2.3"
-                enabled = true
-                max_retries = 5
-                timeout_ms = null
-                database.host = "localhost"
-                database.port = 5432
-                database.credentials.username = "admin"
-                database.credentials.password = "secret"
-                tags[0] = "production"
-                tags[1] = "critical""#}
+                name "my-project"
+                version "1.2.3"
+                enabled true
+                max_retries 5
+                timeout_ms null
+                database.host "localhost"
+                database.port 5432
+                database.credentials.username "admin"
+                database.credentials.password "secret"
+                tags[0] "production"
+                tags[1] "critical""#}
         );
     }
 

@@ -266,7 +266,9 @@ fn invalid_toolbox_requests_fail_before_source_preparation() {
         &["--set", "value"],
         &["--remove"],
         &["unknown"],
-        &["get", "--flat", "--as", "json"],
+        &["get", "--flat"],
+        &["get", "--as", "flat", "--separator", "="],
+        &["get", "--as", "flat", "--as", "json"],
         &["get", "--as", "unknown"],
         &["get", "--set", "value", "late"],
         &["--scry", "get"],
@@ -286,7 +288,8 @@ fn invalid_toolbox_requests_fail_before_source_preparation() {
 #[test]
 fn registered_raw_get_views_work_without_decoding() {
     for suffix in [
-        vec!["get", "--flat"],
+        vec!["get", "--as", "tree"],
+        vec!["get", "--as", "flat"],
         vec!["get", "--as", "json"],
         vec!["get", "--as", "rhai"],
     ] {
