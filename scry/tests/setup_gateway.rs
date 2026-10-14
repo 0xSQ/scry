@@ -7,9 +7,10 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use clap::{Arg, ArgAction, Command};
-use scry::cli::setup::{ConfigSource, Gateway, Setup, SetupError};
+use scry::cli::setup::{format_node_at_path, ConfigSource, Gateway, GetFormat, Setup, SetupError};
 use scry::cli::Bundle;
 use scry::node::{Format, NodeError};
+use scry::writer::TreeConfig;
 use scry::{Config, Desc, Describe, FromNode, Node};
 
 // ---------------------------------------------------------------------------------------------- //
@@ -245,6 +246,8 @@ fn descriptions_and_all_help_routes_skip_source_preparation() {
         &["desc", "--help"],
         &["desc"],
         &["desc", "value"],
+        &["desc", "--depth", "1"],
+        &["desc", "rows", "-d", "1"],
     ];
     for suffix in suffixes {
         let mut args = vec!["test", "--scry"];
@@ -270,6 +273,11 @@ fn invalid_toolbox_requests_fail_before_source_preparation() {
         &["get", "--as", "flat", "--separator", "="],
         &["get", "--as", "flat", "--as", "json"],
         &["get", "--as", "unknown"],
+        &["get", "--as", "flat", "-d", "1"],
+        &["get", "--as", "json", "--indices"],
+        &["get", "--as", "rhai", "--no-color"],
+        &["get", "--depth", "0"],
+        &["desc", "--depth", "invalid"],
         &["get", "--set", "value", "late"],
         &["--scry", "get"],
         &["--config-file", "late.json", "get"],
@@ -292,6 +300,7 @@ fn registered_raw_get_views_work_without_decoding() {
         vec!["get", "--as", "flat"],
         vec!["get", "--as", "json"],
         vec!["get", "--as", "rhai"],
+        vec!["get", "-d", "1", "--indices", "--no-color"],
     ] {
         let loads = Rc::new(Cell::new(0));
         let mut args = vec!["test", "-C", "input.json", "--scry"];
@@ -303,6 +312,24 @@ fn registered_raw_get_views_work_without_decoding() {
         assert!(result.is_none());
         assert_eq!(loads.get(), 1);
     }
+}
+
+#[test]
+fn selected_tree_depth_and_indices_preserve_raw_values() {
+    let node = Node::parse_str(r#"{ "rows": [[1, "two"], []] }"#, Format::Json).unwrap();
+    let config = TreeConfig {
+        max_depth: Some(1),
+        show_leaf_indices: true,
+        ..TreeConfig::no_color()
+    };
+    assert_eq!(
+        format_node_at_path::<DecodeTrap>(&node, "rows", GetFormat::Tree(config.clone())).unwrap(),
+        "▪ [0] …\n▪ [1]"
+    );
+    assert_eq!(
+        format_node_at_path::<DecodeTrap>(&node, "rows[0]", GetFormat::Tree(config)).unwrap(),
+        "▸ [0] 1\n▸ [1] \"two\""
+    );
 }
 
 #[test]

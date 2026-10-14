@@ -6,8 +6,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use clap::Command;
-use scry::cli::setup::{format_description, ExposeMap};
-use scry::desc::{DescKind, EntryRef, FieldDesc};
+use scry::cli::setup::{format_description, format_description_with_config, ExposeMap};
+use scry::desc::{DescKind, DisplayConfig, EntryRef, FieldDesc};
 use scry::node::Format;
 use scry::{Config, Desc, Describe, Node, ToNode};
 
@@ -259,6 +259,30 @@ fn description_queries_show_optional_struct_fields_and_enum_choices() {
     assert_eq!(
         format_description::<EnumContexts>("optional").unwrap(),
         "◇ optional\n   › fast\n   › careful\n"
+    );
+}
+
+#[test]
+fn selected_description_depth_excludes_the_entry_heading() {
+    let config = DisplayConfig::default().with_max_depth(1);
+    let overview = format_description_with_config::<Payloads>("", &config).unwrap();
+    assert!(overview.contains("› named …"));
+    assert!(!overview.contains("count"));
+
+    let selected = format_description_with_config::<Payloads>("named", &config).unwrap();
+    assert!(selected.contains("◇ child …"));
+    assert!(!selected.contains("count"));
+    assert_eq!(
+        format_description_with_config::<Payloads>("named.child", &config).unwrap(),
+        "◇ child\n   ◆ count: u32\n"
+    );
+    assert_eq!(
+        format_description_with_config::<EnumContexts>("optional", &config).unwrap(),
+        "◇ optional\n   › fast\n   › careful\n"
+    );
+    assert_eq!(
+        format_description_with_config::<Payloads>("pair[1]", &config).unwrap(),
+        "◆ 1\n   ◆ count: u32\n"
     );
 }
 

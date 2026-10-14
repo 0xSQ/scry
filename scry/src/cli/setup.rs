@@ -18,8 +18,9 @@ use std::collections::HashSet;
 use clap::{Arg, ArgMatches, Command};
 
 use super::bundle::Bundle;
-use crate::desc::{Desc, DescPathError};
+use crate::desc::{Desc, DescPathError, DisplayConfig};
 use crate::node::{Format, Node};
+use crate::writer::TreeConfig;
 use crate::{Describe, FromNode, KeyPath};
 
 pub use config_source::{
@@ -242,8 +243,11 @@ impl Setup {
                 output.print().map_err(|source| SetupError::PrintHelp { source })?;
                 return Ok(None);
             }
-            Action::Describe(path) => {
-                println!("{}", format_description::<T>(path)?);
+            Action::Describe(request) => {
+                println!(
+                    "{}",
+                    format_description_with_config::<T>(&request.path, &request.config)?
+                );
                 return Ok(None);
             }
             Action::Execute | Action::Get(_) => {}
@@ -306,13 +310,21 @@ struct Invocation {
 
 enum Action {
     Execute,
-    Describe(String),
+    Describe(DescRequest),
     Get(GetRequest),
     Help(clap::Error),
 }
 
 // ---------------------------------------------------------------------------------------------- //
 // Input Inspection
+
+/// A description inspection request.
+struct DescRequest {
+    /// The description path to retrieve.
+    path: String,
+    /// The display settings for the selected branch.
+    config: DisplayConfig,
+}
 
 /// An input inspection request.
 struct GetRequest {
@@ -325,8 +337,8 @@ struct GetRequest {
 /// Selects the output view for input inspection.
 #[derive(Clone)]
 pub enum GetFormat {
-    /// Tree-structured output.
-    Tree,
+    /// Tree-structured output with the selected display settings.
+    Tree(TreeConfig),
     /// Flat key-value output with a space between each path and value.
     Flat,
     /// Format-specific serialized output.
@@ -335,13 +347,24 @@ pub enum GetFormat {
 
 /// Formats the complete description or one validated branch.
 pub fn format_description<T: Describe>(path: &str) -> Result<String, SetupError> {
+    format_description_with_config::<T>(path, &DisplayConfig::default())
+}
+
+/// Formats a description with depth counted from the selected branch's children.
+pub fn format_description_with_config<T: Describe>(
+    path: &str,
+    config: &DisplayConfig,
+) -> Result<String, SetupError> {
     let desc = T::describe();
     if path.is_empty() {
-        return Ok(desc.display().to_string());
+        return Ok(desc.display_with(config));
     }
     desc.validate_path(path).map_err(|source| SetupError::DescPath { source })?;
     let entry = desc.entry_at_path(path).expect("validated description path must exist");
-    Ok(entry.display().to_string())
+    let mut config = config.clone();
+    // The selected entry's heading is outside the requested child levels.
+    config.max_depth = config.max_depth.map(|depth| depth.saturating_add(1));
+    Ok(entry.display_with(&config))
 }
 
 /// Formats the input Node or a selected subtree.
@@ -372,7 +395,7 @@ where
     };
 
     match format {
-        GetFormat::Tree => Ok(target.to_tree_string()),
+        GetFormat::Tree(config) => Ok(target.to_tree_string_with_config(config)),
         GetFormat::Flat => Ok(target.to_flat_string()),
         GetFormat::Format(format_id) => {
             let registry = crate::node::default_format_writer_registry();

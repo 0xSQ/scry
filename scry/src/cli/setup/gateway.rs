@@ -8,8 +8,10 @@ use clap::parser::ValueSource;
 use clap::{Arg, ArgAction, ArgMatches, Command};
 
 use super::edits;
-use super::{Action, GetFormat, GetRequest, Invocation, SetupError};
+use super::{Action, DescRequest, GetFormat, GetRequest, Invocation, SetupError};
+use crate::desc::DisplayConfig;
 use crate::node::Format;
+use crate::writer::TreeConfig;
 
 // ---------------------------------------------------------------------------------------------- //
 
@@ -124,10 +126,27 @@ impl Gateway {
 
         let action = match matches.subcommand() {
             Some(("get", request)) => {
-                let format = match request.get_one::<String>("as").map(String::as_str) {
-                    None | Some("tree") => GetFormat::Tree,
-                    Some("flat") => GetFormat::Flat,
-                    Some(format) => GetFormat::Format(
+                let output_format =
+                    request.get_one::<String>("as").map(String::as_str).unwrap_or("tree");
+                if output_format != "tree"
+                    && ["depth", "indices", "no-color"]
+                        .into_iter()
+                        .any(|id| request.value_source(id) == Some(ValueSource::CommandLine))
+                {
+                    return Err(command.find_subcommand_mut("get").expect("get is registered").error(
+                        ErrorKind::ArgumentConflict,
+                        "'--depth', '--indices', and '--no-color' require tree output (the default or '--as tree')",
+                    ).into());
+                }
+                let format = match output_format {
+                    "tree" => GetFormat::Tree(TreeConfig {
+                        max_depth: request.get_one::<usize>("depth").copied(),
+                        show_leaf_indices: request.get_flag("indices"),
+                        color: !request.get_flag("no-color"),
+                        ..TreeConfig::default()
+                    }),
+                    "flat" => GetFormat::Flat,
+                    format => GetFormat::Format(
                         format.parse::<Format>().expect("registered formats are valid identifiers"),
                     ),
                 };
@@ -143,7 +162,13 @@ impl Gateway {
                         "'desc' cannot be combined with '--set' or '--remove' because descriptions do not load or edit configuration",
                     ).into());
                 }
-                Action::Describe(request.get_one::<String>("key").cloned().unwrap_or_default())
+                Action::Describe(DescRequest {
+                    path: request.get_one::<String>("key").cloned().unwrap_or_default(),
+                    config: DisplayConfig {
+                        max_depth: request.get_one::<usize>("depth").copied(),
+                        ..DisplayConfig::default()
+                    },
+                })
             }
             None => Action::Execute,
             Some(_) => unreachable!("only the fixed toolbox actions are installed"),
@@ -216,10 +241,25 @@ impl Gateway {
                     .value_parser(PossibleValuesParser::new(formats))
                     .help("Selects the output presentation or serialization format."),
             )
+            .arg(depth_arg())
+            .arg(
+                Arg::new("indices")
+                    .long("indices")
+                    .action(ArgAction::SetTrue)
+                    .help("Shows array leaf indices in tree output."),
+            )
+            .arg(
+                Arg::new("no-color")
+                    .long("no-color")
+                    .action(ArgAction::SetTrue)
+                    .help("Disables color and styling in tree output."),
+            )
             .after_help(
                 "The output is the loaded Node after application arguments and toolbox edits.\n\
                  Omitted defaults are not filled in. Missing input can be inspected without typed decoding.\n\
-                 Flat output lists full key paths and values separated by a space.",
+                 Flat output lists full key paths and values separated by a space.\n\
+                 Depth, indices, and no-color options apply only to tree output.\n\
+                 Depth counts child levels from the selected branch. Collapsed branches end with '…'.",
             );
         let desc = Command::new("desc")
             .about("Describes the configuration type without loading or executing.")
@@ -228,7 +268,12 @@ impl Gateway {
                     .value_name("KEY")
                     .help("Selects a description KeyPath (omitted = full description)."),
             )
-            .after_help("Descriptions cannot be combined with --set or --remove.");
+            .arg(depth_arg())
+            .after_help(
+                "Descriptions cannot be combined with --set or --remove.\n\
+                 Depth counts child levels from the selected branch, excluding its heading.\n\
+                 Collapsed branches end with '…'.",
+            );
         command.subcommand(get).subcommand(desc)
     }
 }
@@ -240,6 +285,22 @@ impl Default for Gateway {
             short: Some('S'),
         }
     }
+}
+
+fn depth_arg() -> Arg {
+    Arg::new("depth")
+        .short('d')
+        .long("depth")
+        .value_name("DEPTH")
+        .allow_negative_numbers(true)
+        .value_parser(|value: &str| {
+            value
+                .parse::<usize>()
+                .ok()
+                .filter(|&depth| depth > 0)
+                .ok_or("expected a positive integer (1 or greater)")
+        })
+        .help("Limits tree child levels from the selected branch (1 = direct children).")
 }
 
 fn has_edits(matches: &ArgMatches) -> bool {
@@ -306,7 +367,7 @@ mod tests {
             panic!("expected get outcome");
         };
         assert_eq!(request.path, "--flat");
-        assert!(matches!(request.format, GetFormat::Tree));
+        assert!(matches!(request.format, GetFormat::Tree(_)));
         assert_eq!(error(&["demo", "--scry", "--", "get"]).kind(), ErrorKind::UnknownArgument);
 
         let gateway = Gateway::new();
@@ -436,7 +497,7 @@ mod tests {
             panic!("expected get outcome");
         };
         assert_eq!(request.path, "desc");
-        assert!(matches!(request.format, GetFormat::Tree));
+        assert!(matches!(request.format, GetFormat::Tree(_)));
     }
 
     #[test]
@@ -465,7 +526,7 @@ mod tests {
             let Action::Get(tree) = plan(&arguments).action else {
                 panic!("expected get outcome");
             };
-            assert!(matches!(tree.format, GetFormat::Tree));
+            assert!(matches!(tree.format, GetFormat::Tree(_)));
         }
         let Action::Get(rhai) = plan(&["demo", "--scry", "get", "--as", "rhai"]).action else {
             panic!("expected get outcome");
@@ -489,13 +550,91 @@ mod tests {
 
     #[test]
     fn descriptions_reject_edits_without_loading() {
-        let Action::Describe(path) = plan(&["demo", "--scry", "desc", "field"]).action else {
+        let Action::Describe(request) = plan(&["demo", "--scry", "desc", "field"]).action else {
             panic!("expected description outcome");
         };
-        assert_eq!(path, "field");
+        assert_eq!(request.path, "field");
         let error = error(&["demo", "--scry", "--set", "field", "value", "desc"]);
         assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
         assert!(error.to_string().contains("demo operation --scry"));
+    }
+
+    #[test]
+    fn tree_display_options_are_local_to_the_toolbox() {
+        for entrance in ["--depth", "-d"] {
+            for action in ["get", "desc"] {
+                let gateway = Gateway::new();
+                let mut command = gateway.augment(
+                    Command::new("demo").arg(
+                        Arg::new("application_depth")
+                            .long("depth")
+                            .short('d')
+                            .value_parser(clap::value_parser!(usize)),
+                    ),
+                );
+                let matches = command
+                    .try_get_matches_from_mut(["demo", entrance, "10", "-S", action, entrance, "2"])
+                    .unwrap();
+                assert_eq!(matches.get_one::<usize>("application_depth"), Some(&10));
+                let invocation = gateway.parse(&matches, &command).unwrap();
+                let depth = match invocation.action {
+                    Action::Get(GetRequest {
+                        format: GetFormat::Tree(config),
+                        ..
+                    }) => config.max_depth,
+                    Action::Describe(request) => request.config.max_depth,
+                    _ => panic!("expected inspection"),
+                };
+                assert_eq!(depth, Some(2));
+            }
+        }
+        let Action::Get(GetRequest {
+            format: GetFormat::Tree(config),
+            ..
+        }) = plan(&[
+            "demo",
+            "-S",
+            "get",
+            "--as",
+            "tree",
+            "-d",
+            "1",
+            "--indices",
+            "--no-color",
+        ])
+        .action
+        else {
+            panic!("expected tree inspection");
+        };
+        assert_eq!(config.max_depth, Some(1));
+        assert!(config.show_leaf_indices);
+        assert!(!config.color);
+    }
+
+    #[test]
+    fn non_tree_formats_reject_tree_display_options() {
+        for format in ["flat", "rhai"] {
+            for option in [vec!["-d", "1"], vec!["--indices"], vec!["--no-color"]] {
+                let mut arguments = vec!["demo", "-S", "get", "--as", format];
+                arguments.extend(option);
+                let error = error(&arguments);
+                assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
+                assert!(error.to_string().contains("demo operation --scry get"));
+            }
+        }
+    }
+
+    #[test]
+    fn depth_requires_a_positive_integer() {
+        for action in ["get", "desc"] {
+            for value in ["0", "-1", "not-a-number", "18446744073709551616"] {
+                let error = error(&["demo", "-S", action, "-d", value]);
+                let output = error.to_string();
+                assert!(output.contains("expected a positive integer (1 or greater)"), "{output}");
+                assert!(!output.contains("1..18446744073709551615"), "{output}");
+            }
+            assert!(parse(&Gateway::new(), &["demo", "-S", action, "-d"]).is_err());
+        }
     }
 
     #[test]

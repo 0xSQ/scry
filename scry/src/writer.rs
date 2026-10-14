@@ -421,6 +421,91 @@ mod tests {
     }
 
     #[test]
+    fn tree_depth_marks_only_containers_with_omitted_children() {
+        let node = node_from_json(
+            r#"{
+                "database": {
+                    "credentials": { "username": "admin" },
+                    "replicas": ["r1", "r2"]
+                },
+                "matrix": [[1, 2], []],
+                "empty_map": {},
+                "empty_vec": [],
+                "enabled": true
+            }"#,
+        );
+        let config = TreeConfig {
+            max_depth: Some(1),
+            ..TreeConfig::no_color()
+        };
+        assert_eq!(
+            node.to_tree_string_with_config(config),
+            indoc! {"
+                ▾ database …
+                ▪ matrix …
+                ▾ empty_map
+                ▪ empty_vec
+                ▸ enabled true"}
+        );
+
+        let config = TreeConfig {
+            max_depth: Some(2),
+            ..TreeConfig::no_color()
+        };
+        assert_eq!(
+            node.to_tree_string_with_config(config),
+            indoc! {"
+                ▾ database
+                ┊  ▾ credentials …
+                ┊  ▪ replicas …
+                ▪ matrix
+                ┊  ▪ [0] …
+                ┊  ▪ [1]
+                ▾ empty_map
+                ▪ empty_vec
+                ▸ enabled true"}
+        );
+    }
+
+    #[test]
+    fn tree_depth_is_relative_to_the_displayed_root() {
+        let node = node_from_json(
+            r#"{ "outer": { "inner": { "value": 42 }, "names": ["alpha", "beta"] } }"#,
+        );
+        let selected = node.req_node("outer").expect("test branch exists");
+        let config = TreeConfig {
+            max_depth: Some(1),
+            ..TreeConfig::no_color()
+        };
+        assert_eq!(
+            selected.to_tree_string_with_config(config),
+            indoc! {"
+                ▾ inner …
+                ▪ names …"}
+        );
+    }
+
+    #[test]
+    fn tree_depth_preserves_root_values_and_array_indices() {
+        let node = node_from_json(r#"["alpha", { "host": "localhost" }, []]"#);
+        let config = TreeConfig {
+            max_depth: Some(1),
+            show_leaf_indices: true,
+            ..TreeConfig::no_color()
+        };
+        assert_eq!(
+            node.to_tree_string_with_config(config.clone()),
+            indoc! {r#"
+                ▸ [0] "alpha"
+                ▾ [1] …
+                ▪ [2]"#}
+        );
+        assert_eq!(node_from_json("42").to_tree_string_with_config(config.clone()), "42");
+        assert_eq!(node_from_json("{}").to_tree_string_with_config(config.clone()), "");
+        assert_eq!(node_from_json("[]").to_tree_string_with_config(config), "");
+    }
+
+    #[test]
     fn tree_comprehensive_example() {
         // Based on the design doc reference example (subset)
         let node = node_from_json(

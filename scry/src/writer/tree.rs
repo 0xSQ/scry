@@ -113,6 +113,8 @@ impl TreeWriter {
     fn write_entry(&mut self, node: &Node, entry_kind: EntryKind, is_last: bool) {
         // Build the prefix from ancestor last-sibling state
         let prefix = self.build_prefix();
+        let within_depth =
+            self.config.max_depth.is_none_or(|max| self.is_last_at_depth.len() + 1 < max);
 
         match &node.kind {
             Kind::Leaf(leaf) => {
@@ -151,6 +153,12 @@ impl TreeWriter {
                         self.output.push_str(&self.dim(&format!("[{}]", idx)));
                     }
                 }
+                if !within_depth {
+                    if !map.is_empty() {
+                        self.output.push_str(&self.dim(" …"));
+                    }
+                    return;
+                }
                 // Recurse into children
                 self.is_last_at_depth.push(is_last);
                 for (i, (child_key, child)) in map.iter().enumerate() {
@@ -173,6 +181,12 @@ impl TreeWriter {
                     EntryKind::VecElement(idx) => {
                         self.output.push_str(&self.dim(&format!("[{}]", idx)));
                     }
+                }
+                if !within_depth {
+                    if !vec.is_empty() {
+                        self.output.push_str(&self.dim(" …"));
+                    }
+                    return;
                 }
                 // Recurse into children
                 self.is_last_at_depth.push(is_last);
@@ -232,6 +246,9 @@ pub struct TreeConfig {
     /// Whether to show array indices for leaf values (default: false).
     /// Indices are always shown for container elements regardless of this setting.
     pub show_leaf_indices: bool,
+    /// Maximum child levels to display from the root. None means unlimited.
+    /// A limit of one shows immediate entries and marks collapsed containers with an ellipsis.
+    pub max_depth: Option<usize>,
     /// Whether to colorize output (default: true).
     pub color: bool,
     /// Color for string values (default: Green).
@@ -253,6 +270,7 @@ impl Default for TreeConfig {
             tree_line: "┊",
             indent_width: 2,
             show_leaf_indices: false,
+            max_depth: None,
             color: true,
             string_color: Color::BrightGreen,
             number_color: Color::BrightYellow,

@@ -334,9 +334,7 @@ fn test_display_with_max_depth() {
     let config = DisplayConfig::default().with_max_depth(1);
     let output = desc.display_with(&config);
 
-    assert!(output.contains("level1"), "Should contain level1");
-    assert!(!output.contains("level2"), "Should not contain level2 (beyond depth 1)");
-    assert!(!output.contains("level3"), "Should not contain level3 (beyond depth 1)");
+    assert_eq!(output, "◆ level1 …\n");
 }
 
 #[test]
@@ -354,9 +352,84 @@ fn test_display_with_max_depth_2() {
     let config = DisplayConfig::default().with_max_depth(2);
     let output = desc.display_with(&config);
 
-    assert!(output.contains("level1"), "Should contain level1");
-    assert!(output.contains("level2"), "Should contain level2");
-    assert!(!output.contains("level3"), "Should not contain level3 (beyond depth 2)");
+    assert_eq!(output, "◆ level1\n   ◆ level2 …\n");
+}
+
+#[test]
+fn depth_marks_structured_lists_and_leaves_empty_and_plain_shapes_intact() {
+    let desc = Desc::structure(vec![
+        FieldDesc::new(
+            "items",
+            Desc::list(Desc::structure(vec![FieldDesc::new("id", Desc::plain("u32"))])),
+        ),
+        FieldDesc::new("tags", Desc::list(Desc::plain("string"))),
+        FieldDesc::new("empty_struct", Desc::structure(vec![])),
+        FieldDesc::new("empty_enum", Desc::enumeration(vec![])),
+        FieldDesc::new("empty_tuple", Desc::tuple(vec![])),
+        FieldDesc::new("empty_items", Desc::list(Desc::structure(vec![]))),
+        FieldDesc::new("enabled", Desc::plain("bool")),
+    ]);
+    let config = DisplayConfig::default().with_max_depth(1);
+    assert_eq!(
+        desc.display_with(&config),
+        indoc! {"
+            ◆ items: list …
+            ◆ tags: list[string]
+            ◆ empty_struct
+            ◆ empty_enum
+            ◆ empty_tuple: tuple
+            ◆ empty_items: list
+            ◆ enabled: bool
+        "}
+    );
+    assert_eq!(desc.display_with(&DisplayConfig::default().with_max_depth(2)), desc.display());
+    assert_eq!(Desc::plain("string").display_with(&config), "string\n");
+}
+
+#[test]
+fn depth_marks_tuple_elements_and_enum_payloads_at_their_displayed_levels() {
+    let desc = Desc::structure(vec![
+        FieldDesc::new(
+            "pair",
+            Desc::tuple(vec![
+                Desc::plain("u32"),
+                Desc::structure(vec![FieldDesc::new("count", Desc::plain("u32"))]),
+                Desc::structure(vec![]),
+            ]),
+        ),
+        FieldDesc::new(
+            "mode",
+            Desc::enumeration(vec![
+                VariantDesc::unit("auto", true),
+                VariantDesc::payload("file", false, Desc::plain("path")),
+                VariantDesc::payload(
+                    "custom",
+                    false,
+                    Desc::structure(vec![FieldDesc::new("count", Desc::plain("u32"))]),
+                ),
+                VariantDesc::payload("empty", false, Desc::structure(vec![])),
+            ]),
+        ),
+    ]);
+    assert_eq!(
+        desc.display_with(&DisplayConfig::default().with_max_depth(1)),
+        "◆ pair: tuple …\n◆ mode …\n"
+    );
+    assert_eq!(
+        desc.display_with(&DisplayConfig::default().with_max_depth(2)),
+        indoc! {"
+            ◆ pair: tuple
+            ┊  ◆ 0: u32
+            ┊  ◆ 1 …
+            ┊  ◆ 2
+            ◆ mode
+               » auto
+               › file: path
+               › custom …
+               › empty
+        "}
+    );
+    assert_eq!(desc.display_with(&DisplayConfig::default().with_max_depth(3)), desc.display());
 }
 
 #[test]

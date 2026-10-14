@@ -170,7 +170,7 @@ Configuration tools:
   -S, --scry [<TOOLS>...]  Inspects and adjusts this command's configuration.
 ```
 
-Put application arguments before `-S`. Everything after it belongs to the toolbox, which has its own help:
+Put application arguments before `-S`. Everything after it belongs to the toolbox, which has its own help. Toolbox flags such as `-d` are independent from application flags before `-S`:
 
 ```
 $ deploy -S

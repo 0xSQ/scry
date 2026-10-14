@@ -327,7 +327,8 @@ pub struct DisplayConfig {
     pub max_comment_column: usize,
     /// Symbols used in tree rendering.
     pub symbols: DisplaySymbols,
-    /// Maximum depth to render. None means unlimited.
+    /// Maximum entry levels to render. None means unlimited.
+    /// A limit of one shows immediate entries and marks omitted children with an ellipsis.
     pub max_depth: Option<usize>,
 }
 
@@ -521,6 +522,10 @@ fn collect_tuple_elem_line(
         label.push_str(": ");
         label.push_str(&hint);
     }
+    let within_depth = config.max_depth.is_none_or(|max| ancestors.len() + 1 < max);
+    if !item.is_leaf() && !within_depth {
+        label.push_str(" …");
+    }
 
     // Build the full left side
     let left_side = format!("{}{} {}", prefix, branch, label);
@@ -530,10 +535,7 @@ fn collect_tuple_elem_line(
         doc: item.doc.clone(),
     });
 
-    // Collect children recursively if the item has expandable children
-    // and we haven't reached the depth limit
-    // max_depth=1 means show 1 level (depth 0 only), max_depth=2 means show 2 levels, etc.
-    let within_depth = config.max_depth.is_none_or(|max| ancestors.len() + 1 < max);
+    // Collect expandable children while another entry level fits the depth limit.
     if !item.is_leaf() && within_depth {
         let mut new_ancestors = ancestors.to_vec();
         new_ancestors.push(!is_last);
@@ -561,7 +563,11 @@ impl FieldDesc {
         };
 
         // Build the label: "name: type (default)"
-        let label = self.build_label(config);
+        let mut label = self.build_label(config);
+        let within_depth = config.max_depth.is_none_or(|max| ancestors.len() + 1 < max);
+        if !self.value.is_leaf() && !within_depth {
+            label.push_str(" …");
+        }
 
         // Build the full left side
         let left_side = format!("{}{} {}", prefix, branch, label);
@@ -572,10 +578,7 @@ impl FieldDesc {
             doc: self.doc.clone(),
         });
 
-        // Collect children recursively if the value has expandable children
-        // and we haven't reached the depth limit
-        // max_depth=1 means show 1 level (depth 0 only), max_depth=2 means show 2 levels, etc.
-        let within_depth = config.max_depth.is_none_or(|max| ancestors.len() + 1 < max);
+        // Collect expandable children while another entry level fits the depth limit.
         if !self.value.is_leaf() && within_depth {
             let mut new_ancestors = ancestors.to_vec();
             new_ancestors.push(!is_last);
@@ -625,7 +628,13 @@ impl VariantDesc {
         };
 
         // Build the label
-        let label = self.build_label();
+        let mut label = self.build_label();
+        let within_depth = config.max_depth.is_none_or(|max| ancestors.len() + 1 < max);
+        if let VariantRepr::Payload { payload, .. } = &self.repr {
+            if !payload.is_leaf() && !within_depth {
+                label.push_str(" …");
+            }
+        }
 
         // Build the full left side
         let left_side = format!("{}{} {}", prefix, branch, label);
@@ -636,10 +645,7 @@ impl VariantDesc {
             doc: self.doc.clone(),
         });
 
-        // Collect payload children if this is a payload variant
-        // and we haven't reached the depth limit
-        // max_depth=1 means show 1 level (depth 0 only), max_depth=2 means show 2 levels, etc.
-        let within_depth = config.max_depth.is_none_or(|max| ancestors.len() + 1 < max);
+        // Collect expandable payload children while another entry level fits the depth limit.
         if let VariantRepr::Payload { payload, .. } = &self.repr {
             if !payload.is_leaf() && within_depth {
                 let mut new_ancestors = ancestors.to_vec();
