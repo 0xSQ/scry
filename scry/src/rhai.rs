@@ -18,7 +18,7 @@ use rhai::{Dynamic, Engine, EvalAltResult, Module, ModuleResolver, ParseError, P
 /// # Example
 ///
 /// ```ignore
-/// use scry::RhaiEnv;
+/// use scry::rhai::RhaiEnv;
 /// use rhai::Engine;
 ///
 /// let mut env = RhaiEnv::new();
@@ -104,26 +104,7 @@ impl RhaiEnv {
 
     /// Evaluates a Rhai script file and returns the final expression.
     pub fn eval(&self, engine: &Engine, path: &Path) -> Result<Dynamic, RhaiError> {
-        let content = std::fs::read_to_string(path).map_err(|e| RhaiError::ReadFile {
-            path: path.to_path_buf(),
-            source: e,
-        })?;
-
-        let mut ast = engine.compile(&content).map_err(|e| RhaiError::Compile {
-            path: path.to_path_buf(),
-            source: Box::new(ScriptError::from_parse(path, &content, &e)),
-        })?;
-        ast.set_source(path.to_string_lossy().into_owned());
-
-        let mut scope = self.scope();
-        let result = engine.eval_ast_with_scope::<Dynamic>(&mut scope, &ast).map_err(|e| {
-            RhaiError::EvalScript {
-                path: path.to_path_buf(),
-                source: Box::new(ScriptError::from_eval(path, &e)),
-            }
-        })?;
-
-        Ok(result)
+        self.eval_with_scope(engine, path).map(|(value, _)| value)
     }
 
     /// Evaluates a Rhai script and extracts a named variable from the scope.
@@ -133,6 +114,29 @@ impl RhaiEnv {
         path: &Path,
         var_name: &str,
     ) -> Result<Dynamic, RhaiError> {
+        let (_, scope) = self.eval_with_scope(engine, path)?;
+        scope.get_value::<Dynamic>(var_name).ok_or_else(|| RhaiError::VarNotFound {
+            path: path.to_path_buf(),
+            var: var_name.to_string(),
+        })
+    }
+
+    /// Evaluates once and prefers a named binding over the final expression.
+    pub(crate) fn eval_var_or_value(
+        &self,
+        engine: &Engine,
+        path: &Path,
+        var_name: &str,
+    ) -> Result<Dynamic, RhaiError> {
+        let (value, scope) = self.eval_with_scope(engine, path)?;
+        Ok(scope.get_value::<Dynamic>(var_name).unwrap_or(value))
+    }
+
+    fn eval_with_scope(
+        &self,
+        engine: &Engine,
+        path: &Path,
+    ) -> Result<(Dynamic, Scope<'static>), RhaiError> {
         let content = std::fs::read_to_string(path).map_err(|e| RhaiError::ReadFile {
             path: path.to_path_buf(),
             source: e,
@@ -145,20 +149,14 @@ impl RhaiEnv {
         ast.set_source(path.to_string_lossy().into_owned());
 
         let mut scope = self.scope();
-        let _ = engine.eval_ast_with_scope::<Dynamic>(&mut scope, &ast).map_err(|e| {
+        let value = engine.eval_ast_with_scope::<Dynamic>(&mut scope, &ast).map_err(|e| {
             RhaiError::EvalScript {
                 path: path.to_path_buf(),
                 source: Box::new(ScriptError::from_eval(path, &e)),
             }
         })?;
 
-        match scope.get_value::<Dynamic>(var_name) {
-            Some(value) => Ok(value),
-            None => Err(RhaiError::VarNotFound {
-                path: path.to_path_buf(),
-                var: var_name.to_string(),
-            }),
-        }
+        Ok((value, scope))
     }
 }
 
@@ -432,6 +430,33 @@ fn innermost_location(script_path: &Path, err: &EvalAltResult) -> (PathBuf, Posi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn binding_or_value_selection_evaluates_the_script_once() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("env.rhai");
+        let evaluations = Rc::new(std::cell::Cell::new(0_i64));
+        let counter = evaluations.clone();
+        let mut engine = Engine::new();
+        engine.register_fn("next_value", move || {
+            counter.set(counter.get() + 1);
+            counter.get()
+        });
+
+        for script in [
+            "let env = #{ value: next_value() }; #{ other: 0 }",
+            "#{ value: next_value() }",
+        ] {
+            std::fs::write(&path, script).unwrap();
+            evaluations.set(0);
+            let value = RhaiEnv::new()
+                .eval_var_or_value(&engine, &path, "env")
+                .unwrap()
+                .cast::<rhai::Map>();
+            assert_eq!(value["value"].clone().cast::<i64>(), 1);
+            assert_eq!(evaluations.get(), 1);
+        }
+    }
 
     const SOURCE: &str = "let map = #{\n    host: \"db.example.com\"\n    table: \"logs\",\n};";
 

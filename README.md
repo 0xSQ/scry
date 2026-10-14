@@ -140,6 +140,10 @@ fn main() -> Result<(), SetupError> {
 
 `Setup::standard` accepts a config file through `-C, --config-file` and uses `Node::parse_file` to load it. `Setup::new` starts with an empty map instead. Both constructors include the `--scry, -S` configuration toolbox. The builder can customize the input source, loader, exposed arguments, and toolbox entrance.
 
+Applications can also opt into default config discovery. The
+[config file guide](docs/config-files.md) shows how to keep shared defaults in one directory,
+select local exceptions, and customize shared Rhai settings explicitly.
+
 The `into_bundle` method combines your setup with a target *payload* function and returns a `Bundle` - an object that pairs the generated clap command with its dispatch logic. Calling `run()` parses arguments and dispatches to the target function. Running it shows:
 
 ```
@@ -415,6 +419,8 @@ defaults::base + #{
 
 ## Further
 
+- **[Config File Locations](docs/config-files.md)** - Wires `Setup` discovery,
+  with a shared checkout, local exceptions, and Rhai wrappers.
 - **[Core Concepts](docs/concepts.md)** - Explains the basics: how the `Node` tree works, how to implement `FromNode` manually, etc.
 - [Function adapters](docs/concepts.md#function-adapters) let fields use custom conversion functions
   for external types. [Shared shape helpers](scry/src/convert.rs) reuse those conversions inside

@@ -11,6 +11,7 @@ mod error;
 mod expose_map;
 mod gateway;
 mod redirect;
+mod rhai_env;
 
 use std::collections::HashSet;
 
@@ -32,6 +33,7 @@ pub use expose_map::{
 };
 pub use gateway::Gateway;
 pub use redirect::{require_command_config, resolve_command_config, RedirectError, RedirectSpec};
+pub use rhai_env::load_app_rhai_env;
 
 // ---------------------------------------------------------------------------------------------- //
 
