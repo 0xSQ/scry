@@ -179,15 +179,16 @@ Inspects and adjusts this command's configuration.
 Usage: deploy --scry [OPTIONS] [COMMAND]
 
 Commands:
-  get   Displays the raw edited configuration without decoding or executing.
-  desc  Describes the configuration type without loading or executing.
+  desc   Describes the configuration type without loading or executing.
+  get    Displays the raw edited configuration without decoding or executing.
+  check  Decodes the edited configuration without running the command payload.
 
 Edits:
-      --set <KEY> <VALUE>  Sets a config value to a literal string before execution or get (repeatable).
-      --remove <KEY>       Removes a config value before execution or get (repeatable).
+      --set <KEY> <VALUE>  Sets a config value to a literal string before execution, get, or check (repeatable).
+      --remove <KEY>       Removes a config value before execution, get, or check (repeatable).
 ```
 
-Use `-S get --help` or `-S desc --help` for action-specific help. Toolbox help and descriptions do not resolve or load the input source. `Gateway` lets an application customize the entrance's long name and short alias. The operation names inside the toolbox are fixed.
+Use `-S desc --help`, `-S get --help`, or `-S check --help` for action-specific help. Toolbox help and descriptions do not resolve or load the input source. `Gateway` lets an application customize the entrance's long name and short alias. The operation names inside the toolbox are fixed.
 
 #### `desc`
 
@@ -265,6 +266,10 @@ $ deploy -C deploy.json -S get notify.slack_url
 "https://hooks.slack.com/myhook"
 ```
 
+#### `check`
+
+`-S check` checks whether the edited configuration decodes successfully, without running the command payload.
+
 #### Editing Input
 
 Toolbox `--set` edits a config value before execution. Values are literal strings, so `true`, `5`, and `null` are not parsed as config expressions. Typed conversion interprets those strings according to the target field:
@@ -278,7 +283,7 @@ Retries: 5
 Sending notifications to: https://hooks.slack.com/myhook
 ```
 
-Put edits before `get` to inspect their result. An edit-only suffix executes the application with the edited input:
+Put edits before `get` to inspect their result or before `check` to test decoding. An edit-only suffix executes the application with the edited input:
 
 ```
 $ deploy -C deploy.json -S --set retries 5 get retries
@@ -419,9 +424,9 @@ defaults::base + #{
 
 ## Further
 
+- **[Core Concepts](docs/concepts.md)** - Explains the basics: how the `Node` tree works, how to implement `FromNode` manually, etc.
 - **[Config File Locations](docs/config-files.md)** - Wires `Setup` discovery,
   with a shared checkout, local exceptions, and Rhai wrappers.
-- **[Core Concepts](docs/concepts.md)** - Explains the basics: how the `Node` tree works, how to implement `FromNode` manually, etc.
 - [Function adapters](docs/concepts.md#function-adapters) let fields use custom conversion functions
   for external types. [Shared shape helpers](scry/src/convert.rs) reuse those conversions inside
   containers. The [adapter example](scry/examples/function_adapters.rs) combines them with numeric

@@ -2,7 +2,7 @@
 //!
 //! These tests document and lock down the current behavior of the Setup. They cover:
 //! - Config path resolution (positional, flag, both, auto-discover)
-//! - Gateway inspection (`get`, `desc`, and output formats)
+//! - Gateway inspection (`desc`, `get`, and output formats)
 //! - Gateway edits (`--set`, `--remove`)
 //! - Expose args (flags and options)
 //! - Collision detection

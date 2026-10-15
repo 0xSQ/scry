@@ -1,7 +1,7 @@
 //! Integration tests for the flag-only Setup toolbox.
 #![cfg(feature = "format-json")]
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::convert::Infallible;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -53,6 +53,49 @@ struct ApplicationNames {
     set: String,
 }
 
+#[derive(Debug, Config)]
+struct CheckInput {
+    #[scry(from_node_with(read_checked_value))]
+    value: String,
+    #[scry(default = 7)]
+    retries: u16,
+}
+
+#[derive(Debug)]
+struct CountedCheckInput;
+
+impl FromNode for CountedCheckInput {
+    fn from_node(node: &Node) -> Result<Self, NodeError> {
+        CHECK_DECODES.set(CHECK_DECODES.get() + 1);
+        let input = CheckInput::from_node(node)?;
+        CHECK_INPUTS.with_borrow_mut(|inputs| inputs.push((input.value, input.retries)));
+        Ok(Self)
+    }
+}
+
+impl Describe for CountedCheckInput {
+    fn describe() -> Desc {
+        CheckInput::describe()
+    }
+}
+
+fn read_checked_value(node: &Node) -> Result<String, NodeError> {
+    CHECK_HOOKS.set(CHECK_HOOKS.get() + 1);
+    String::from_node(node).map(|value| value.trim().to_owned())
+}
+
+thread_local! {
+    static CHECK_DECODES: Cell<usize> = const { Cell::new(0) };
+    static CHECK_HOOKS: Cell<usize> = const { Cell::new(0) };
+    static CHECK_INPUTS: RefCell<Vec<(String, u16)>> = const { RefCell::new(Vec::new()) };
+}
+
+#[derive(Debug, Config)]
+#[scry(allow_unknown_keys)]
+struct PermissiveInput {
+    value: String,
+}
+
 // ---------------------------------------------------------------------------------------------- //
 
 #[test]
@@ -71,6 +114,123 @@ fn ordinary_execution_still_loads_and_calls_the_payload_once() {
     assert_eq!(result.as_deref(), Some("loaded"));
     assert_eq!(loads.get(), 1);
     assert_eq!(calls.get(), 1);
+}
+
+#[test]
+fn check_decodes_once_after_parent_arguments_and_ordered_suffix_edits() {
+    for (gateway, entrance) in [
+        (Gateway::new(), "--scry"),
+        (Gateway::new(), "-S"),
+        (Gateway::new().long("inspect").short('I'), "--inspect"),
+        (Gateway::new().long("inspect").short('I'), "-I"),
+    ] {
+        CHECK_DECODES.set(0);
+        CHECK_HOOKS.set(0);
+        CHECK_INPUTS.with_borrow_mut(Vec::clear);
+        let loads = Rc::new(Cell::new(0));
+        let calls = Rc::new(Cell::new(0));
+        let payload_calls = calls.clone();
+        let result = loaded_setup(r#"{ "value": "loaded", "retries": 2 }"#, loads.clone())
+            .gateway(gateway)
+            .expose(|expose| {
+                expose.option("value");
+                expose.option("retries");
+            })
+            .into_bundle(move |_: CountedCheckInput| payload_calls.set(payload_calls.get() + 1))
+            .run_from([
+                "test",
+                "-C",
+                "input.json",
+                "--value",
+                "parent",
+                "--retries",
+                "4",
+                entrance,
+                "--set",
+                "value",
+                "intermediate",
+                "--remove",
+                "retries",
+                "--set",
+                "value",
+                " final ",
+                "check",
+            ])
+            .unwrap();
+
+        assert!(result.is_none(), "{entrance}");
+        assert_eq!(loads.get(), 1, "{entrance}");
+        assert_eq!(CHECK_DECODES.get(), 1, "{entrance}");
+        assert_eq!(CHECK_HOOKS.get(), 1, "{entrance}");
+        CHECK_INPUTS.with_borrow(|inputs| assert_eq!(inputs, &[("final".to_owned(), 7)]));
+        assert_eq!(calls.get(), 0, "{entrance}");
+    }
+}
+
+#[test]
+fn check_and_execution_report_the_same_decode_failures_without_calling_payload() {
+    for (json, location) in [
+        ("{}", "value"),
+        (r#"{ "value": "ready", "retries": "bad" }"#, "retries"),
+        (r#"{ "value": "ready", "extra": {} }"#, "extra"),
+    ] {
+        let mut diagnostics = Vec::new();
+        for suffix in [vec![], vec!["-S", "check"]] {
+            CHECK_DECODES.set(0);
+            let loads = Rc::new(Cell::new(0));
+            let mut arguments = vec!["test", "-C", "input.json"];
+            arguments.extend(suffix);
+            let error = loaded_setup(json, loads.clone())
+                .into_bundle(|_: CountedCheckInput| panic!("invalid input must not execute"))
+                .run_from(arguments)
+                .unwrap_err();
+            let SetupError::EvaluateInputConfig { source } = error else {
+                panic!("unexpected error: {error}");
+            };
+
+            assert_eq!(loads.get(), 1);
+            assert_eq!(CHECK_DECODES.get(), 1);
+            assert!(source.to_string().contains(location), "{source}");
+            diagnostics.push(source.to_string());
+        }
+        assert_eq!(diagnostics[0], diagnostics[1], "{json}");
+    }
+}
+
+#[test]
+fn check_respects_a_decoders_permissive_unknown_key_policy() {
+    let result =
+        loaded_setup(r#"{ "value": "ready", "unused": 42, "empty": {} }"#, Rc::new(Cell::new(0)))
+            .into_bundle(|input: PermissiveInput| {
+                panic!("check must not call the payload with {}", input.value);
+            })
+            .run_from(["test", "-C", "input.json", "-S", "check"])
+            .unwrap();
+
+    assert!(result.is_none());
+}
+
+#[test]
+fn check_loading_failure_does_not_decode_or_call_the_payload() {
+    CHECK_DECODES.set(0);
+    let loads = Rc::new(Cell::new(0));
+    let loader_calls = loads.clone();
+    let error = Setup::new("test")
+        .config_source(|_| {
+            ConfigSource::new().option("config-file", Some('C'), "Loads input.").loader(
+                move |_: &Path| -> Result<Node, std::io::Error> {
+                    loader_calls.set(loader_calls.get() + 1);
+                    Err(std::io::Error::other("source could not be loaded"))
+                },
+            )
+        })
+        .into_bundle(|_: CountedCheckInput| panic!("loading failure must not execute"))
+        .run_from(["test", "-C", "input.json", "-S", "check"])
+        .unwrap_err();
+
+    assert!(matches!(error, SetupError::LoadConfigFile { .. }));
+    assert_eq!(loads.get(), 1);
+    assert_eq!(CHECK_DECODES.get(), 0);
 }
 
 #[test]
@@ -244,6 +404,7 @@ fn descriptions_and_all_help_routes_skip_source_preparation() {
         &["--help"],
         &["get", "--help"],
         &["desc", "--help"],
+        &["check", "--help"],
         &["desc"],
         &["desc", "value"],
         &["desc", "--depth", "1"],
@@ -278,6 +439,12 @@ fn invalid_toolbox_requests_fail_before_source_preparation() {
         &["get", "--as", "rhai", "--no-color"],
         &["get", "--depth", "0"],
         &["desc", "--depth", "invalid"],
+        &["check", "value"],
+        &["check", "--as", "json"],
+        &["check", "--depth", "1"],
+        &["check", "--indices"],
+        &["check", "--no-color"],
+        &["check", "--set", "value", "late"],
         &["get", "--set", "value", "late"],
         &["--scry", "get"],
         &["--config-file", "late.json", "get"],
@@ -607,7 +774,7 @@ fn required_raw_arguments_fail_construction() {
 
 #[test]
 fn optional_raw_arguments_are_available_to_the_payload_and_allow_inspection() {
-    for suffix in [vec![], vec!["--scry", "get"]] {
+    for suffix in [vec![], vec!["--scry", "get"], vec!["--scry", "check"]] {
         let mut arguments = vec!["test", "item", "--value", "chosen"];
         arguments.extend_from_slice(&suffix);
         let result = Setup::new("test")
@@ -641,6 +808,7 @@ fn positional_source_requirements_are_checked_only_for_input_actions() {
     for (suffix, needs_input) in [
         (vec!["--scry", "desc"], false),
         (vec!["--scry", "get"], true),
+        (vec!["--scry", "check"], true),
         (vec![], true),
     ] {
         let mut arguments = vec!["test"];

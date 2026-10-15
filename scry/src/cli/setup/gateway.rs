@@ -170,12 +170,13 @@ impl Gateway {
                     },
                 })
             }
+            Some(("check", _)) => Action::Check,
             None => Action::Execute,
             Some(_) => unreachable!("only the fixed toolbox actions are installed"),
         };
 
         let edits = match action {
-            Action::Execute | Action::Get(_) => edits::collect_gateway(&matches)?,
+            Action::Execute | Action::Get(_) | Action::Check => edits::collect_gateway(&matches)?,
             Action::Describe(_) | Action::Help(_) => Vec::new(),
         };
         Ok(Invocation { action, edits })
@@ -198,14 +199,15 @@ impl Gateway {
             .about("Inspects and adjusts this command's configuration.")
             .after_help(
                 [
-                    format!("Put all application arguments before --{}. Put toolbox edits before get.", self.long),
+                    format!("Put all application arguments before --{}. Put toolbox edits before get or check.", self.long),
                     "Edits without a terminal action execute the application command with the edited input.".to_owned(),
                     "Edits affect this invocation and do not write the config file.".to_owned(),
                     "Descriptions cannot be combined with edits.".to_owned(),
                     String::new(),
                     "Examples:".to_owned(),
-                    format!("  {example_prefix} get"),
                     format!("  {example_prefix} desc"),
+                    format!("  {example_prefix} get"),
+                    format!("  {example_prefix} check"),
                     format!("  {example_prefix} --set setting value"),
                     format!("  {example_prefix} --set setting value get --as rhai"),
                 ]
@@ -214,10 +216,10 @@ impl Gateway {
         let command = command
             .arg(Arg::new("set").long("set").num_args(2).value_names(["KEY", "VALUE"])
                 .action(ArgAction::Append).help_heading("Edits")
-                .help("Sets a config value to a literal string before execution or get (repeatable)."))
+                .help("Sets a config value to a literal string before execution, get, or check (repeatable)."))
             .arg(Arg::new("remove").long("remove").value_name("KEY")
                 .action(ArgAction::Append).help_heading("Edits")
-                .help("Removes a config value before execution or get (repeatable)."));
+                .help("Removes a config value before execution, get, or check (repeatable)."));
 
         let mut formats = vec!["tree".to_owned(), "flat".to_owned()];
         formats.extend(
@@ -274,7 +276,15 @@ impl Gateway {
                  Depth counts child levels from the selected branch, excluding its heading.\n\
                  Collapsed branches end with '…'.",
             );
-        command.subcommand(get).subcommand(desc)
+        let check = Command::new("check")
+            .about("Decodes the edited configuration without running the command payload.")
+            .after_help(
+                "Checks the whole configuration after application arguments and toolbox edits.\n\
+                 Defaults and custom decoding hooks run as they do during execution.\n\
+                 Loading and decoding perform their ordinary work. Checks inside the command payload are not run.\n\
+                 Success prints 'Configuration decoded successfully.'. Failures use ordinary decoding diagnostics.",
+            );
+        command.subcommand(desc).subcommand(get).subcommand(check)
     }
 }
 
@@ -411,6 +421,7 @@ mod tests {
             vec!["demo", "-S", "--help"],
             vec!["demo", "-S", "get", "--help"],
             vec!["demo", "-S", "desc", "--help"],
+            vec!["demo", "-S", "check", "--help"],
         ] {
             let command = Command::new("demo").styles(styles.clone());
             let Action::Help(help) =
@@ -502,13 +513,15 @@ mod tests {
 
     #[test]
     fn edit_only_suffix_selects_normal_execution() {
-        let plan = plan(&["demo", "--scry", "--set", "value", "desc"]);
-        assert!(matches!(plan.action, Action::Execute));
-        let [Edit::Set { path, value }] = plan.edits.as_slice() else {
-            panic!("execution must retain its edit");
-        };
-        assert_eq!(path, "value");
-        assert_eq!(value.as_type::<String>().unwrap(), "desc");
+        for literal in ["desc", "check"] {
+            let plan = plan(&["demo", "--scry", "--set", "value", literal]);
+            assert!(matches!(plan.action, Action::Execute));
+            let [Edit::Set { path, value }] = plan.edits.as_slice() else {
+                panic!("execution must retain its edit");
+            };
+            assert_eq!(path, "value");
+            assert_eq!(value.as_type::<String>().unwrap(), literal);
+        }
     }
 
     #[test]

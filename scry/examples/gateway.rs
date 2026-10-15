@@ -1,9 +1,10 @@
 //! Demonstrates the flag-only Setup toolbox.
 //!
 //! Examples:
-//! `cargo run --example gateway -- hello -S get`
-//! `cargo run --example gateway -- hello -S --set count 2`
 //! `cargo run --example gateway -- -S desc`
+//! `cargo run --example gateway -- hello -S get`
+//! `cargo run --example gateway -- hello -S --set count 2 check`
+//! `cargo run --example gateway -- hello -S --set count 2`
 
 use anyhow::Result;
 use scry::cli::setup::{ConfigSource, Setup};

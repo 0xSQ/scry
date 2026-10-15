@@ -48,7 +48,7 @@ pub use rhai_env::load_app_rhai_env;
 ///
 /// Each invocation first selects its action. Help and descriptions finish without loading
 /// input. Other actions load the input and apply command-line edits, then either inspect the
-/// raw Node or decode it for the payload function.
+/// raw Node or decode it for checking or the payload function.
 ///
 /// [`Setup::new`] starts with an empty Node. [`Setup::standard`] accepts a config file through
 /// `-C` / `--config-file`. Both include the default gateway. Builder methods customize either
@@ -116,8 +116,8 @@ impl Setup {
     /// Configures the gateway flag names.
     ///
     /// The default flags are `--scry` and `-S`. Application arguments come before the flag.
-    /// The suffix accepts `--set`, `--remove`, `get`, and `desc`. Edits come before `get`,
-    /// and an edit-only suffix runs the payload with the edited input.
+    /// The suffix accepts `--set`, `--remove`, `desc`, `get`, and `check`. Edits come before
+    /// `get` or `check`, and an edit-only suffix runs the payload with the edited input.
     ///
     /// [`Gateway`] configures the long flag name and optional short alias. The operation names
     /// within the suffix are fixed.
@@ -252,7 +252,7 @@ impl Setup {
                 );
                 return Ok(None);
             }
-            Action::Execute | Action::Get(_) => {}
+            Action::Execute | Action::Get(_) | Action::Check => {}
         }
 
         let mut node = self.load_node(matches)?;
@@ -263,9 +263,15 @@ impl Setup {
             return Ok(None);
         }
 
-        T::from_node(&node).map(Some).map_err(|error| SetupError::EvaluateInputConfig {
+        let input = T::from_node(&node).map_err(|error| SetupError::EvaluateInputConfig {
             source: Box::new(error),
-        })
+        })?;
+        if matches!(invocation.action, Action::Check) {
+            println!("Configuration decoded successfully.");
+            Ok(None)
+        } else {
+            Ok(Some(input))
+        }
     }
 
     fn load_node(&self, matches: &ArgMatches) -> Result<Node, SetupError> {
@@ -314,6 +320,7 @@ enum Action {
     Execute,
     Describe(DescRequest),
     Get(GetRequest),
+    Check,
     Help(clap::Error),
 }
 
