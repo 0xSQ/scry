@@ -16,10 +16,12 @@ mod rhai_env;
 use std::collections::HashSet;
 
 use clap::{Arg, ArgMatches, Command};
+use indexmap::IndexMap;
 
 use super::bundle::Bundle;
-use crate::desc::{Desc, DescPathError, DisplayConfig};
-use crate::node::{Format, Node};
+use crate::desc::{Desc, DescKind, DescPathError, DisplayConfig, VariantRepr};
+use crate::key_path::Segment;
+use crate::node::{Format, Kind, Node};
 use crate::writer::TreeConfig;
 use crate::{Describe, FromNode, KeyPath};
 
@@ -367,7 +369,11 @@ pub fn format_description_with_config<T: Describe>(
     Ok(entry.display_with(&config))
 }
 
-/// Formats the input Node or a selected subtree.
+/// Formats the input Node or a selected subtree in declaration order.
+///
+/// Known fields follow their description's order. Unknown keys retain their stored order after
+/// known fields, and values without a matching description retain their stored order throughout.
+/// Formatting leaves the input's values, paths, order, and visitation state unchanged.
 pub fn format_node_at_path<T>(
     node: &Node,
     path: &str,
@@ -376,15 +382,13 @@ pub fn format_node_at_path<T>(
 where
     T: Describe,
 {
-    // Attempt to get a node at this path.
-    let opt_node = if path.is_empty() {
-        Some(node)
+    let key_path = if path.is_empty() {
+        KeyPath::new()
     } else {
-        let key_path: KeyPath = path.parse().map_err(|e| SetupError::KeyPath { source: e })?;
-        node.opt_node(key_path)?
+        path.parse().map_err(|e| SetupError::KeyPath { source: e })?
     };
 
-    let Some(target) = opt_node else {
+    let Some(target) = node.opt_node(&key_path)? else {
         // Path not in tree. Check desc for a helpful hint, then return an appropriate error.
         let mut message = format!("cannot get '{path}': path does not exist");
         let desc = T::describe();
@@ -394,12 +398,95 @@ where
         return Err(SetupError::GetNotFound { message });
     };
 
+    let desc = T::describe();
+    let target = ordered_query_node(target, query_description_at_path(node, &desc, &key_path));
+
     match format {
         GetFormat::Tree(config) => Ok(target.to_tree_string_with_config(config)),
         GetFormat::Flat => Ok(target.to_flat_string()),
         GetFormat::Format(format_id) => {
             let registry = crate::node::default_format_writer_registry();
             Ok(target.to_format_string(format_id, &registry)?)
+        }
+    }
+}
+
+fn query_description_at_path<'a>(
+    mut node: &Node,
+    mut desc: &'a Desc,
+    path: &KeyPath,
+) -> Option<&'a Desc> {
+    for segment in path.iter() {
+        (node, desc) = match (segment, &node.kind, &desc.kind) {
+            (Segment::Key(key), Kind::Map(map), DescKind::Struct { fields }) => {
+                (map.get(key)?, &fields.iter().find(|field| field.name == *key)?.value)
+            }
+            (Segment::Key(key), Kind::Map(map), DescKind::Enum { .. }) if map.len() == 1 => {
+                (map.get(key)?, query_payload_description(desc, key)?)
+            }
+            (Segment::Index(index), Kind::Vec(items), DescKind::List { item }) => {
+                (items.get(*index)?, item.as_ref())
+            }
+            (Segment::Index(index), Kind::Vec(values), DescKind::Tuple { items }) => {
+                (values.get(*index)?, items.get(*index)?)
+            }
+            _ => return None,
+        };
+    }
+    Some(desc)
+}
+
+fn query_payload_description<'a>(desc: &'a Desc, key: &str) -> Option<&'a Desc> {
+    let DescKind::Enum { variants } = &desc.kind else {
+        return None;
+    };
+    match &variants.iter().find(|variant| variant.name == key)?.repr {
+        VariantRepr::Payload { payload, .. } => Some(payload),
+        VariantRepr::Unit { .. } => None,
+    }
+}
+
+fn ordered_query_node(node: &Node, desc: Option<&Desc>) -> Node {
+    match &node.kind {
+        Kind::Leaf(leaf) => Node::new_leaf(node.path.clone(), leaf.value.clone()),
+        Kind::Vec(values) => {
+            let children = values
+                .iter()
+                .enumerate()
+                .map(|(index, child)| {
+                    let child_desc = match desc.map(|desc| &desc.kind) {
+                        Some(DescKind::List { item }) => Some(item.as_ref()),
+                        Some(DescKind::Tuple { items }) => items.get(index),
+                        _ => None,
+                    };
+                    ordered_query_node(child, child_desc)
+                })
+                .collect();
+            Node::new_vec(node.path.clone(), children)
+        }
+        Kind::Map(values) => {
+            let mut children = IndexMap::with_capacity(values.len());
+            if let Some(DescKind::Struct { fields }) = desc.map(|desc| &desc.kind) {
+                for field in fields {
+                    if !children.contains_key(&field.name) {
+                        if let Some(child) = values.get(&field.name) {
+                            children.insert(
+                                field.name.clone(),
+                                ordered_query_node(child, Some(&field.value)),
+                            );
+                        }
+                    }
+                }
+            }
+            for (key, child) in values {
+                if !children.contains_key(key) {
+                    let child_desc = desc
+                        .filter(|_| values.len() == 1)
+                        .and_then(|desc| query_payload_description(desc, key));
+                    children.insert(key.clone(), ordered_query_node(child, child_desc));
+                }
+            }
+            Node::new_map(node.path.clone(), children)
         }
     }
 }
@@ -481,5 +568,29 @@ fn validate_positional_arrays(command: &Command, expose: &ExposeMap) {
             command.get_positionals().count() == 1,
             "an exposed positional array must be the command's only positional argument"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::node::Value;
+
+    #[test]
+    fn query_copy_has_independent_leaf_visitation() {
+        let original = Node::new_vec(
+            KeyPath::new(),
+            vec![
+                Node::new_leaf(KeyPath::from_index(0), Value::U32(1)),
+                Node::new_leaf(KeyPath::from_index(1), Value::Null),
+            ],
+        );
+        original.req_node("[0]").unwrap().as_leaf().unwrap().mark_visited();
+
+        let copy = ordered_query_node(&original, None);
+        assert!(!copy.req_node("[0]").unwrap().as_leaf().unwrap().is_visited());
+        copy.req_node("[1]").unwrap().as_leaf().unwrap().mark_visited();
+        assert!(original.req_node("[0]").unwrap().as_leaf().unwrap().is_visited());
+        assert!(!original.req_node("[1]").unwrap().as_leaf().unwrap().is_visited());
     }
 }
