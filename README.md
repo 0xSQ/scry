@@ -427,16 +427,11 @@ defaults::base + #{
 - **[Core Concepts](docs/concepts.md)** - Explains the basics: how the `Node` tree works, how to implement `FromNode` manually, etc.
 - **[Config File Locations](docs/config-files.md)** - Wires `Setup` discovery,
   with a shared checkout, local exceptions, and Rhai wrappers.
-- [Function adapters](docs/concepts.md#function-adapters) let fields use custom conversion functions
-  for external types. [Shared shape helpers](scry/src/convert.rs) reuse those conversions inside
-  containers. The [adapter example](scry/examples/function_adapters.rs) combines them with numeric
-  sequence input.
-- The [`kit`](scry/src/kit.rs) module provides reusable building blocks for configuration and CLI
-  tools. [`Files`](scry/docs/kit/files.md) represents sets of files using config-file syntax,
-  [`KeyValues<V>`](scry/src/kit/key_values.rs) provides key-value entries for initializing Rust map
-  types, and [`OneOrMany<T>`](scry/src/kit/one_or_many.rs) lets a field accept either a
-  single value or an array. [SeqExpr](scry/docs/kit/sequence-expressions.md) lets a command-line
-  argument specify a numeric sequence or a selection of list indices.
+- [`kit`](scry/src/kit.rs) provides reusable input shapes for designing command interfaces. Use these building blocks in your configuration types to give users convenient ways to express common inputs:
+  - [`KeyValues<V>`](scry/src/kit/key_values.rs) accepts a map or a list of key-value pairs. The pair form preserves order and duplicate keys.
+  - [`OneOrMany<T>`](scry/src/kit/one_or_many.rs) accepts one value or an array, keeping common single-item inputs brief.
+  - [`Files`](scry/docs/kit/files.md) selects files by path or pattern, with optional filtering and sorting.
+  - [`SeqExpr`](scry/docs/kit/sequence-expressions.md) expresses numeric sequences and index selections compactly, such as `0..20:2` for every other item among the first twenty.
 
 See the [examples](scry/examples) directory for complete working code.
 
