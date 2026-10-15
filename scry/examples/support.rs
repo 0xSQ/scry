@@ -1,10 +1,10 @@
-//! Demonstrates the flag-only Setup toolbox.
+//! Demonstrates configuration support in Setup commands.
 //!
 //! Examples:
-//! `cargo run --example gateway -- -S desc`
-//! `cargo run --example gateway -- hello -S get`
-//! `cargo run --example gateway -- hello -S --set count 2 check`
-//! `cargo run --example gateway -- hello -S --set count 2`
+//! `cargo run --example support -- -S desc`
+//! `cargo run --example support -- hello -S get`
+//! `cargo run --example support -- hello -S --set count 2 check`
+//! `cargo run --example support -- hello -S --set count 2`
 
 use anyhow::Result;
 use scry::cli::setup::{ConfigSource, Setup};
@@ -22,7 +22,7 @@ struct Input {
 }
 
 fn main() -> Result<()> {
-    Setup::new("gateway")
+    Setup::new("support")
         .config_source(|_| {
             ConfigSource::new()
                 .option("config-file", Some('C'), "Loads an optional configuration file.")

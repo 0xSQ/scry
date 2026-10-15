@@ -1,7 +1,7 @@
 //! Builds commands around a shared configuration input pipeline.
 //!
-//! [`Setup`] combines input sources, exposed arguments, and configuration support tools.
-//! Every command includes a `--scry` / `-S` gateway for inspecting and editing its input.
+//! [`Setup`] combines input sources, exposed arguments, and configuration support.
+//! Every command includes a `--scry` / `-S` support switch for inspecting and editing its input.
 //!
 //! Use [`Setup::into_bundle`] or [`Setup::into_bundle_with_matches`] to create bundles.
 
@@ -9,9 +9,9 @@ mod config_source;
 mod edits;
 mod error;
 mod expose_map;
-mod gateway;
 mod redirect;
 mod rhai_env;
+mod support;
 
 use std::collections::HashSet;
 
@@ -34,24 +34,24 @@ pub use error::SetupError;
 pub use expose_map::{
     Arity, ExposeEntry, ExposeKind, ExposeMap, FixedAssignment, Long, ValueShape,
 };
-pub use gateway::Gateway;
 pub use redirect::{require_command_config, resolve_command_config, RedirectError, RedirectSpec};
 pub use rhai_env::load_app_rhai_env;
+pub use support::Support;
 
 // ---------------------------------------------------------------------------------------------- //
 
-/// Configures a command's input and configuration support tools.
+/// Configures a command's input and configuration support.
 ///
 /// The input type implements [`FromNode`] and [`Describe`]. A [`ConfigSource`] supplies the
-/// initial [`Node`], and exposed arguments edit it. A [`Gateway`] provides configuration tools
-/// with fixed operation names.
+/// initial [`Node`], and exposed arguments edit it. [`Support`] configures the support switch
+/// for commands and edit options with fixed names.
 ///
 /// Each invocation first selects its action. Help and descriptions finish without loading
 /// input. Other actions load the input and apply command-line edits, then either inspect the
 /// raw Node or decode it for checking or the payload function.
 ///
 /// [`Setup::new`] starts with an empty Node. [`Setup::standard`] accepts a config file through
-/// `-C` / `--config-file`. Both include the default gateway. Builder methods customize either
+/// `-C` / `--config-file`. Both include configuration support. Builder methods customize either
 /// starting point before [`into_bundle`](Self::into_bundle) creates a command.
 ///
 /// Running the resulting bundle returns `Result<Option<R>, SetupError>`. `Some(R)` holds the
@@ -60,7 +60,7 @@ pub struct Setup {
     command_name: String,
     about: Option<String>,
     config_source: Option<ConfigSource>,
-    gateway: Gateway,
+    support: Support,
     expose_map: ExposeMap,
     extra_args: Vec<Arg>,
 }
@@ -68,13 +68,13 @@ pub struct Setup {
 // ---------------------------------------------------------------------------------------------- //
 
 impl Setup {
-    /// Creates a command with the default gateway and an empty input Node.
+    /// Creates a command with configuration support and an empty input Node.
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             command_name: name.into(),
             about: None,
             config_source: None,
-            gateway: Gateway::default(),
+            support: Support::default(),
             expose_map: ExposeMap::default(),
             extra_args: Vec::new(),
         }
@@ -113,25 +113,25 @@ impl Setup {
         self
     }
 
-    /// Configures the gateway flag names.
+    /// Configures the support switch.
     ///
     /// The default flags are `--scry` and `-S`. Application arguments come before the flag.
     /// The suffix accepts `--set`, `--remove`, `desc`, `get`, and `check`. Edits come before
     /// `get` or `check`, and an edit-only suffix runs the payload with the edited input.
     ///
-    /// [`Gateway`] configures the long flag name and optional short alias. The operation names
+    /// [`Support`] configures the long flag name and optional short alias. The operation names
     /// within the suffix are fixed.
     ///
     /// Application arguments are optional in the parser. Source resolution and typed decoding
     /// enforce the payload's input requirements.
     ///
     /// ```
-    /// use scry::cli::setup::{Gateway, Setup};
+    /// use scry::cli::setup::{Support, Setup};
     ///
-    /// let setup = Setup::new("resize").gateway(Gateway::new().long("look"));
+    /// let setup = Setup::new("resize").support(Support::new().long("look"));
     /// ```
-    pub fn gateway(mut self, gateway: Gateway) -> Self {
-        self.gateway = gateway;
+    pub fn support(mut self, support: Support) -> Self {
+        self.support = support;
         self
     }
 
@@ -218,7 +218,7 @@ impl Setup {
         for arg in &self.extra_args {
             cmd = cmd.arg(arg.clone());
         }
-        cmd = self.gateway.augment(cmd);
+        cmd = self.support.augment(cmd);
         if let Err(error) = check_collisions(&cmd) {
             panic!("CLI argument collision: {error}");
         }
@@ -239,7 +239,7 @@ impl Setup {
         matches: &ArgMatches,
         command: &Command,
     ) -> Result<Option<T>, SetupError> {
-        let invocation = self.gateway.parse(matches, command)?;
+        let invocation = self.support.parse(matches, command)?;
         match &invocation.action {
             Action::Help(output) => {
                 output.print().map_err(|source| SetupError::PrintHelp { source })?;
@@ -309,7 +309,7 @@ where
 }
 
 // ---------------------------------------------------------------------------------------------- //
-// Gateway Invocation
+// Support Invocation
 
 struct Invocation {
     action: Action,

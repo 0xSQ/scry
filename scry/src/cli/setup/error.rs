@@ -17,12 +17,12 @@ use crate::BoxedError;
 /// Aggregates all error types that can occur when running a setup-composed bundle.
 #[derive(thiserror::Error)]
 pub enum SetupError {
-    /// The toolbox arguments are invalid.
+    /// The support arguments are invalid.
     #[error(transparent)]
-    Gateway(#[from] clap::Error),
+    Support(#[from] clap::Error),
 
-    /// Failed to print configuration toolbox help.
-    #[error("failed to print configuration toolbox help")]
+    /// Failed to print configuration support help.
+    #[error("failed to print configuration support help")]
     PrintHelp {
         #[source]
         source: std::io::Error,

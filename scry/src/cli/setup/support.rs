@@ -1,4 +1,4 @@
-//! Flag-only configuration toolbox for Setup commands.
+//! Configuration support for Setup commands.
 
 use std::ffi::OsString;
 
@@ -15,25 +15,25 @@ use crate::writer::TreeConfig;
 
 // ---------------------------------------------------------------------------------------------- //
 
-/// Configures the flag-only configuration toolbox entrance.
+/// Configures the support switch.
 ///
-/// The default entrances are `--scry` and `-S`. An application can choose a different long
-/// name, replace the short alias, or disable it. Inner edit and action names remain fixed.
+/// The default spellings are `--scry` and `-S`. An application can choose a different long
+/// name, replace the short alias, or disable it. Support commands and edit options have fixed names.
 #[derive(Clone, Debug)]
-pub struct Gateway {
+pub struct Support {
     long: String,
     short: Option<char>,
 }
 
-impl Gateway {
-    const ID: &'static str = "scry_gateway";
+impl Support {
+    const ID: &'static str = "scry_support";
 
-    /// Creates a gateway with the default `--scry` and `-S` entrances.
+    /// Creates the default `--scry` / `-S` support switch.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Sets the long entrance name without the leading `--`.
+    /// Sets the support switch's long name without the leading `--`.
     ///
     /// # Panics
     ///
@@ -47,13 +47,13 @@ impl Gateway {
                 && !name.chars().any(|character| {
                     character.is_whitespace() || character.is_control() || character == '='
                 }),
-            "gateway long name must be nonempty, omit leading hyphens, and contain no whitespace, control characters, or '='"
+            "support switch long name must be nonempty, omit leading hyphens, and contain no whitespace, control characters, or '='"
         );
         self.long = name;
         self
     }
 
-    /// Sets the short entrance alias, or disables it when given `None`.
+    /// Sets the short alias, or disables it when given `None`.
     ///
     /// # Panics
     ///
@@ -63,7 +63,7 @@ impl Gateway {
         if let Some(name) = name {
             assert!(
                 name != '-' && !name.is_whitespace() && !name.is_control(),
-                "gateway short alias must not be a hyphen, whitespace, or a control character"
+                "support switch short alias must not be a hyphen, whitespace, or a control character"
             );
         }
         self.short = name;
@@ -74,8 +74,8 @@ impl Gateway {
         let mut argument = Arg::new(Self::ID)
             .long(self.long.clone())
             .num_args(0..)
-            .value_name("TOOLS")
-            .help_heading("Configuration tools")
+            .value_name("ARGS")
+            .help_heading("Configuration support")
             .value_parser(OsStringValueParser::new())
             .allow_hyphen_values(true)
             .help("Inspects and adjusts this command's configuration.");
@@ -99,7 +99,7 @@ impl Gateway {
 
         let mut values: Vec<OsString> =
             parent_matches.get_many::<OsString>(Self::ID).into_iter().flatten().cloned().collect();
-        let mut command = self.toolbox_command(parent_command);
+        let mut command = self.support_command(parent_command);
         if values.is_empty() {
             values.push(OsString::from("--help"));
         }
@@ -113,7 +113,7 @@ impl Gateway {
                 });
             }
             Err(mut error) => {
-                // Clap omits usage for some missing-value errors. Keep the toolbox scope visible.
+                // Clap omits usage for some missing-value errors. Keep the support scope visible.
                 if error.get(ContextKind::Usage).is_none() {
                     error.insert(
                         ContextKind::Usage,
@@ -172,17 +172,17 @@ impl Gateway {
             }
             Some(("check", _)) => Action::Check,
             None => Action::Execute,
-            Some(_) => unreachable!("only the fixed toolbox actions are installed"),
+            Some(_) => unreachable!("only the fixed support actions are installed"),
         };
 
         let edits = match action {
-            Action::Execute | Action::Get(_) | Action::Check => edits::collect_gateway(&matches)?,
+            Action::Execute | Action::Get(_) | Action::Check => edits::collect_support(&matches)?,
             Action::Describe(_) | Action::Help(_) => Vec::new(),
         };
         Ok(Invocation { action, edits })
     }
 
-    fn toolbox_command(&self, parent_command: &Command) -> Command {
+    fn support_command(&self, parent_command: &Command) -> Command {
         let usage_prefix = parent_command.get_bin_name().unwrap_or(parent_command.get_name());
         let prefix = format!("{usage_prefix} --{}", self.long);
         let example_prefix = match self.short {
@@ -199,7 +199,7 @@ impl Gateway {
             .about("Inspects and adjusts this command's configuration.")
             .after_help(
                 [
-                    format!("Put all application arguments before --{}. Put toolbox edits before get or check.", self.long),
+                    format!("Put all application arguments before --{}. Put edits before get or check.", self.long),
                     "Edits without a terminal action execute the application command with the edited input.".to_owned(),
                     "Edits affect this invocation and do not write the config file.".to_owned(),
                     "Descriptions cannot be combined with edits.".to_owned(),
@@ -257,7 +257,7 @@ impl Gateway {
                     .help("Disables color and styling in tree output."),
             )
             .after_help(
-                "The output is the loaded Node after application arguments and toolbox edits.\n\
+                "The output is the loaded Node after application arguments and input edits.\n\
                  Omitted defaults are not filled in. Missing input can be inspected without typed decoding.\n\
                  Flat output lists full key paths and values separated by a space.\n\
                  Depth, indices, and no-color options apply only to tree output.\n\
@@ -279,7 +279,7 @@ impl Gateway {
         let check = Command::new("check")
             .about("Decodes the edited configuration without running the command payload.")
             .after_help(
-                "Checks the whole configuration after application arguments and toolbox edits.\n\
+                "Checks the whole configuration after application arguments and input edits.\n\
                  Defaults and custom decoding hooks run as they do during execution.\n\
                  Loading and decoding perform their ordinary work. Checks inside the command payload are not run.\n\
                  Success prints 'Configuration decoded successfully.'. Failures use ordinary decoding diagnostics.",
@@ -288,7 +288,7 @@ impl Gateway {
     }
 }
 
-impl Default for Gateway {
+impl Default for Support {
     fn default() -> Self {
         Self {
             long: "scry".to_owned(),
@@ -329,44 +329,44 @@ mod tests {
     use super::super::edits::Edit;
     use super::*;
 
-    fn parse(gateway: &Gateway, arguments: &[&str]) -> Result<Invocation, SetupError> {
+    fn parse(support: &Support, arguments: &[&str]) -> Result<Invocation, SetupError> {
         let command = Command::new("demo").bin_name("demo operation").arg(Arg::new("input"));
-        parse_with_command(gateway, command, arguments)
+        parse_with_command(support, command, arguments)
     }
 
     fn parse_with_command(
-        gateway: &Gateway,
+        support: &Support,
         command: Command,
         arguments: &[&str],
     ) -> Result<Invocation, SetupError> {
-        let mut command = gateway.augment(command);
+        let mut command = support.augment(command);
         let matches = command.try_get_matches_from_mut(arguments)?;
-        gateway.parse(&matches, &command)
+        support.parse(&matches, &command)
     }
 
     fn plan(arguments: &[&str]) -> Invocation {
-        parse(&Gateway::new(), arguments).unwrap()
+        parse(&Support::new(), arguments).unwrap()
     }
 
     fn error(arguments: &[&str]) -> clap::Error {
-        clap_error(parse(&Gateway::new(), arguments).err().expect("invalid toolbox input"))
+        clap_error(parse(&Support::new(), arguments).err().expect("invalid support input"))
     }
 
     fn clap_error(error: SetupError) -> clap::Error {
         match error {
-            SetupError::Gateway(error) => error,
-            other => panic!("expected a gateway parse error, got {other}"),
+            SetupError::Support(error) => error,
+            other => panic!("expected a support parse error, got {other}"),
         }
     }
 
     #[test]
-    fn absent_gateway_and_word_tokens_are_ordinary_parent_input() {
+    fn absent_support_and_word_tokens_are_ordinary_parent_input() {
         for input in ["config", "scry"] {
-            let invocation = parse(&Gateway::new(), &["demo", input]).unwrap();
+            let invocation = parse(&Support::new(), &["demo", input]).unwrap();
             assert!(matches!(invocation.action, Action::Execute));
             assert!(invocation.edits.is_empty());
         }
-        let invocation = parse(&Gateway::new(), &["demo", "--", "--scry"]).unwrap();
+        let invocation = parse(&Support::new(), &["demo", "--", "--scry"]).unwrap();
         assert!(matches!(invocation.action, Action::Execute));
         assert!(invocation.edits.is_empty());
     }
@@ -380,13 +380,13 @@ mod tests {
         assert!(matches!(request.format, GetFormat::Tree(_)));
         assert_eq!(error(&["demo", "--scry", "--", "get"]).kind(), ErrorKind::UnknownArgument);
 
-        let gateway = Gateway::new();
-        let mut command = gateway.augment(
+        let support = Support::new();
+        let mut command = support.augment(
             Command::new("demo").arg(Arg::new("literal").long("literal").allow_hyphen_values(true)),
         );
         let matches = command.try_get_matches_from_mut(["demo", "--literal", "--scry"]).unwrap();
         assert_eq!(matches.get_one::<String>("literal").map(String::as_str), Some("--scry"));
-        let invocation = gateway.parse(&matches, &command).unwrap();
+        let invocation = support.parse(&matches, &command).unwrap();
         assert!(matches!(invocation.action, Action::Execute));
         assert!(invocation.edits.is_empty());
     }
@@ -412,7 +412,7 @@ mod tests {
     }
 
     #[test]
-    fn toolbox_and_action_help_preserve_the_parent_styles() {
+    fn support_and_action_help_preserve_the_parent_styles() {
         let header = AnsiColor::Magenta.on_default().bold().underline();
         let literal = AnsiColor::Cyan.on_default().bold();
         let styles = Styles::styled().header(header).literal(literal);
@@ -425,9 +425,9 @@ mod tests {
         ] {
             let command = Command::new("demo").styles(styles.clone());
             let Action::Help(help) =
-                parse_with_command(&Gateway::new(), command, &arguments).unwrap().action
+                parse_with_command(&Support::new(), command, &arguments).unwrap().action
             else {
-                panic!("expected toolbox help");
+                panic!("expected support help");
             };
             let styled = help.render().ansi().to_string();
             assert!(styled.contains(&format!("{}Options:", header.render())), "{arguments:?}");
@@ -436,39 +436,39 @@ mod tests {
     }
 
     #[test]
-    fn toolbox_inherits_the_parent_color_policy() {
+    fn support_inherits_the_parent_color_policy() {
         for color in [ColorChoice::Auto, ColorChoice::Always, ColorChoice::Never] {
             for disable in [false, true] {
                 let parent = Command::new("demo").color(color).disable_colored_help(disable);
-                let toolbox = Gateway::new().toolbox_command(&parent);
-                assert_eq!(toolbox.get_color(), color);
-                assert_eq!(toolbox.is_disable_colored_help_set(), disable);
+                let support = Support::new().support_command(&parent);
+                assert_eq!(support.get_color(), color);
+                assert_eq!(support.is_disable_colored_help_set(), disable);
             }
         }
     }
 
     #[test]
-    fn configured_long_name_and_short_alias_share_the_toolbox() {
-        let gateway = Gateway::new().long("look").short('T');
+    fn configured_names_select_the_same_support_commands() {
+        let support = Support::new().long("look").short('T');
         for entrance in ["--look", "-T"] {
-            let plan = parse(&gateway, &["demo", entrance, "get"]).unwrap();
+            let plan = parse(&support, &["demo", entrance, "get"]).unwrap();
             assert!(matches!(plan.action, Action::Get(_)));
         }
-        let Action::Help(help) = parse(&gateway, &["demo", "-T", "get", "--help"]).unwrap().action
+        let Action::Help(help) = parse(&support, &["demo", "-T", "get", "--help"]).unwrap().action
         else {
             panic!("action help is a successful terminal outcome");
         };
         assert!(help.to_string().contains("demo operation --look get"));
-        assert!(parse(&gateway, &["demo", "-S", "get"]).is_err());
+        assert!(parse(&support, &["demo", "-S", "get"]).is_err());
     }
 
     #[test]
-    fn invalid_entrance_names_fail_during_configuration() {
+    fn invalid_switch_names_fail_during_configuration() {
         for long in ["", "--look", "look here", "look=here", "look\0"] {
-            assert!(std::panic::catch_unwind(|| Gateway::new().long(long)).is_err());
+            assert!(std::panic::catch_unwind(|| Support::new().long(long)).is_err());
         }
         for short in ['-', ' ', '\0'] {
-            assert!(std::panic::catch_unwind(|| Gateway::new().short(short)).is_err());
+            assert!(std::panic::catch_unwind(|| Support::new().short(short)).is_err());
         }
     }
 
@@ -573,11 +573,11 @@ mod tests {
     }
 
     #[test]
-    fn tree_display_options_are_local_to_the_toolbox() {
+    fn tree_display_options_are_local_to_support_commands() {
         for entrance in ["--depth", "-d"] {
             for action in ["get", "desc"] {
-                let gateway = Gateway::new();
-                let mut command = gateway.augment(
+                let support = Support::new();
+                let mut command = support.augment(
                     Command::new("demo").arg(
                         Arg::new("application_depth")
                             .long("depth")
@@ -589,7 +589,7 @@ mod tests {
                     .try_get_matches_from_mut(["demo", entrance, "10", "-S", action, entrance, "2"])
                     .unwrap();
                 assert_eq!(matches.get_one::<usize>("application_depth"), Some(&10));
-                let invocation = gateway.parse(&matches, &command).unwrap();
+                let invocation = support.parse(&matches, &command).unwrap();
                 let depth = match invocation.action {
                     Action::Get(GetRequest {
                         format: GetFormat::Tree(config),
@@ -646,7 +646,7 @@ mod tests {
                 assert!(output.contains("expected a positive integer (1 or greater)"), "{output}");
                 assert!(!output.contains("1..18446744073709551615"), "{output}");
             }
-            assert!(parse(&Gateway::new(), &["demo", "-S", action, "-d"]).is_err());
+            assert!(parse(&Support::new(), &["demo", "-S", action, "-d"]).is_err());
         }
     }
 
@@ -670,16 +670,16 @@ mod tests {
     fn non_unicode_suffix_text_is_rejected_without_lossy_conversion() {
         use std::os::windows::ffi::OsStringExt;
 
-        let gateway = Gateway::new();
+        let support = Support::new();
         let arguments = [
             OsString::from("demo"),
             OsString::from("--scry"),
             OsString::from("get"),
             OsString::from_wide(&[0xd800]),
         ];
-        let mut command = gateway.augment(Command::new("demo"));
+        let mut command = support.augment(Command::new("demo"));
         let matches = command.try_get_matches_from_mut(arguments).unwrap();
-        let error = clap_error(gateway.parse(&matches, &command).err().unwrap());
+        let error = clap_error(support.parse(&matches, &command).err().unwrap());
         assert_eq!(error.kind(), ErrorKind::InvalidUtf8);
     }
 }

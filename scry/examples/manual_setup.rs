@@ -1,7 +1,7 @@
 //! Demonstrates custom input preparation before Setup applies CLI edits.
 //!
 //! The loader parses a config file into a Node, then applies the optional `DEPLOY_ENV`
-//! environment variable. Exposed arguments and toolbox edits take precedence over that
+//! environment variable. Exposed arguments and input edits take precedence over that
 //! prepared input. `-S get` shows the prepared, edited Node before typed conversion.
 //!
 //! Help and descriptions do not run the loader.

@@ -174,7 +174,7 @@ fn handle_cli_result(result: Result<Option<anyhow::Result<()>>, SetupError>) {
             std::process::exit(1);
         }
         Ok(None) => {
-            // A toolbox action handled the request, such as -S desc or -S get.
+            // A support action handled the request, such as -S desc or -S get.
         }
         Err(e) => {
             // Setup/pipeline error (config loading, CLI parsing, etc.)
@@ -190,7 +190,7 @@ fn handle_cli_result(result: Result<Option<anyhow::Result<()>>, SetupError>) {
 fn main() -> anyhow::Result<()> {
     // run() returns Result<Option<anyhow::Result<()>>, SetupError>.
     // - Err(e): pipeline error (config loading, CLI parsing)
-    // - Ok(None): a toolbox action handled the request.
+    // - Ok(None): a support action handled the request.
     // - Ok(Some(result)): the handler ran and returned its result.
     if let Some(handler_result) = build_anyhow_cli().run()? {
         handler_result?;

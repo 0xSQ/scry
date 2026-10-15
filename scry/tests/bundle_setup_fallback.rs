@@ -73,7 +73,7 @@ fn parent_terminal_requests_keep_the_setup_handler_and_skip_the_payload() {
     for suffix in [vec!["get"], vec!["desc"], vec!["--help"], vec![]] {
         let loads = Rc::new(Cell::new(0));
         let child = Bundle::single(Command::new("child"), |_| {
-            panic!("parent toolbox must not dispatch a child");
+            panic!("parent support must not dispatch a child");
         });
         let mut arguments = vec!["parent", "-C", "input.json", "--scry"];
         arguments.extend_from_slice(&suffix);
@@ -122,7 +122,7 @@ fn child_dispatch_skips_parent_loading_and_preserves_configured_global_exposures
 }
 
 #[test]
-fn nested_toolbox_errors_use_the_parsed_command_path_for_parent_and_children() {
+fn nested_support_errors_use_the_parsed_command_path_for_parent_and_children() {
     for (arguments, expected_usage) in [
         (
             vec!["ignored", "group", "parent", "--scry", "unknown"],
@@ -145,7 +145,7 @@ fn nested_toolbox_errors_use_the_parsed_command_path_for_parent_and_children() {
         );
         let error = bundle.run_from(arguments).unwrap_err();
 
-        assert!(matches!(&error, SetupError::Gateway(_)), "{error}");
+        assert!(matches!(&error, SetupError::Support(_)), "{error}");
         assert!(error.to_string().contains(expected_usage), "{error}");
         assert_eq!(loads.get(), 0);
     }

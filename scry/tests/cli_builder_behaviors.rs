@@ -2,8 +2,8 @@
 //!
 //! These tests document and lock down the current behavior of the Setup. They cover:
 //! - Config path resolution (positional, flag, both, auto-discover)
-//! - Gateway inspection (`desc`, `get`, and output formats)
-//! - Gateway edits (`--set`, `--remove`)
+//! - Support inspection (`desc`, `get`, and output formats)
+//! - Input edits (`--set`, `--remove`)
 //! - Expose args (flags and options)
 //! - Collision detection
 #![cfg(feature = "format-json")]
@@ -431,9 +431,9 @@ mod config_path_resolution {
 }
 
 // ---------------------------------------------------------------------------------------------- //
-// Gateway Inspection and Edit Tests
+// Support Inspection and Edit Tests
 
-mod gateway_actions {
+mod support_actions {
     use super::*;
 
     #[test]
@@ -553,8 +553,8 @@ mod gateway_actions {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
-            matches!(err, SetupError::Gateway(_)),
-            "Expected a gateway parse error, got {:?}",
+            matches!(err, SetupError::Support(_)),
+            "Expected a support parse error, got {:?}",
             err
         );
     }
@@ -1154,7 +1154,7 @@ mod collision_detection {
 
     #[test]
     #[should_panic(expected = "CLI argument collision")]
-    fn exposed_option_collides_with_gateway_long_name() {
+    fn exposed_option_collides_with_support_long_name() {
         Setup::new("test")
             .expose(|e| {
                 e.option("value").long("scry");
@@ -1222,7 +1222,7 @@ mod collision_detection {
     fn short_flag_collision_panics() {
         Setup::new("test")
             .expose(|e: &mut ExposeMap| {
-                e.flag("verbose", true).short('S'); // Shares the gateway's short alias.
+                e.flag("verbose", true).short('S'); // Shares the support switch's short alias.
             })
             .config_source(|c| {
                 c.positional("CONFIG", "Path to config file").loader(simple_config_loader())
@@ -1232,11 +1232,11 @@ mod collision_detection {
 
     #[test]
     #[should_panic(expected = "CLI argument collision")]
-    fn extra_arg_id_collides_with_gateway_id_panics() {
+    fn extra_arg_id_collides_with_support_id_panics() {
         use clap::Arg;
 
         Setup::new("test")
-            .arg(Arg::new("scry_gateway").long("fetch")) // Shares the gateway argument ID.
+            .arg(Arg::new("scry_support").long("fetch")) // Shares the support argument ID.
             .config_source(|c| {
                 c.positional("CONFIG", "Path to config file").loader(simple_config_loader())
             })
@@ -1380,7 +1380,7 @@ mod setup_behavior {
     }
 
     #[test]
-    fn standard_setup_has_one_gateway_and_named_source() {
+    fn standard_setup_has_one_support_and_named_source() {
         let bundle = Setup::standard("test").into_bundle(|_cfg: SimpleConfig| {});
         let names: Vec<_> =
             bundle.command().get_arguments().filter_map(|arg| arg.get_long()).collect();
@@ -1421,7 +1421,7 @@ mod setup_behavior {
 // ---------------------------------------------------------------------------------------------- //
 // Argv Ordering Tests
 //
-// Application edits and gateway edits each retain their command-line order.
+// Application edits and edits after the support switch each retain their command-line order.
 
 mod argv_ordering {
     use super::*;
@@ -1491,9 +1491,9 @@ mod argv_ordering {
     }
 
     #[test]
-    fn application_options_after_the_gateway_are_rejected() {
+    fn application_options_after_the_support_are_rejected() {
         let error = run(&["--scry", "--set", "value", "edited", "--value", "late"]).unwrap_err();
-        assert!(matches!(error, SetupError::Gateway(_)));
+        assert!(matches!(error, SetupError::Support(_)));
     }
 
     fn run(args: &[&str]) -> Result<OrderTestConfig, SetupError> {
@@ -1719,7 +1719,7 @@ mod variant_expose {
     fn variant_entry_skips_unit_enum_possible_values() {
         // A variant entry's CLI value is the arm's payload, so the unit-enum possible-values
         // parser must not constrain it even when the target field describes a unit enum. Without
-        // the skip, clap would reject "anything" before Scry ever saw it. Gateway get finishes
+        // the skip, clap would reject "anything" before Scry ever saw it. Support get finishes
         // before typed conversion, so clap acceptance is all this asserts.
         let bundle = Setup::new("test")
             .expose(|e: &mut ExposeMap| {

@@ -23,7 +23,7 @@ atlas catalog -C experiment.rhai -S get
 
 The first command loads that file and runs the catalog operation. The second prints its
 configuration without running the operation. See the
-[README](../README.md#configuration-toolbox) for the inspection and editing tools.
+[README](../README.md#configuration-support) for the support commands and input edits.
 
 An explicit path takes precedence over any defaults the application discovers. Without a
 file, `Setup::standard` reports an error when configuration is needed. Help and `-S desc`

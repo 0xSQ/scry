@@ -439,7 +439,7 @@ teaches the CLI layer the variant names, and the exposed option gets them as pos
 
 For data-carrying enums, `.variant(key)` wraps the supplied value in the enum's single-key map
 and replaces the whole field. This lets selecting a variant displace the previous one, instead
-of adding a second variant key through a toolbox `--set` edit.
+of adding a second variant key through a `--set` input edit.
 
 ```rust
 Setup::standard("app")

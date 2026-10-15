@@ -1,4 +1,4 @@
-//! Integration tests for the flag-only Setup toolbox.
+//! Integration tests for configuration support in Setup commands.
 #![cfg(feature = "format-json")]
 
 use std::cell::{Cell, RefCell};
@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use clap::{Arg, ArgAction, Command};
-use scry::cli::setup::{format_node_at_path, ConfigSource, Gateway, GetFormat, Setup, SetupError};
+use scry::cli::setup::{format_node_at_path, ConfigSource, GetFormat, Setup, SetupError, Support};
 use scry::cli::Bundle;
 use scry::node::{Format, NodeError};
 use scry::writer::TreeConfig;
@@ -118,11 +118,11 @@ fn ordinary_execution_still_loads_and_calls_the_payload_once() {
 
 #[test]
 fn check_decodes_once_after_parent_arguments_and_ordered_suffix_edits() {
-    for (gateway, entrance) in [
-        (Gateway::new(), "--scry"),
-        (Gateway::new(), "-S"),
-        (Gateway::new().long("inspect").short('I'), "--inspect"),
-        (Gateway::new().long("inspect").short('I'), "-I"),
+    for (support, entrance) in [
+        (Support::new(), "--scry"),
+        (Support::new(), "-S"),
+        (Support::new().long("inspect").short('I'), "--inspect"),
+        (Support::new().long("inspect").short('I'), "-I"),
     ] {
         CHECK_DECODES.set(0);
         CHECK_HOOKS.set(0);
@@ -131,7 +131,7 @@ fn check_decodes_once_after_parent_arguments_and_ordered_suffix_edits() {
         let calls = Rc::new(Cell::new(0));
         let payload_calls = calls.clone();
         let result = loaded_setup(r#"{ "value": "loaded", "retries": 2 }"#, loads.clone())
-            .gateway(gateway)
+            .support(support)
             .expose(|expose| {
                 expose.option("value");
                 expose.option("retries");
@@ -422,7 +422,7 @@ fn descriptions_and_all_help_routes_skip_source_preparation() {
 }
 
 #[test]
-fn invalid_toolbox_requests_fail_before_source_preparation() {
+fn invalid_support_requests_fail_before_source_preparation() {
     let suffixes: &[&[&str]] = &[
         &["--set", "value", "ignored", "desc"],
         &["--remove", "value", "desc"],
@@ -453,10 +453,10 @@ fn invalid_toolbox_requests_fail_before_source_preparation() {
         let mut args = vec!["test", "--scry"];
         args.extend_from_slice(suffix);
         let error = unloaded_setup()
-            .into_bundle(|_: DecodeTrap| panic!("invalid toolbox input must not execute"))
+            .into_bundle(|_: DecodeTrap| panic!("invalid support input must not execute"))
             .run_from(args)
             .unwrap_err();
-        assert!(matches!(error, SetupError::Gateway(_)), "{suffix:?}: {error}");
+        assert!(matches!(error, SetupError::Support(_)), "{suffix:?}: {error}");
     }
 }
 
@@ -500,7 +500,7 @@ fn selected_tree_depth_and_indices_preserve_raw_values() {
 }
 
 #[test]
-fn default_short_gateway_executes_the_same_edit_plan() {
+fn default_short_support_executes_the_same_edit_plan() {
     for entrance in ["--scry", "-S"] {
         let value = Setup::new("test")
             .into_bundle(|input: Input| input.value)
@@ -512,9 +512,9 @@ fn default_short_gateway_executes_the_same_edit_plan() {
 }
 
 #[test]
-fn configured_gateway_name_preserves_fixed_inner_spellings() {
+fn configured_support_name_preserves_fixed_inner_spellings() {
     let value = Setup::new("test")
-        .gateway(Gateway::new().long("inspect").short('I'))
+        .support(Support::new().long("inspect").short('I'))
         .into_bundle(|input: Input| input.value)
         .run_from(["test", "--inspect", "--set", "value", "edited"])
         .unwrap()
@@ -522,7 +522,7 @@ fn configured_gateway_name_preserves_fixed_inner_spellings() {
     assert_eq!(value, "edited");
 
     let bundle = Setup::new("test")
-        .gateway(Gateway::new().long("inspect").short('I'))
+        .support(Support::new().long("inspect").short('I'))
         .into_bundle(|input: Input| input);
     assert!(bundle.command().clone().try_get_matches_from(["test", "--scry"]).is_err());
 }
@@ -530,7 +530,7 @@ fn configured_gateway_name_preserves_fixed_inner_spellings() {
 #[test]
 fn disabling_default_short_alias_frees_it_for_an_application_option() {
     let bundle = Setup::new("test")
-        .gateway(Gateway::new().short(None))
+        .support(Support::new().short(None))
         .expose(|expose| {
             expose.option("value").short('S');
         })
@@ -554,7 +554,7 @@ fn disabling_default_short_alias_frees_it_for_an_application_option() {
 }
 
 #[test]
-fn application_get_and_set_options_remain_available_before_the_gateway() {
+fn application_get_and_set_options_remain_available_before_the_support() {
     let input = Setup::standard("test")
         .no_config_source()
         .expose(|expose| {
@@ -571,17 +571,17 @@ fn application_get_and_set_options_remain_available_before_the_gateway() {
             "--scry",
             "--set",
             "get",
-            "toolbox-edit",
+            "support-edit",
         ])
         .unwrap()
         .unwrap();
 
-    assert_eq!(input.get, "toolbox-edit");
+    assert_eq!(input.get, "support-edit");
     assert_eq!(input.set, "application-set");
 }
 
 #[test]
-fn setup_includes_the_gateway_without_enabling_it() {
+fn setup_includes_support_by_default() {
     let value = Setup::new("test")
         .expose(|expose| {
             expose.option("value");
@@ -597,10 +597,10 @@ fn setup_includes_the_gateway_without_enabling_it() {
 }
 
 #[test]
-fn nested_toolbox_diagnostics_keep_the_configured_binary_and_command_path() {
+fn nested_support_diagnostics_keep_the_configured_binary_and_command_path() {
     let leaf = Setup::new("operation")
-        .gateway(Gateway::new().long("inspect"))
-        .into_bundle(|_: Input| panic!("invalid toolbox input must not execute"));
+        .support(Support::new().long("inspect"))
+        .into_bundle(|_: Input| panic!("invalid support input must not execute"));
     let bundle = Bundle::group_with(
         Command::new("application").bin_name("configured-app"),
         vec![Bundle::group("group", "Groups operations.", vec![leaf])],
@@ -615,12 +615,12 @@ fn nested_toolbox_diagnostics_keep_the_configured_binary_and_command_path() {
         ])
         .unwrap_err();
 
-    assert!(matches!(&error, SetupError::Gateway(_)), "{error}");
+    assert!(matches!(&error, SetupError::Support(_)), "{error}");
     assert!(error.to_string().contains("configured-app group operation --inspect"), "{error}");
 }
 
 #[test]
-fn gateway_profile_has_no_parent_shortcuts_or_word_subcommands() {
+fn support_profile_has_no_parent_shortcuts_or_word_subcommands() {
     let bundle = Setup::standard("test")
         .no_config_source()
         .expose(|expose| {
@@ -653,7 +653,7 @@ fn gateway_profile_has_no_parent_shortcuts_or_word_subcommands() {
 }
 
 #[test]
-fn parent_end_of_options_keeps_gateway_spelling_literal() {
+fn parent_end_of_options_keeps_support_spelling_literal() {
     let input = Setup::new("test")
         .expose(|expose| {
             expose.positional("value");
@@ -667,7 +667,7 @@ fn parent_end_of_options_keeps_gateway_spelling_literal() {
 }
 
 #[test]
-fn positional_arrays_stop_at_the_gateway_and_keep_literal_words() {
+fn positional_arrays_stop_at_the_support_and_keep_literal_words() {
     let input = Setup::new("test")
         .expose(|expose| {
             expose.option("value");
@@ -685,7 +685,7 @@ fn positional_arrays_stop_at_the_gateway_and_keep_literal_words() {
 }
 
 #[test]
-fn gateway_does_not_hide_incomplete_parent_argument_groups() {
+fn support_does_not_hide_incomplete_parent_argument_groups() {
     let bundle = Setup::new("test")
         .expose(|expose| {
             expose.option("rows").array(2).append();
@@ -699,7 +699,7 @@ fn gateway_does_not_hide_incomplete_parent_argument_groups() {
 }
 
 #[test]
-fn parent_help_keeps_the_gateway_in_a_closing_configuration_tools_section() {
+fn parent_help_keeps_the_support_switch_in_a_closing_configuration_support_section() {
     let bundle = Setup::new("test")
         .config_source(|_| ConfigSource::new().option("config-file", Some('C'), "Loads input."))
         .expose(|expose| {
@@ -717,16 +717,16 @@ fn parent_help_keeps_the_gateway_in_a_closing_configuration_tools_section() {
         bundle.command().clone().render_help().to_string(),
         bundle.command().clone().render_long_help().to_string(),
     ] {
-        assert_eq!(help.matches("Configuration tools:").count(), 1, "{help}");
-        let (ordinary, toolbox) = help.split_once("Configuration tools:").unwrap();
+        assert_eq!(help.matches("Configuration support:").count(), 1, "{help}");
+        let (ordinary, support) = help.split_once("Configuration support:").unwrap();
         let (options, diagnostics) = ordinary.split_once("Diagnostics:").unwrap();
         for flag in ["--config-file <FILE>", "--value", "--help"] {
             assert!(options.contains(flag), "{help}");
-            assert!(!toolbox.contains(flag), "{help}");
+            assert!(!support.contains(flag), "{help}");
         }
         assert!(diagnostics.contains("--trace"), "{help}");
         assert!(!ordinary.contains("--scry"), "{help}");
-        assert!(toolbox.contains("--scry"), "{help}");
+        assert!(support.contains("--scry"), "{help}");
         assert_eq!(help.matches("--scry").count(), 1, "{help}");
         assert!(!help.contains("--get"), "{help}");
         assert!(!help.contains("--set"), "{help}");
@@ -735,7 +735,7 @@ fn parent_help_keeps_the_gateway_in_a_closing_configuration_tools_section() {
 }
 
 #[test]
-fn gateway_collisions_with_exposed_and_builtin_names_fail_construction() {
+fn support_collisions_with_exposed_and_builtin_names_fail_construction() {
     let cases: &[fn() -> Setup] = &[
         || {
             Setup::new("test").expose(|expose| {
@@ -747,8 +747,8 @@ fn gateway_collisions_with_exposed_and_builtin_names_fail_construction() {
                 expose.option("value").short('S');
             })
         },
-        || Setup::new("test").gateway(Gateway::new().short('h')),
-        || Setup::new("test").gateway(Gateway::new().long("help")),
+        || Setup::new("test").support(Support::new().short('h')),
+        || Setup::new("test").support(Support::new().long("help")),
     ];
     for (index, setup) in cases.iter().enumerate() {
         let result = std::panic::catch_unwind(|| {

@@ -19,8 +19,8 @@ pub(super) enum Edit {
     Append { path: String, value: Node },
 }
 
-/// Collects fixed gateway edits in suffix argument order.
-pub(super) fn collect_gateway(matches: &ArgMatches) -> Result<Vec<Edit>, SetupError> {
+/// Collects input edits after the support switch in argument order.
+pub(super) fn collect_support(matches: &ArgMatches) -> Result<Vec<Edit>, SetupError> {
     let mut edits = Vec::new();
     for occurrence in argument_occurrences(matches, "set")? {
         let [(_, key), (index, value)] = occurrence.values.as_slice() else {

@@ -138,7 +138,7 @@ fn main() -> Result<(), SetupError> {
 }
 ```
 
-`Setup::standard` accepts a config file through `-C, --config-file` and uses `Node::parse_file` to load it. `Setup::new` starts with an empty map instead. Both constructors include the `--scry, -S` configuration toolbox. The builder can customize the input source, loader, exposed arguments, and toolbox entrance.
+`Setup::standard` accepts a config file through `-C, --config-file` and uses `Node::parse_file` to load it. `Setup::new` starts with an empty map instead. Both constructors include configuration support through `--scry, -S`. The builder can customize the input source, loader, exposed arguments, and support switch.
 
 Applications can also opt into default config discovery. The
 [config file guide](docs/config-files.md) shows how to keep shared defaults in one directory,
@@ -154,9 +154,9 @@ Retries: 3
 Sending notifications to: https://hooks.slack.com/myhook
 ```
 
-### Configuration Toolbox
+### Configuration support
 
-Every Setup command provides a configuration toolbox behind `--scry` or its short alias `-S`. The ordinary help lists config-file selection among the command options and the toolbox entrance in a closing `Configuration tools` section:
+Every Setup command provides configuration support through `--scry` or its short alias `-S`. The ordinary help lists config-file selection among the command options and the support switch in a closing `Configuration support` section:
 
 ```
 $ deploy --help
@@ -166,11 +166,11 @@ Options:
   -C, --config-file <FILE>  Path to config file.
   -h, --help                Print help
 
-Configuration tools:
-  -S, --scry [<TOOLS>...]  Inspects and adjusts this command's configuration.
+Configuration support:
+  -S, --scry [<ARGS>...]  Inspects and adjusts this command's configuration.
 ```
 
-Put application arguments before `-S`. Everything after it belongs to the toolbox, which has its own help. Toolbox flags such as `-d` are independent from application flags before `-S`:
+Put application arguments before `-S`. The support commands have their own help. Their flags, such as `-d`, are independent from application flags before `-S`:
 
 ```
 $ deploy -S
@@ -188,7 +188,7 @@ Edits:
       --remove <KEY>       Removes a config value before execution, get, or check (repeatable).
 ```
 
-Use `-S desc --help`, `-S get --help`, or `-S check --help` for action-specific help. Toolbox help and descriptions do not resolve or load the input source. `Gateway` lets an application customize the entrance's long name and short alias. The operation names inside the toolbox are fixed.
+Use `-S desc --help`, `-S get --help`, or `-S check --help` for command-specific help. Support help and descriptions do not resolve or load the input source. `Support` lets an application customize the support switch's long name and short alias through `Setup::support`. Support commands and input edit options have fixed names.
 
 #### `desc`
 
@@ -222,7 +222,7 @@ $ deploy -S desc notify
 
 #### `get`
 
-`get` prints the raw input after applying exposed arguments and toolbox edits, then exits. It does not decode the input into the application's type or materialize typed defaults. This helps inspect what the command will receive, including input that is incomplete or invalid for execution.
+`get` prints the raw input after applying exposed arguments and input edits, then exits. It does not decode the input into the application's type or materialize typed defaults. This helps inspect what the command will receive, including input that is incomplete or invalid for execution.
 
 The default output is a simple tree format:
 
@@ -243,7 +243,7 @@ environment "dev"
 notify.slack_url "https://hooks.slack.com/myhook"
 ```
 
-`get --as FORMAT` also supports writer formats such as `json` or `rhai`. TOML and YAML writers are optionally available via the `format-toml` and `format-yaml` features. The toolbox lists `tree`, `flat`, and formats from the default writer registry.
+`get --as FORMAT` also supports writer formats such as `json` or `rhai`. TOML and YAML writers are optionally available via the `format-toml` and `format-yaml` features. The format choices are `tree`, `flat`, and formats from the default writer registry.
 
 ```
 $ deploy -C deploy.json -S get --as json
@@ -272,7 +272,7 @@ $ deploy -C deploy.json -S get notify.slack_url
 
 #### Editing Input
 
-Toolbox `--set` edits a config value before execution. Values are literal strings, so `true`, `5`, and `null` are not parsed as config expressions. Typed conversion interprets those strings according to the target field:
+`--set` edits a config value before execution. Values are literal strings, so `true`, `5`, and `null` are not parsed as config expressions. Typed conversion interprets those strings according to the target field:
 
 ```
 $ deploy -C deploy.json -S --set dry_run true --set retries 5
@@ -357,7 +357,7 @@ e.preset("safe")
     .help("Runs one operation at a time without applying changes.");
 ```
 
-Flags and presets apply in application argument order. Toolbox edits apply afterward, in suffix
+Flags and presets apply in application argument order. Input edits apply afterward, in suffix
 order. The later operation wins when several operations target the same path.
 
 ## Rhai
