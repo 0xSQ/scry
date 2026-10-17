@@ -427,6 +427,7 @@ defaults::base + #{
 - **[Core Concepts](docs/concepts.md)** - Explains the basics: how the `Node` tree works, how to implement `FromNode` manually, etc.
 - **[Config File Locations](docs/config-files.md)** - Wires `Setup` discovery,
   with a shared checkout, local exceptions, and Rhai wrappers.
+- **[Writing Config Files](docs/writing-configs.md)** - Generates documented Rhai or JSON5 files from values and configuration metadata.
 - [`kit`](scry/src/kit.rs) provides reusable input shapes for designing command interfaces. Use these building blocks in your configuration types to give users convenient ways to express common inputs:
   - [`KeyValues<V>`](scry/src/kit/key_values.rs) accepts a map or a list of key-value pairs. The pair form preserves order and duplicate keys.
   - [`OneOrMany<T>`](scry/src/kit/one_or_many.rs) accepts one value or an array, keeping common single-item inputs brief.

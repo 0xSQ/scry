@@ -29,7 +29,7 @@
 //! - [`key_path`] - Path navigation for addressing locations in a config tree.
 //! - [`cli`] - CLI utilities, including the [`Setup`](cli::setup::Setup) builder for assembling
 //!   clap commands with config loading, overrides, and inspection options.
-//! - [`writer`] - Serialization writers (Rhai, JSON tree, flat key-value).
+//! - [`writer`] - Document construction and Rhai, JSON5, flat, and tree output.
 //! - [`rhai`] - Rhai script evaluation environment.
 //! - [`kit`] - Reusable config building blocks (file lists, one-or-many collections).
 //! - [`util`] - General utilities (path extensions, etc.).
@@ -66,6 +66,7 @@ pub use key_path::{KeyPath, KeyPathError};
 pub use node::{Node, NodeError};
 pub use string_enum::StringEnumError;
 pub use traits::{Describe, FromDefaults, FromNode, ToNode};
+pub use writer::Document;
 
 // Re-export derive macros.
 pub use scry_derive::{Config, Describe, FromDefaults, FromNode, StringEnum, ToNode};

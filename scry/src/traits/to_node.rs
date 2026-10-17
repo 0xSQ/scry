@@ -1,4 +1,4 @@
-//! The [`ToNode`] trait and implementations for primitive types.
+//! The [`ToNode`] trait and built-in value conversions.
 
 use std::path::PathBuf;
 
@@ -41,6 +41,12 @@ impl ToNode for Node {
     fn to_node(&self) -> Result<Node, NodeError> {
         // Raw Node values serialize as identity-style passthrough subtrees.
         Ok(self.clone())
+    }
+}
+
+impl ToNode for Value {
+    fn to_node(&self) -> Result<Node, NodeError> {
+        Ok(leaf(self.clone()))
     }
 }
 

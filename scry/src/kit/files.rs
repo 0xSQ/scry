@@ -916,26 +916,24 @@ fn expand_root(
                         files.insert(resolved);
                     }
                 }
-                Some(ResolvedPath::Dir) => {
-                    // Skip the walk entirely if the root is pruned.
-                    if !compiled_prune.is_pruned(&resolved) {
-                        let source_root = resolved.as_path();
-                        let mut batch: Vec<PathBuf> = Vec::new();
-                        collect_dir_files(
-                            &resolved,
-                            source_root,
-                            pp.recursive,
-                            &mut batch,
-                            where_filter,
-                            compiled_prune,
-                            on_error,
-                        )?;
-                        sort.sort(&mut batch);
-                        for path in batch {
-                            files.insert(path);
-                        }
+                Some(ResolvedPath::Dir) if !compiled_prune.is_pruned(&resolved) => {
+                    let source_root = resolved.as_path();
+                    let mut batch: Vec<PathBuf> = Vec::new();
+                    collect_dir_files(
+                        &resolved,
+                        source_root,
+                        pp.recursive,
+                        &mut batch,
+                        where_filter,
+                        compiled_prune,
+                        on_error,
+                    )?;
+                    sort.sort(&mut batch);
+                    for path in batch {
+                        files.insert(path);
                     }
                 }
+                Some(ResolvedPath::Dir) => {}
                 None => {
                     // Broken symlink: skip silently.
                 }
@@ -1008,20 +1006,19 @@ fn expand_wildcard(
                     batch.push(path);
                 }
             }
-            Some(ResolvedPath::Dir) => {
-                if !compiled_prune.is_pruned(&path) {
-                    let source_root = path.as_path();
-                    collect_dir_files(
-                        &path,
-                        source_root,
-                        recursive,
-                        &mut batch,
-                        where_filter,
-                        compiled_prune,
-                        on_error,
-                    )?;
-                }
+            Some(ResolvedPath::Dir) if !compiled_prune.is_pruned(&path) => {
+                let source_root = path.as_path();
+                collect_dir_files(
+                    &path,
+                    source_root,
+                    recursive,
+                    &mut batch,
+                    where_filter,
+                    compiled_prune,
+                    on_error,
+                )?;
             }
+            Some(ResolvedPath::Dir) => {}
             None => {
                 // Broken symlink: skip silently.
             }

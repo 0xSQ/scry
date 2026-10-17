@@ -587,6 +587,10 @@ pub fn default_format_writer_registry() -> FormatWriterRegistry {
         builder = builder.add(JsonWriter).expect("json writer registration must succeed");
     }
     builder = builder.add(RhaiWriter).expect("rhai writer registration must succeed");
+    #[cfg(feature = "format-json5")]
+    {
+        builder = builder.add(Json5Writer).expect("json5 writer registration must succeed");
+    }
     #[cfg(feature = "format-toml")]
     {
         builder = builder.add(TomlWriter).expect("toml writer registration must succeed");
@@ -739,6 +743,23 @@ impl ConfigFormatWriter for RhaiWriter {
 
     fn write_node(&self, node: &Node) -> Result<String, NodeError> {
         to_rhai_string(node)
+    }
+}
+
+#[cfg(feature = "format-json5")]
+#[derive(Debug, Clone, Copy)]
+struct Json5Writer;
+
+#[cfg(feature = "format-json5")]
+impl ConfigFormatWriter for Json5Writer {
+    fn id(&self) -> Format {
+        Format::Json5
+    }
+
+    fn write_node(&self, node: &Node) -> Result<String, NodeError> {
+        let mut writer = crate::writer::Json5Writer::to_string_writer();
+        writer.value(node)?;
+        writer.into_string()
     }
 }
 
@@ -1030,7 +1051,7 @@ fn to_json_string(node: &Node) -> Result<String, NodeError> {
 /// Converts a node tree to a pretty-printed Rhai string.
 fn to_rhai_string(node: &Node) -> Result<String, NodeError> {
     let mut writer = crate::writer::RhaiWriter::to_string_writer();
-    crate::writer::ToRhai::to_rhai(node, &mut writer)?;
+    writer.value(node)?;
     writer.into_string()
 }
 

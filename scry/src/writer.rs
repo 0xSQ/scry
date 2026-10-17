@@ -1,16 +1,22 @@
 //! Serialization utilities.
 //!
 //! Provides:
-//! - [`RhaiWriter`] for serializing values to Rhai syntax
-//! - [`FlatWriter`] for serializing Node trees to flat key-value format
-//! - [`TreeWriter`] for serializing Node trees to visual tree format
+//! - [`Document`] for constructing annotated configuration values.
+//! - [`RhaiWriter`] for rendering values and documents as Rhai.
+//! - `Json5Writer` for JSON5 rendering when enabled.
+//! - [`FlatWriter`] for serializing Node trees to flat key-value format.
+//! - [`TreeWriter`] for serializing Node trees to visual tree format.
 
+mod document;
 mod flat;
-mod rhai;
+mod literal;
 mod tree;
 
+pub use document::{Document, DocumentBuilder, DocumentEntry, MapBuilder, SeqBuilder};
 pub use flat::{FlatConfig, FlatWriter};
-pub use rhai::{RhaiWriter, RhaiWriterConfig, StdoutRhaiWriter, ToRhai};
+#[cfg(feature = "format-json5")]
+pub use literal::{Json5Writer, Json5WriterConfig};
+pub use literal::{LiteralWriterConfig, RhaiWriter, RhaiWriterConfig, StdoutRhaiWriter};
 pub use tree::{Color, TreeConfig, TreeWriter};
 
 use crate::key_path::quote_string;
@@ -73,28 +79,32 @@ mod tests {
     #[test]
     fn test_write_map_inline() -> Result<(), NodeError> {
         let mut w = RhaiWriter::to_string_writer();
-        w.map_inline(|m| {
+        let document = Document::map(|m| {
             m.entry("a", 1i32)?;
             m.entry("b", 2i32)?;
             Ok(())
-        })?;
-        assert_eq!(w.as_str()?, "#{ a: 1, b: 2 }");
+        })?
+        .compact();
+        w.write(&document)?;
+        assert_eq!(w.as_str()?, "#{ a: 1, b: 2 }\n");
         Ok(())
     }
 
     #[test]
     fn rhai_writer_quotes_reserved_identifier_keys() -> Result<(), NodeError> {
         let mut w = RhaiWriter::to_string_writer();
-        w.map_inline(|m| {
-            for key in rhai::RHAI_RESERVED_IDENTIFIERS_FOR_TESTS {
-                m.entry(key, 1i32)?;
+        let document = Document::map(|m| {
+            for key in literal::RHAI_RESERVED_IDENTIFIERS_FOR_TESTS {
+                m.entry(*key, 1i32)?;
             }
             m.entry("normal", 1i32)?;
             Ok(())
-        })?;
+        })?
+        .compact();
+        w.write(&document)?;
         let output = w.as_str()?;
 
-        for key in rhai::RHAI_RESERVED_IDENTIFIERS_FOR_TESTS {
+        for key in literal::RHAI_RESERVED_IDENTIFIERS_FOR_TESTS {
             assert!(output.contains(&format!(r#""{key}": 1"#)), "key was not quoted: {key}");
         }
         assert!(output.contains("normal: 1"));
@@ -106,13 +116,15 @@ mod tests {
     #[test]
     fn test_write_seq_inline() -> Result<(), NodeError> {
         let mut w = RhaiWriter::to_string_writer();
-        w.seq_inline(|s| {
+        let document = Document::seq(|s| {
             s.elem(1i32)?;
             s.elem(2i32)?;
             s.elem(3i32)?;
             Ok(())
-        })?;
-        assert_eq!(w.as_str()?, "[1, 2, 3]");
+        })?
+        .compact();
+        w.write(&document)?;
+        assert_eq!(w.as_str()?, "[1, 2, 3]\n");
         Ok(())
     }
 
