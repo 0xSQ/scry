@@ -40,6 +40,16 @@ pub struct VariantInfo {
     pub doc: String,
 }
 
+impl VariantInfo {
+    /// Returns the canonical configuration name after applying the enum's naming policy.
+    pub fn config_name(&self, rename_all: Option<RenameAll>) -> String {
+        self.attrs
+            .rename
+            .clone()
+            .unwrap_or_else(|| rename_all_variant(&self.ident.to_string(), rename_all))
+    }
+}
+
 pub enum VariantData {
     Unit,
     Tuple(Vec<FieldInfo>),
@@ -129,8 +139,6 @@ impl FieldAttrs {
                     result.rename = Some(lit.value());
                     result.rename_span = Some(lit.span());
                     Ok(())
-                } else if meta.path.is_ident("via") {
-                    Err(meta.error("`via(...)` has been removed; use `with(module)` or individual function hooks"))
                 } else if meta.path.is_ident("with") {
                     let content;
                     syn::parenthesized!(content in meta.input);
@@ -139,9 +147,7 @@ impl FieldAttrs {
                     }
                     let module: syn::Path = content.parse()?;
                     if !content.is_empty() {
-                        return Err(
-                            content.error("`with(...)` accepts exactly one module path")
-                        );
+                        return Err(content.error("`with(...)` accepts exactly one module path"));
                     }
                     if let Some(first_span) = result.with_span {
                         return Err(conflicting_declaration_error(
@@ -154,29 +160,11 @@ impl FieldAttrs {
                     result.with_span = Some(meta.path.span());
                     Ok(())
                 } else if meta.path.is_ident("from_node_with") {
-                    let content;
-                    syn::parenthesized!(content in meta.input);
-                    let expression: Expr = content.parse()?;
-                    if !content.is_empty() {
-                        return Err(content.error("`from_node_with(...)` accepts exactly one callable expression"));
-                    }
-                    set_field_hook(&mut result.from_node_with, expression, "from_node_with")
+                    parse_field_hook(meta, &mut result.from_node_with, "from_node_with")
                 } else if meta.path.is_ident("describe_with") {
-                    let content;
-                    syn::parenthesized!(content in meta.input);
-                    let expression: Expr = content.parse()?;
-                    if !content.is_empty() {
-                        return Err(content.error("`describe_with(...)` accepts exactly one callable expression"));
-                    }
-                    set_field_hook(&mut result.describe_with, expression, "describe_with")
+                    parse_field_hook(meta, &mut result.describe_with, "describe_with")
                 } else if meta.path.is_ident("to_node_with") {
-                    let content;
-                    syn::parenthesized!(content in meta.input);
-                    let expression: Expr = content.parse()?;
-                    if !content.is_empty() {
-                        return Err(content.error("`to_node_with(...)` accepts exactly one callable expression"));
-                    }
-                    set_field_hook(&mut result.to_node_with, expression, "to_node_with")
+                    parse_field_hook(meta, &mut result.to_node_with, "to_node_with")
                 } else {
                     Err(meta.error("unknown scry field attribute"))
                 }
@@ -267,8 +255,18 @@ impl FieldAttrs {
     }
 }
 
-/// Sets a field hook once and identifies both declarations if it is repeated.
-fn set_field_hook(hook: &mut Option<Expr>, expression: Expr, name: &str) -> Result<()> {
+/// Parses one callable field hook and identifies both declarations if it is repeated.
+fn parse_field_hook(
+    meta: syn::meta::ParseNestedMeta<'_>,
+    hook: &mut Option<Expr>,
+    name: &str,
+) -> Result<()> {
+    let content;
+    syn::parenthesized!(content in meta.input);
+    let expression: Expr = content.parse()?;
+    if !content.is_empty() {
+        return Err(content.error(format!("`{name}(...)` accepts exactly one callable expression")));
+    }
     if let Some(first) = hook {
         return Err(conflicting_declaration_error(
             expression.span(),
@@ -511,11 +509,7 @@ fn validate_variant_names(variants: &[VariantInfo], rename_all: Option<RenameAll
     let mut payload_spellings = HashMap::new();
 
     for variant in variants {
-        let name = variant
-            .attrs
-            .rename
-            .clone()
-            .unwrap_or_else(|| rename_all_variant(&variant.ident.to_string(), rename_all));
+        let name = variant.config_name(rename_all);
         let span = variant.attrs.rename_span.unwrap_or_else(|| variant.ident.span());
 
         if let Some(first_span) = canonical_names.insert(name.clone(), span) {
@@ -630,7 +624,7 @@ pub fn is_option_type(ty: &Type) -> bool {
 // ---------------------------------------------------------------------------------------------- //
 // String Utilities
 
-pub fn rename_all_variant(s: &str, rename_all: Option<RenameAll>) -> String {
+fn rename_all_variant(s: &str, rename_all: Option<RenameAll>) -> String {
     match rename_all.unwrap_or(RenameAll::SnakeCase) {
         RenameAll::SnakeCase => s.to_snake_case(),
         RenameAll::KebabCase => s.to_kebab_case(),

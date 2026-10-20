@@ -129,6 +129,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "format-json")]
     #[test]
     fn json_keeps_the_whole_root_map_and_rejects_other_roots() {
         let directory = tempdir().unwrap();
@@ -146,7 +147,11 @@ mod tests {
     #[test]
     fn malformed_files_do_not_fall_back_to_an_empty_environment() {
         let directory = tempdir().unwrap();
-        for name in ["env.rhai", "env.json"] {
+        let mut names = vec!["env.rhai"];
+        if cfg!(feature = "format-json") {
+            names.push("env.json");
+        }
+        for name in names {
             let path = directory.path().join(name);
             std::fs::write(&path, "#{ broken: ").unwrap();
             assert!(load_rhai_env_from_path(&path).is_err());

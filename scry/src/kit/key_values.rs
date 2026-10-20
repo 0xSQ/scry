@@ -16,8 +16,8 @@ use crate::traits::{Describe, FromNode, ToNode};
 /// - a map/object (ergonomic): `{ "a": 1, "b": 2 }`
 /// - or a list of pairs (explicit): `[["a", 1], ["b", 2]]`
 ///
-/// Duplicates are preserved; the application can decide how to handle them.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// Duplicates are preserved. The application can decide how to handle them.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyValues<V>(pub Vec<(String, V)>);
 
 impl<V> KeyValues<V> {
@@ -57,6 +57,12 @@ impl<V> KeyValues<V> {
     }
 }
 
+impl<V> Default for KeyValues<V> {
+    fn default() -> Self {
+        Self(Vec::new())
+    }
+}
+
 // ---------------------------------------------------------------------------------------------- //
 // Shared shape operations
 
@@ -79,7 +85,6 @@ pub fn read_with<V>(
             Ok(KeyValues::new(entries))
         }
         Kind::Vec(_) => read::vec(node, |entry| {
-            // Pair shape errors retain the established KeyValues diagnostic.
             let pair = entry
                 .as_vec()
                 .map_err(|_| NodeError::invalid_value(&entry.path, "expected [key, value] pair"))?;
@@ -111,7 +116,7 @@ pub fn write_with<V>(
 
 /// Builds the key-value label from the supplied value description.
 ///
-/// Retains the container's existing label convention, including its fallback for unlabelled values.
+/// Uses `value` when the supplied description has no type label.
 pub fn description(value: Desc) -> Desc {
     let inner = value.type_label();
     let value_part = if inner.is_empty() { "value" } else { &inner };

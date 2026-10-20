@@ -1,8 +1,9 @@
 //! Specifies where and how to load the initial config node.
 
-use clap::{Arg, ArgMatches, Command};
 use std::fmt;
 use std::path::{Path, PathBuf};
+
+use clap::{Arg, ArgMatches, Command};
 
 use super::error::SetupError;
 use crate::node::{default_format_parser_registry, FormatParserRegistry, Node, NodeError};
@@ -14,29 +15,26 @@ use crate::BoxedError;
 
 /// Specifies where and how to load the initial config node.
 ///
-/// This struct configures how a CLI command discovers and loads its config file:
-/// - `positional`: Accept config path as a positional argument (e.g., `myapp config.json`)
-/// - `option`: Accept config path via a named flag (e.g., `myapp --config config.json`)
-/// - `discover`: Function to discover config when not explicitly provided
-/// - `path_policy`: How to handle ambiguous or missing config paths
-/// - `loader`: Function that parses a file path into a `Node`
+/// Accepts a config path through a positional argument, a named option, or discovery.
+/// Explicit paths take precedence over discovery. Path policies resolve competing explicit
+/// sources and missing input. The loader defaults to [`Node::parse_file`].
 ///
 /// # Example
 ///
-/// ```ignore
-/// ConfigSource::new()
-///     .positional("CONFIG", "Path to config file.")
-///     .discover(|cmd| discover_config(cmd))
+/// ```
+/// use scry::cli::setup::ConfigSource;
+///
+/// let source = ConfigSource::new().option("config", Some('C'), "Path to config file.");
 /// ```
 pub struct ConfigSource {
     /// Configuration for positional config path argument.
-    pub(crate) positional: Option<PositionalConfig>,
+    positional: Option<PositionalConfig>,
     /// Configuration for named option config path argument (e.g., --config).
-    pub(crate) option: Option<OptionConfig>,
+    option: Option<OptionConfig>,
     /// Discovery function called when no explicit config path is provided.
-    pub(crate) discover: Option<Box<DiscoverFn>>,
+    discover: Option<Box<DiscoverFn>>,
     /// Policy for resolving config paths across multiple sources and missing paths.
-    pub(crate) path_policy: ConfigPathPolicy,
+    path_policy: ConfigPathPolicy,
     /// Function that parses a file path into a Node.
     pub(crate) loader: Box<NodeLoaderFn>,
 }
@@ -48,94 +46,10 @@ impl Default for ConfigSource {
             option: None,
             discover: None,
             path_policy: ConfigPathPolicy::default(),
-            loader: Box::new(default_loader),
+            loader: Box::new(|path| Node::parse_file(path).map_err(Into::into)),
         }
     }
 }
-
-// ---------------------------------------------------------------------------------------------- //
-
-/// Configuration for a positional config path argument.
-pub(crate) struct PositionalConfig {
-    /// The clap argument ID/name for this positional.
-    pub name: String,
-    /// Custom help text.
-    pub help: Option<String>,
-}
-
-// ---------------------------------------------------------------------------------------------- //
-
-/// Configuration for a named option config path argument.
-pub(crate) struct OptionConfig {
-    /// The long flag name (e.g., "config" for --config).
-    pub long: String,
-    /// Optional short flag character.
-    pub short: Option<char>,
-    /// Custom help text.
-    pub help: Option<String>,
-}
-
-// ---------------------------------------------------------------------------------------------- //
-
-/// Policy for resolving config path when multiple sources are configured.
-///
-/// When both positional and option arguments are configured, this determines
-/// how to handle the case where both are provided.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum MultiSourcePolicy {
-    /// Error if multiple sources provide a config path.
-    #[default]
-    ErrorOnMultiple,
-    /// Use the first source that provides a config path (positional > option > discovery).
-    PreferPositional,
-    /// Use the option if provided, otherwise positional, otherwise discovery.
-    PreferOption,
-}
-
-// ---------------------------------------------------------------------------------------------- //
-
-/// Policy for handling the case where no config path is resolved.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum MissingConfigPolicy {
-    /// Error when no config path is available.
-    #[default]
-    Error,
-    /// Start from an empty config node instead of a file.
-    EmptyNode,
-}
-
-// ---------------------------------------------------------------------------------------------- //
-
-/// Policies for resolving config paths across multiple inputs.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ConfigPathPolicy {
-    /// Behavior when multiple sources provide a config path.
-    pub multiple: MultiSourcePolicy,
-    /// Behavior when no config path can be resolved.
-    pub missing: MissingConfigPolicy,
-}
-
-/// Function type for auto-discovering config file paths.
-///
-/// Returns `Ok(None)` when nothing was found and resolution should fall through to the
-/// missing-config policy; errors abort resolution.
-pub type DiscoverFn = dyn Fn(&str) -> Result<Option<PathBuf>, BoxedError>;
-
-/// Node loader function type.
-pub type NodeLoaderFn = dyn Fn(&Path) -> Result<Node, BoxedError>;
-
-// ---------------------------------------------------------------------------------------------- //
-
-/// The resolved config input for a command.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ResolvedConfigInput {
-    /// Load the initial config node from this path.
-    Path(PathBuf),
-    /// Start from an empty config node.
-    Empty,
-}
-
-// ---------------------------------------------------------------------------------------------- //
 
 impl ConfigSource {
     /// Creates a new config source with default settings.
@@ -153,7 +67,7 @@ impl ConfigSource {
     pub fn positional(mut self, name: impl Into<String>, help: impl Into<String>) -> Self {
         self.positional = Some(PositionalConfig {
             name: name.into(),
-            help: Some(help.into()),
+            help: help.into(),
         });
         self
     }
@@ -168,7 +82,7 @@ impl ConfigSource {
         self.option = Some(OptionConfig {
             long: long.into(),
             short,
-            help: Some(help.into()),
+            help: help.into(),
         });
         self
     }
@@ -229,7 +143,7 @@ impl ConfigSource {
         self.loader(move |path| load_rhai_var_node(path, &var_name))
     }
 
-    // ---------------------------------------------------------------------------------------------- //
+    // ------------------------------------------------------------------------------------------ //
 
     /// Adds config path arguments to a clap Command (positional and/or flag).
     ///
@@ -240,39 +154,24 @@ impl ConfigSource {
     /// policy when the invocation needs input.
     #[must_use]
     pub fn augment(&self, mut cmd: Command) -> Command {
-        // Add positional config path argument.
         if let Some(pos) = &self.positional {
-            let name = pos.name.clone();
-            let mut arg = Arg::new(name).value_parser(clap::value_parser!(PathBuf));
-
-            // Add help text (custom or default).
-            let help_text = match &pos.help {
-                Some(custom) => custom.clone(),
-                None => "Path to config file.".to_string(),
-            };
-            arg = arg.help(help_text);
-
-            cmd = cmd.arg(arg);
+            cmd = cmd.arg(
+                Arg::new(pos.name.clone())
+                    .value_parser(clap::value_parser!(PathBuf))
+                    .help(pos.help.clone()),
+            );
         }
 
-        // Add --config option if specified.
         if let Some(opt) = &self.option {
-            let long = opt.long.clone();
-            let mut arg = Arg::new(long.clone())
-                .long(long)
+            let mut arg = Arg::new(opt.long.clone())
+                .long(opt.long.clone())
                 .value_name("FILE")
-                .value_parser(clap::value_parser!(PathBuf));
+                .value_parser(clap::value_parser!(PathBuf))
+                .help(opt.help.clone());
 
             if let Some(short) = opt.short {
                 arg = arg.short(short);
             }
-
-            // Add help text (custom or default).
-            let help_text = match &opt.help {
-                Some(custom) => custom.clone(),
-                None => "Path to config file.".to_string(),
-            };
-            arg = arg.help(help_text);
 
             cmd = cmd.arg(arg);
         }
@@ -291,18 +190,11 @@ impl ConfigSource {
         cmd_name: &str,
         matches: &ArgMatches,
     ) -> Result<ResolvedConfigInput, SetupError> {
-        // Get positional path if present.
-        let positional_path = match &self.positional {
-            Some(pos) => matches.get_one::<PathBuf>(&pos.name).cloned(),
-            None => None,
-        };
-        // Get option path if present.
-        let option_path = match &self.option {
-            Some(opt) => matches.get_one::<PathBuf>(&opt.long).cloned(),
-            None => None,
-        };
+        let positional_path =
+            self.positional.as_ref().and_then(|pos| matches.get_one::<PathBuf>(&pos.name)).cloned();
+        let option_path =
+            self.option.as_ref().and_then(|opt| matches.get_one::<PathBuf>(&opt.long)).cloned();
 
-        // Apply policy.
         let resolved = match self.path_policy.multiple {
             MultiSourcePolicy::ErrorOnMultiple => {
                 if positional_path.is_some() && option_path.is_some() {
@@ -314,7 +206,6 @@ impl ConfigSource {
             MultiSourcePolicy::PreferOption => option_path.or(positional_path),
         };
 
-        // Return if we have a path from arguments.
         if let Some(path) = resolved {
             return Ok(ResolvedConfigInput::Path(path));
         }
@@ -343,12 +234,78 @@ impl ConfigSource {
 }
 
 // ---------------------------------------------------------------------------------------------- //
-// Node Loader
 
-/// Default loader that uses `Node::parse_file`.
-pub fn default_loader(path: &Path) -> Result<Node, BoxedError> {
-    Node::parse_file(path).map_err(|e| Box::new(e) as BoxedError)
+/// Configuration for a positional config path argument.
+struct PositionalConfig {
+    /// The clap argument ID/name for this positional.
+    name: String,
+    /// Custom help text.
+    help: String,
 }
+
+/// Configuration for a named option config path argument.
+struct OptionConfig {
+    /// The long flag name (e.g., "config" for --config).
+    long: String,
+    /// Optional short flag character.
+    short: Option<char>,
+    /// Custom help text.
+    help: String,
+}
+
+/// Policy for resolving config path when multiple sources are configured.
+///
+/// When both positional and option arguments are configured, this determines
+/// how to handle the case where both are provided.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MultiSourcePolicy {
+    /// Error if multiple sources provide a config path.
+    #[default]
+    ErrorOnMultiple,
+    /// Use the first source that provides a config path (positional > option > discovery).
+    PreferPositional,
+    /// Use the option if provided, otherwise positional, otherwise discovery.
+    PreferOption,
+}
+
+/// Policy for handling the case where no config path is resolved.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MissingConfigPolicy {
+    /// Error when no config path is available.
+    #[default]
+    Error,
+    /// Start from an empty config node instead of a file.
+    EmptyNode,
+}
+
+/// Policies for resolving config paths across multiple inputs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ConfigPathPolicy {
+    /// Behavior when multiple sources provide a config path.
+    pub multiple: MultiSourcePolicy,
+    /// Behavior when no config path can be resolved.
+    pub missing: MissingConfigPolicy,
+}
+
+/// Function type for auto-discovering config file paths.
+///
+/// Returns `Ok(None)` when nothing was found and resolution should fall through to the
+/// missing-config policy. Errors abort resolution.
+pub type DiscoverFn = dyn Fn(&str) -> Result<Option<PathBuf>, BoxedError>;
+
+/// Node loader function type.
+pub type NodeLoaderFn = dyn Fn(&Path) -> Result<Node, BoxedError>;
+
+/// The resolved config input for a command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResolvedConfigInput {
+    /// Load the initial config node from this path.
+    Path(PathBuf),
+    /// Start from an empty config node.
+    Empty,
+}
+
+// ---------------------------------------------------------------------------------------------- //
 
 /// Loads a named variable from a Rhai config file as a `Node`.
 pub fn load_rhai_var_node(path: impl AsRef<Path>, var_name: &str) -> Result<Node, NodeError> {
@@ -382,19 +339,12 @@ pub fn home_config_dir(app_name: &str) -> Option<PathBuf> {
 
 /// Searches for a config file named `<name>.<ext>` in the given directory.
 ///
-/// Tries each extension in order. If the directory does not exist, returns `NotFound`.
+/// Reports ambiguity when more than one extension matches. If none match, returns `NotFound`.
 pub fn find_config(
     dir: &Path,
     name: &str,
     extensions: &[&str],
 ) -> Result<PathBuf, FindConfigError> {
-    if !dir.exists() {
-        return Err(FindConfigError::NotFound {
-            name: name.to_owned(),
-            dir: dir.to_owned(),
-        });
-    }
-
     let mut matches: Vec<PathBuf> = Vec::new();
     for ext in extensions {
         let candidate = dir.join(format!("{}.{}", name, ext));
@@ -419,7 +369,7 @@ pub fn find_config(
 
 /// Searches for a config file named `<name>.<ext>` using extensions from a format registry.
 ///
-/// Tries each registered extension in order. If the directory does not exist, returns `NotFound`.
+/// Reports ambiguity when more than one extension matches. If none match, returns `NotFound`.
 pub fn find_config_with_registry(
     dir: &Path,
     name: &str,
@@ -477,6 +427,34 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
+
+    #[test]
+    fn discovery_requires_one_matching_file_and_reports_all_ambiguous_paths() {
+        let temp = TempDir::new().unwrap();
+        let directory = temp.path().join("configs");
+        let extensions = ["json", "rhai"];
+        assert!(matches!(
+            find_config(&directory, "app", &extensions),
+            Err(FindConfigError::NotFound { .. })
+        ));
+
+        fs::create_dir(&directory).unwrap();
+        let json = directory.join("app.json");
+        let rhai = directory.join("app.rhai");
+        fs::create_dir(&json).unwrap();
+        fs::write(&rhai, "#{}").unwrap();
+        assert_eq!(find_config(&directory, "app", &extensions).unwrap(), rhai);
+
+        fs::remove_dir(&json).unwrap();
+        fs::write(&json, "{}").unwrap();
+        let error = find_config(&directory, "app", &extensions).unwrap_err();
+        let FindConfigError::Ambiguous { name, dir, paths } = error else {
+            panic!("both matching files must be reported as ambiguous");
+        };
+        assert_eq!(name, "app");
+        assert_eq!(dir, directory);
+        assert_eq!(paths, [json, rhai]);
+    }
 
     #[test]
     fn load_rhai_var_node_extracts_exported_variable() {

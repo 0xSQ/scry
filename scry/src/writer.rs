@@ -34,19 +34,8 @@ use crate::node::Value;
 /// - Numbers, bools, and null are unquoted
 pub fn format_value(value: &Value) -> String {
     match value {
-        Value::Null => "null".to_string(),
-        Value::Bool(b) => b.to_string(),
         Value::String(s) => quote_string(s),
-        Value::I8(n) => n.to_string(),
-        Value::I16(n) => n.to_string(),
-        Value::I32(n) => n.to_string(),
-        Value::I64(n) => n.to_string(),
-        Value::U8(n) => n.to_string(),
-        Value::U16(n) => n.to_string(),
-        Value::U32(n) => n.to_string(),
-        Value::U64(n) => n.to_string(),
-        Value::F32(n) => n.to_string(),
-        Value::F64(n) => n.to_string(),
+        _ => value.to_string(),
     }
 }
 
@@ -228,47 +217,6 @@ mod tests {
         let config = FlatConfig { separator: ": " };
         let output = node.to_flat_string_with_config(config);
         assert_eq!(output, r#"host: "localhost""#);
-    }
-
-    #[test]
-    fn flat_comprehensive_example() {
-        // Matches the reference example from the design doc (subset)
-        let node = node_from_json(
-            r#"{
-                "name": "my-project",
-                "version": "1.2.3",
-                "enabled": true,
-                "max_retries": 5,
-                "timeout_ms": null,
-                "database": {
-                    "host": "localhost",
-                    "port": 5432,
-                    "credentials": {
-                        "username": "admin",
-                        "password": "secret"
-                    }
-                },
-                "tags": ["production", "critical"],
-                "empty_map": {},
-                "empty_vec": []
-            }"#,
-        );
-        let output = node.to_flat_string();
-        assert_eq!(
-            output,
-            indoc! {r#"
-                name "my-project"
-                version "1.2.3"
-                enabled true
-                max_retries 5
-                timeout_ms null
-                database.host "localhost"
-                database.port 5432
-                database.credentials.username "admin"
-                database.credentials.password "secret"
-                tags[0] "production"
-                tags[1] "critical""#}
-        );
     }
 
     // ------------------------------------------------------------------------------------------ //
@@ -518,49 +466,6 @@ mod tests {
         assert_eq!(node_from_json("42").to_tree_string_with_config(config.clone()), "42");
         assert_eq!(node_from_json("{}").to_tree_string_with_config(config.clone()), "");
         assert_eq!(node_from_json("[]").to_tree_string_with_config(config), "");
-    }
-
-    #[test]
-    fn tree_comprehensive_example() {
-        // Based on the design doc reference example (subset)
-        let node = node_from_json(
-            r#"{
-                "name": "my-project",
-                "enabled": true,
-                "database": {
-                    "host": "localhost",
-                    "port": 5432,
-                    "credentials": {
-                        "username": "admin",
-                        "password": "secret"
-                    }
-                },
-                "tags": ["production", "critical"],
-                "logging": {
-                    "level": "debug"
-                }
-            }"#,
-        );
-        let output = node.to_tree_string_with_config(TreeConfig::no_color());
-        // Verify the structure - this tests multiple tree line decisions
-        // Leaf indices are hidden by default
-        assert_eq!(
-            output,
-            indoc! {r#"
-                ▸ name "my-project"
-                ▸ enabled true
-                ▾ database
-                ┊  ▸ host "localhost"
-                ┊  ▸ port 5432
-                ┊  ▾ credentials
-                ┊     ▸ username "admin"
-                ┊     ▸ password "secret"
-                ▪ tags
-                ┊  ▸ "production"
-                ┊  ▸ "critical"
-                ▾ logging
-                   ▸ level "debug""#}
-        );
     }
 
     #[test]

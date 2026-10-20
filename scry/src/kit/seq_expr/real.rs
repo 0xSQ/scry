@@ -258,15 +258,7 @@ pub(super) fn validate(expression: &SeqExpr) -> Result<(), ProfileError> {
         for value in [&range.start.value, &range.stop.value].into_iter().flatten() {
             validate_value(value)?;
         }
-        if range.start.value.is_none() {
-            return Err(ProfileError::new(
-                expression.source.clone(),
-                term_index,
-                term.span,
-                ProfileErrorKind::OpenEndpointUnsupportedForReal,
-            ));
-        }
-        if range.stop.value.is_none() {
+        if range.start.value.is_none() || range.stop.value.is_none() {
             return Err(ProfileError::new(
                 expression.source.clone(),
                 term_index,

@@ -1,4 +1,4 @@
-//! Code generation for derive macros: FromNode, ToNode, Describe, Config.
+//! Generates configuration conversion, default, description, and string-enum implementations.
 
 use std::collections::HashSet;
 
@@ -9,8 +9,8 @@ use syn::visit::{self, Visit};
 use syn::{DeriveInput, Generics, Member};
 
 use crate::parse::{
-    self, is_option_type, rename_all_variant, DeriveTarget, EnumInfo, FieldFallback, FieldInfo,
-    StructFields, StructInfo, VariantData,
+    self, is_option_type, DeriveTarget, EnumInfo, FieldFallback, FieldInfo, StructFields,
+    StructInfo, VariantData,
 };
 
 // ---------------------------------------------------------------------------------------------- //
@@ -58,10 +58,7 @@ pub fn derive_describe_impl(input: &DeriveInput) -> syn::Result<TokenStream> {
     }
 }
 
-/// Generates both `FromNode` and `Describe` implementations.
-///
-/// Produces `FromNode` for parsing and `Describe` for documentation.
-/// This is the recommended derive for config types.
+/// Generates the configuration traits supported by the declaration's shape and attributes.
 pub fn derive_config_impl(input: &DeriveInput) -> syn::Result<TokenStream> {
     let (from_node, desc, from_defaults, string_enum) = match parse::parse_input(input)? {
         DeriveTarget::Struct(info) => {
@@ -291,11 +288,7 @@ fn generate_enum_from_node(info: &EnumInfo) -> syn::Result<TokenStream> {
 
     for variant in &info.variants {
         let v_ident = &variant.ident;
-        let key = variant
-            .attrs
-            .rename
-            .clone()
-            .unwrap_or_else(|| rename_all_variant(&v_ident.to_string(), info.attrs.rename_all));
+        let key = variant.config_name(info.attrs.rename_all);
         all_variant_keys.push(key.clone());
 
         match &variant.data {
@@ -647,11 +640,7 @@ fn generate_enum_to_node(info: &EnumInfo) -> syn::Result<TokenStream> {
 
     for variant in &info.variants {
         let v_ident = &variant.ident;
-        let key = variant
-            .attrs
-            .rename
-            .clone()
-            .unwrap_or_else(|| rename_all_variant(&v_ident.to_string(), info.attrs.rename_all));
+        let key = variant.config_name(info.attrs.rename_all);
 
         match &variant.data {
             VariantData::Unit => {
@@ -774,11 +763,7 @@ fn generate_enum_string_enum(info: &EnumInfo) -> syn::Result<TokenStream> {
 
     for variant in &info.variants {
         let v_ident = &variant.ident;
-        let key = variant
-            .attrs
-            .rename
-            .clone()
-            .unwrap_or_else(|| rename_all_variant(&v_ident.to_string(), info.attrs.rename_all));
+        let key = variant.config_name(info.attrs.rename_all);
 
         if !matches!(variant.data, VariantData::Unit) {
             return Err(syn::Error::new_spanned(
@@ -978,7 +963,7 @@ fn generate_template_default(field: &FieldInfo, scry: &TokenStream) -> TokenStre
     quote! { .with_value(|| { #provider }) }
 }
 
-/// Removes grouping that would become an unnecessary-parentheses warning in an assignment.
+/// Returns the expression inside any syntactic grouping.
 fn ungroup_expression(expr: &syn::Expr) -> &syn::Expr {
     match expr {
         syn::Expr::Paren(expr) => ungroup_expression(&expr.expr),
@@ -1022,9 +1007,7 @@ fn has_builtin_node_encoding(ty: &syn::Type) -> bool {
 }
 
 fn is_none_expression(expr: &syn::Expr) -> bool {
-    match expr {
-        syn::Expr::Paren(expr) => is_none_expression(&expr.expr),
-        syn::Expr::Group(expr) => is_none_expression(&expr.expr),
+    match ungroup_expression(expr) {
         syn::Expr::Path(path) if path.qself.is_none() => {
             path.path.segments.last().is_some_and(|segment| segment.ident == "None")
         }
@@ -1039,9 +1022,7 @@ fn is_empty_vec_expression(ty: &syn::Type, expr: &syn::Expr) -> bool {
     if !ty.path.segments.last().is_some_and(|segment| segment.ident == "Vec") {
         return false;
     }
-    match expr {
-        syn::Expr::Paren(expr) => is_empty_vec_expression(&syn::Type::Path(ty.clone()), &expr.expr),
-        syn::Expr::Group(expr) => is_empty_vec_expression(&syn::Type::Path(ty.clone()), &expr.expr),
+    match ungroup_expression(expr) {
         syn::Expr::Macro(expr) => expr.mac.path.is_ident("vec") && expr.mac.tokens.is_empty(),
         syn::Expr::Call(expr) if expr.args.is_empty() => {
             let syn::Expr::Path(path) = expr.func.as_ref() else {
@@ -1056,9 +1037,7 @@ fn is_empty_vec_expression(ty: &syn::Type, expr: &syn::Expr) -> bool {
 }
 
 fn literal_default_display(expr: &syn::Expr) -> Option<String> {
-    match expr {
-        syn::Expr::Paren(expr) => literal_default_display(&expr.expr),
-        syn::Expr::Group(expr) => literal_default_display(&expr.expr),
+    match ungroup_expression(expr) {
         syn::Expr::Lit(syn::ExprLit { lit, .. }) => match lit {
             syn::Lit::Bool(lit) => Some(lit.value.to_string()),
             syn::Lit::Int(lit) => Some(lit.base10_digits().to_string()),
@@ -1076,9 +1055,7 @@ fn literal_default_display(expr: &syn::Expr) -> Option<String> {
 }
 
 fn numeric_literal_display(expr: &syn::Expr) -> Option<String> {
-    match expr {
-        syn::Expr::Paren(expr) => numeric_literal_display(&expr.expr),
-        syn::Expr::Group(expr) => numeric_literal_display(&expr.expr),
+    match ungroup_expression(expr) {
         syn::Expr::Lit(syn::ExprLit {
             lit: syn::Lit::Int(lit),
             ..
@@ -1098,9 +1075,7 @@ fn generate_enum_describe(info: &EnumInfo, config: bool) -> syn::Result<TokenStr
     let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
     let doc = doc_override(&info.doc);
     let default = info.variants.iter().find(|variant| variant.attrs.is_default).map(|variant| {
-        let key = variant.attrs.rename.clone().unwrap_or_else(|| {
-            rename_all_variant(&variant.ident.to_string(), info.attrs.rename_all)
-        });
+        let key = variant.config_name(info.attrs.rename_all);
         let value = config.then(|| {
             quote! {
                 .with_value(|| Ok(Some(#scry::Node::new_leaf(
@@ -1115,12 +1090,7 @@ fn generate_enum_describe(info: &EnumInfo, config: bool) -> syn::Result<TokenStr
     let mut variant_descs = Vec::new();
 
     for variant in &info.variants {
-        let v_ident = &variant.ident;
-        let key = variant
-            .attrs
-            .rename
-            .clone()
-            .unwrap_or_else(|| rename_all_variant(&v_ident.to_string(), info.attrs.rename_all));
+        let key = variant.config_name(info.attrs.rename_all);
         let variant_doc = &variant.doc;
         match &variant.data {
             VariantData::Unit => {
@@ -1245,12 +1215,7 @@ fn generate_value_desc(field: &FieldInfo, scry: &TokenStream) -> TokenStream {
 
 /// Preserves ordinary call coercions for paths wrapped in grouping expressions.
 fn is_path_expression(expression: &syn::Expr) -> bool {
-    match expression {
-        syn::Expr::Path(_) => true,
-        syn::Expr::Paren(expression) => is_path_expression(&expression.expr),
-        syn::Expr::Group(expression) => is_path_expression(&expression.expr),
-        _ => false,
-    }
+    matches!(ungroup_expression(expression), syn::Expr::Path(_))
 }
 
 /// Adds positional field prose without erasing an inherited description when it is absent.
@@ -1431,19 +1396,13 @@ impl<'ast> Visit<'ast> for TypeUsage<'_> {
 
 /// Resolves the token path for the `scry` runtime crate.
 ///
-/// Uses `proc-macro-crate` to determine the correct path at compile time:
-/// - When invoked from within the `scry` crate itself, produces `crate`.
-/// - When invoked from a downstream crate, produces the dependency name
-///   (handling renames in Cargo.toml).
+/// Uses the dependency name from Cargo, including renamed dependencies. Within the Scry package,
+/// `::scry` resolves through the runtime's self-alias and works in examples and integration tests.
 fn scry_crate_path() -> TokenStream {
     use proc_macro_crate::{crate_name, FoundCrate};
 
     let found = crate_name("scry").expect("scry must be present in Cargo.toml");
     match found {
-        // Always emit `::scry` (or the renamed ident) rather than `crate`. The scry
-        // library crate uses `extern crate self as scry;` so `::scry` resolves
-        // everywhere: the library itself, its examples, integration tests, and
-        // downstream consumers.
         FoundCrate::Itself => quote! { ::scry },
         FoundCrate::Name(name) => {
             let ident = syn::Ident::new(&name, proc_macro2::Span::call_site());

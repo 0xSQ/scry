@@ -7,12 +7,12 @@
 //! Help and descriptions do not run the loader.
 //!
 //! Run with:
-//!   cargo run --example manual_setup -- -C examples/manual_setup.json
+//!   cargo run --example manual_setup -- -C scry/examples/manual_setup.json
 //!   cargo run --example manual_setup -- -S desc
-//!   cargo run --example manual_setup -- -C examples/manual_setup.json -S get
-//!   cargo run --example manual_setup -- -C examples/manual_setup.json -S --set retries 5
-//!   cargo run --example manual_setup -- -C examples/manual_setup.json --env staging -n
-//!   cargo run --example manual_setup -- -C examples/manual_setup.json --canary beta
+//!   cargo run --example manual_setup -- -C scry/examples/manual_setup.json -S get
+//!   cargo run --example manual_setup -- -C scry/examples/manual_setup.json -S --set retries 5
+//!   cargo run --example manual_setup -- -C scry/examples/manual_setup.json --env staging -n
+//!   cargo run --example manual_setup -- -C scry/examples/manual_setup.json --canary beta
 
 use std::path::Path;
 

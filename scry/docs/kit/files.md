@@ -13,6 +13,24 @@ a structured map when the selection needs more rules.
 
 ## Quick Start
 
+Use `Files` in a configuration type, then supply the base for relative paths when collecting:
+
+```rust
+use std::path::Path;
+use scry::kit::Files;
+use scry::{Config, Node};
+
+#[derive(Config)]
+struct Inputs {
+    files: Files,
+}
+
+let input: Inputs = Node::parse_file("config.rhai")?.as_type()?;
+let paths = input.files.locate(Some(Path::new("project")))?;
+```
+
+The following snippets show the `files` member inside a configuration object.
+
 Select every file under one directory:
 
 ```rhai
@@ -193,48 +211,6 @@ exclude pattern rejects it.
 
 ## Cookbook
 
-### One Directory Recursively
-
-```rhai
-files: "project/src"
-```
-
-### Several Directories
-
-```rhai
-files: ["project/src", "project/tests", "project/examples"]
-```
-
-### Directories by Prefix
-
-```rhai
-files: "archive/202*"
-```
-
-This matches roots like `archive/2020`, `archive/2021`, and `archive/2024`, then walks each matched
-directory.
-
-### Image Files Under Matching Roots
-
-```rhai
-files: #{
-    from: "archive/202*",
-    where: #{ ext: ["png", "jpg", "jpeg", "webp", "gif", "bmp", "avif"] },
-}
-```
-
-### Exclude Thumbnails and Cache Directories
-
-```rhai
-files: #{
-    from: "images",
-    where: #{
-        ext: ["png", "jpg", "webp"],
-        path: #{ exclude: ["**/thumbs/**", "**/.cache/**"] },
-    },
-}
-```
-
 ### Source Files but Not Generated Files
 
 ```rhai
@@ -346,27 +322,6 @@ files: #{
 
 Use `where.path.exclude` for ordinary result filtering. Use `from.prune` when skipping the walk
 itself matters.
-
-### Different Rules for Different Roots
-
-```rhai
-files: #{
-    sources: [
-        #{
-            from: "src",
-            where: #{ ext: "rs" },
-        },
-        #{
-            from: "docs",
-            where: #{ ext: "md" },
-        },
-        #{
-            from: "assets",
-            where: #{ ext: ["png", "jpg", "webp"] },
-        },
-    ],
-}
-```
 
 ## Reference
 

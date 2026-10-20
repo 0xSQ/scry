@@ -93,7 +93,7 @@ fn config_export_works_as_redirect_value() {
     let real_dir = temp.path().join("real");
     fs::create_dir(&real_dir).unwrap();
     let expected = write(&real_dir, "generate.rhai", "#{}");
-    write(temp.path(), "app.rhai", r#"export let config = "real";"#);
+    write(temp.path(), "app.rhai", r#"export let config = "real"; "unused-final-value""#);
 
     let resolution = resolve_in_dir(temp.path(), "app", &["generate"]).unwrap();
     assert_eq!(resolution.path, Some(expected));

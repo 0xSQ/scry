@@ -63,7 +63,8 @@ fn optional_metadata_retains_the_callers_final_link_policy() {
     match result {
         Ok(()) => {}
         Err(error)
-            if matches!(error.kind(), ErrorKind::PermissionDenied | ErrorKind::Unsupported) =>
+            if error.kind() == ErrorKind::Unsupported
+                || (cfg!(windows) && error.raw_os_error() == Some(1314)) =>
         {
             eprintln!("skipping dangling final-link coverage: {error}");
             return;

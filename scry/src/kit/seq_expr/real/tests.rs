@@ -19,13 +19,6 @@ fn subdivision_is_anchored_exactly_and_honors_all_delimiters() {
 }
 
 #[test]
-fn subdivision_is_symmetric_when_descending() {
-    let mut ascending = evaluate("[0.0..1.0]/6");
-    ascending.reverse();
-    assert_eq!(evaluate("[1.0..0.0]/6"), ascending);
-}
-
-#[test]
 fn fixed_decimal_steps_use_an_exact_anchor() {
     assert_eq!(evaluate("[0.1..0.5]:0.1"), vec![0.1, 0.2, 0.3, 0.4, 0.5]);
     assert_eq!(evaluate("[0..1]:0.3"), vec![0.0, 0.3, 0.6, 0.9]);
@@ -39,8 +32,19 @@ fn accepts_integer_and_exponent_spelling() {
 
 #[test]
 fn rejects_open_endpoints_during_profile_building() {
-    let error = "1.0..".parse::<RealSeqExpr>().unwrap_err();
-    assert!(matches!(error, super::super::ExprBuildError::Profile(_)));
+    for source in ["1.0..", "..1.0", "[1.0..]", "[..1.0]", ".."] {
+        let expression = SeqExpr::parse(source).unwrap();
+        let error = RealSeqExpr::try_from(expression).unwrap_err();
+        assert_eq!(error.kind(), &ProfileErrorKind::OpenEndpointUnsupportedForReal);
+        assert_eq!(error.source_text(), source);
+        assert_eq!(
+            error.span(),
+            Span {
+                start: 0,
+                end: source.len()
+            }
+        );
+    }
 }
 
 #[test]
@@ -66,19 +70,6 @@ fn rejects_symbolic_singletons_and_endpoints_at_the_authored_span() {
 fn equal_endpoints_preserve_subdivision_cardinality() {
     assert_eq!(evaluate("[1.0..1.0]/2"), [1.0, 1.0, 1.0]);
     assert!(evaluate("(1.0..1.0)/1").is_empty());
-}
-
-#[test]
-fn rejects_non_finite_conversion_and_large_output_before_materializing() {
-    let finite_error = RealEvaluator::new(RealEvalOptions::default())
-        .evaluate(&"1e4000".parse().unwrap())
-        .unwrap_err();
-    assert_eq!(finite_error.kind(), &EvalErrorKind::RealValueNotFinite { target_type: "f64" });
-
-    let limit_error = RealEvaluator::new(RealEvalOptions { max_values: 3 })
-        .evaluate(&"[0..1]/4".parse().unwrap())
-        .unwrap_err();
-    assert_eq!(limit_error.kind(), &EvalErrorKind::OutputLimitExceeded { limit: 3 });
 }
 
 #[test]

@@ -1,6 +1,4 @@
 //! Tests for large integer precision handling in format conversions.
-#![cfg(all(feature = "format-json", feature = "format-json5"))]
-
 use scry::node::Format;
 use scry::{FromNode, Node};
 
@@ -12,6 +10,7 @@ struct Sentinel {
     sentinel: u64,
 }
 
+#[cfg(feature = "format-json")]
 #[derive(Debug, Clone, PartialEq, FromNode)]
 struct SignedSentinel {
     sentinel: i64,
@@ -20,6 +19,7 @@ struct SignedSentinel {
 // ---------------------------------------------------------------------------------------------- //
 // JSON Tests
 
+#[cfg(feature = "format-json")]
 #[test]
 fn parse_u64_max_from_json() {
     let json = format!(r#"{{"sentinel": {}}}"#, u64::MAX);
@@ -28,6 +28,7 @@ fn parse_u64_max_from_json() {
     assert_eq!(cfg.sentinel, u64::MAX);
 }
 
+#[cfg(feature = "format-json")]
 #[test]
 fn parse_i64_max_plus_one_from_json() {
     let value = i64::MAX as u64 + 1;
@@ -37,6 +38,7 @@ fn parse_i64_max_plus_one_from_json() {
     assert_eq!(cfg.sentinel, value);
 }
 
+#[cfg(feature = "format-json")]
 #[test]
 fn parse_i64_max_as_both_types_from_json() {
     let json = format!(r#"{{"sentinel": {}}}"#, i64::MAX);
@@ -57,6 +59,7 @@ fn parse_i64_max_as_both_types_from_json() {
 // Note: The json5 crate can't parse integers > i64::MAX directly.
 // Large u64 values must be provided as strings in JSON5.
 
+#[cfg(feature = "format-json5")]
 #[test]
 fn parse_string_u64_max_from_json5() {
     // Large u64 values must be provided as strings in JSON5
@@ -66,6 +69,7 @@ fn parse_string_u64_max_from_json5() {
     assert_eq!(cfg.sentinel, u64::MAX);
 }
 
+#[cfg(feature = "format-json5")]
 #[test]
 fn parse_i64_max_from_json5() {
     // i64::MAX is the largest integer JSON5 can parse directly
@@ -117,6 +121,7 @@ fn parse_i64_max_from_rhai() {
 // ---------------------------------------------------------------------------------------------- //
 // Error Cases
 
+#[cfg(feature = "format-json")]
 #[test]
 fn negative_value_fails_as_u64() {
     let json = r#"{"sentinel": -42}"#;

@@ -2,9 +2,9 @@
 
 A Rust library for building config-file-driven interfaces and CLI tools on top of them.
 
-*Scry* handles the scaffolding of config-driven applications: parsing files into typed structs, generating format documentation, validating user input with helpful errors, and letting users inspect and override values at runtime. As its primary use case, the library offers utilities for assembling clap-based CLI tools out of these components, with minimal boilerplate.
+*Scry* helps you build Rust applications around configuration files. It loads settings into typed structs, generates documentation from your types, and reports invalid input with helpful errors. Its clap-based CLI utilities let users inspect and override those settings from the command line.
 
-It also has built-in support for [Rhai](https://rhai.rs) scripts as config files, enabling variables, imports, and computed values. (Which may be what you always wanted, you just didn't know it yet.)
+It also supports [Rhai](https://rhai.rs) scripts as config files, enabling variables, imports, and computed values. (Which may be what you always wanted, you just didn't know it yet.)
 
 ## Example
 
@@ -28,20 +28,21 @@ let config: Deploy = node.as_type()?;
 println!("Deploying to {} with {} retries", config.target, config.retries);
 ```
 There are two steps:
-- You parse your file into a `scry::Node`
-- You convert that into your struct with `as_type<T>()`
 
-And the `scry::Config` derive generates the code needed for the second step automatically.
+1. Parse the file into a `Node`.
+2. Convert it into your struct with `as_type::<T>()`.
+
+The `Config` derive generates the conversion code for the second step.
 
 ## But Why?
 
-If you are familiar with [serde](https://serde.rs), you probably recognize this pattern. In `serde`, you parse your JSON into an intermediate tree of `serde_json::Value` objects and then convert that into your struct, although you would typically do it all in one step. So why not just use `serde`? If all you want is to serialize your files into your structs, you probably should. Scry's focus is on applications where you want to do more than just directly translate your data. Where you want to inspect or override your configuration before converting it into your application's types. And where you don't want to do this with language-specific intermediate representations like `serde_json::Value`, or `toml::Value`.
+If you're familiar with [serde](https://serde.rs), you probably recognize this pattern: parse a file into a struct, often in a single step. So why not just use `serde`? For straightforward serialization and deserialization, you probably should. Scry focuses on applications where you also want to inspect or override configuration before converting it into your application's types, without tying that logic to a format-specific tree such as `serde_json::Value` or `toml::Value`.
 
-This is the point of Scry's own `scry::Node` tree. It is basically a generic version of your typical config tree representation, but one whose primitives are not tied to the quirks of some particular source language. The primitive types directly map onto those natively used by Rust. All the utility code you write for this intermediate representation will be reusable across all file formats that can be converted into a `scry::Node` tree, present and future ones.
+This is the point of Scry's `Node` tree. Its primitives map directly to Rust's native types, giving configuration code a common representation across input languages. Utilities written against it can work with any file format that can be converted into a `Node`.
 
 ## Building a CLI with Scry
 
-What exactly can you do with this? To further motivate things, let's build a small CLI tool. Say we have a deployment pipeline we want to configure. And it comes in the form of a function that takes a single struct argument with all the relevant parameters:
+To see how these pieces fit together, let's build a small CLI for a deployment pipeline. We'll start with a function that takes a struct containing its settings:
 
 ```rust
 // Our deployment function. Just prints things for now.
@@ -64,7 +65,7 @@ fn deploy(config: Deploy) {
 }
 ```
 
-With the following input struct:
+Here's the input type, along with its nested settings:
 
 ```rust
 use scry::Config;
@@ -109,7 +110,7 @@ struct Notify {
 }
 ```
 
-And a corresponding config file `deploy.json` to read from:
+And a corresponding `deploy.json`:
 
 ```json
 {
@@ -125,7 +126,7 @@ Let's set up a CLI that loads this file and calls the `deploy` function with it.
 
 ### The `Setup` CLI Builder
 
-Scry includes a `setup` module with a core builder type called `Setup` that lets you wire together a clap command to do just this with minimal boilerplate:
+The `Setup` builder in `scry::cli::setup` wires this function into a clap command:
 
 ```rust
 use scry::cli::setup::{Setup, SetupError};
@@ -138,7 +139,7 @@ fn main() -> Result<(), SetupError> {
 }
 ```
 
-The `into_bundle` method combines your setup with a target *payload* function and returns a `Bundle` - an object that pairs the generated clap command with its dispatch logic. Calling `run()` parses arguments and dispatches to the target function. Running it shows:
+The `into_bundle` method pairs the generated clap command with your *payload* function in a `Bundle`. Calling `run()` parses the arguments and dispatches to that function:
 
 ```
 $ deploy -C deploy.json
@@ -152,7 +153,7 @@ Applications can also opt into automatically loading configuration files from de
 
 ### Configuration support
 
-Every Setup command provides configuration support through `--scry` or its short alias `-S`. The ordinary help lists config-file selection among the command options and the support switch in a closing `Configuration support` section:
+Every `Setup` command provides configuration support through `--scry` or its short alias `-S`. The ordinary help lists config-file selection among the command options and the support switch in a closing `Configuration support` section:
 
 ```
 $ deploy --help
@@ -166,7 +167,7 @@ Configuration support:
   -S, --scry [<ARGS>...]  Inspects and adjusts this command's configuration.
 ```
 
-Put application arguments before `-S`. The support commands have their own help. Their flags, such as `-d`, are independent from application flags before `-S`:
+Put application arguments before `-S`. The support commands have their own help and flags, independent of application flags before `-S`:
 
 ```
 $ deploy -S
@@ -206,14 +207,14 @@ $ deploy -S desc
 ◇ dry_run: bool → false              ‣ Run without making changes.
 ```
 
-Required fields (`◆`), optional fields (`◇`), enum variants (`›`/`»`), and (displayable) default values (`→`) are all indicated visually. Comments are pulled from your struct's doc comments automatically. Symbols, spacing, and other formatting details can be customized if desired.
+The display marks required fields (`◆`), optional fields (`◇`), enum variants (`›`/`»`), and displayable defaults (`→`). Descriptions come from your type's doc comments. Symbols, spacing, and other formatting details are customizable.
 
 Subsections can be queried by path:
 
 ```
 $ deploy -S desc notify
 ◇ notify                             ‣ Notification settings.
-   ◆ slack_url: string               ‣ Slack webhook URL.
+   ◆ slack_url: string               ‣ Slack URL to send notifications to.
    ◇ on_failure_only: bool → false   ‣ Only notify on failure.
 ```
 
@@ -231,7 +232,7 @@ $ deploy -C deploy.json -S get
    ▸ slack_url "https://hooks.slack.com/myhook"
 ```
 
-`get --as flat` outputs everything as `key value` lines, giving the full key paths with a space between each path and value:
+`get --as flat` prints one `key value` line per leaf, using full key paths:
 
 ```
 $ deploy -C deploy.json -S get --as flat
@@ -318,7 +319,7 @@ $ deploy -C deploy.json -S --set notify.on_failure_olny true
 Error: Unknown key 'on_failure_olny' in 'notify'
 
 Available fields:
-◆ slack_url: string               ‣ Slack webhook URL.
+◆ slack_url: string               ‣ Slack URL to send notifications to.
 ◇ on_failure_only: bool → false   ‣ Only notify on failure.
 ```
 
@@ -353,7 +354,7 @@ Options:
   -h, --help         Print help
 ```
 
-Note that config key names will be kebab-cased automatically (see `--dry-run` above), unless explicitly overridden (see `--env`).
+Exposed argument names are kebab-cased automatically (see `--dry-run` above), unless explicitly overridden (see `--env`).
 
 Now users can write:
 
@@ -368,12 +369,11 @@ config remains unchanged.
 
 When several fixed assignments form one named CLI concept, declare a preset instead:
 
-
 ```rust
 e.preset("safe")
     .set("dry_run", true)
-    .set("parallelism", 1_usize)
-    .help("Runs one operation at a time without applying changes.");
+    .set("retries", 1_u32)
+    .help("Retries once without applying changes.");
 ```
 
 Flags and presets apply in application argument order. Input edits apply afterward, in suffix
@@ -444,8 +444,8 @@ defaults::base + #{
 ## Further
 
 - **[Core Concepts](docs/concepts.md)** - Explains the basics: how the `Node` tree works, how to implement `FromNode` manually, etc.
-- **[Config File Locations](docs/config-files.md)** - Wires `Setup` discovery,
-  with a shared checkout, local exceptions, and Rhai wrappers.
+- **[Config File Locations](docs/config-files.md)** - Explains `Setup` discovery,
+  shared defaults, local exceptions, and Rhai wrappers.
 - **[Writing Config Files](docs/writing-configs.md)** - Generates documented Rhai or JSON5 files from values and configuration metadata.
 - [`kit`](scry/src/kit.rs) provides reusable input shapes for designing command interfaces. Use these building blocks in your configuration types to give users convenient ways to express common inputs:
   - [`KeyValues<V>`](scry/src/kit/key_values.rs) accepts a map or a list of key-value pairs. The pair form preserves order and duplicate keys.

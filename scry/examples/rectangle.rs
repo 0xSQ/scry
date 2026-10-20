@@ -9,37 +9,29 @@ use scry::{Desc, Describe, FromNode, KeyPath, Node, NodeError, ToNode};
 
 // ---------------------------------------------------------------------------------------------- //
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 struct Rectangle {
     width: u32,
     height: u32,
-    area: u32, // Computed from width * height
+    area: u64,
 }
 
-// ---------------------------------------------------------------------------------------------- //
-
 impl FromNode for Rectangle {
-    /// Parses a Rectangle from one of three formats:
-    /// - `[800, 600]`: width and height array
-    /// - `{ side: 512 }`: square
-    /// - `{ width: 800, height: 600 }`: explicit form
+    /// Parses dimensions from an array, square shorthand, or explicit map.
     fn from_node(node: &Node) -> Result<Self, NodeError> {
         let (width, height) = if let Some(arr) = node.as_opt_vec() {
-            // Array [width, height]
             if arr.len() != 2 {
                 return Err(NodeError::array_length(&node.path, 2, arr.len()));
             }
             (arr[0].as_type()?, arr[1].as_type()?)
         } else if let Some(side) = node.opt::<u32>("side")? {
-            // Square shorthand { side: n }
+            node.ensure_only_keys(&["side"])?;
             (side, side)
         } else {
-            // Explicit map { width, height }
-            (node.req("width")?, node.req("height")?)
+            let dimensions = (node.req("width")?, node.req("height")?);
+            node.ensure_only_keys(&["width", "height"])?;
+            dimensions
         };
-
-        // Treat leftover keys as errors
-        node.ensure_no_unknown_keys()?;
 
         if width == 0 {
             return Err(NodeError::invalid_value(&node.path, "width must be positive"));
@@ -51,18 +43,15 @@ impl FromNode for Rectangle {
         Ok(Self {
             width,
             height,
-            area: width * height,
+            area: u64::from(width) * u64::from(height),
         })
     }
 }
 
 impl ToNode for Rectangle {
-    /// Serializes to the most compact form:
-    /// - Squares become `{ side: n }`
-    /// - Non-squares become `[width, height]`
+    /// Serializes squares as a side map and other rectangles as dimension pairs.
     fn to_node(&self) -> Result<Node, NodeError> {
         if self.width == self.height {
-            // Build { side: n }
             let side_node = self
                 .width
                 .to_node()
@@ -71,7 +60,6 @@ impl ToNode for Rectangle {
             map.insert("side".to_string(), side_node);
             Ok(Node::new_map(KeyPath::default(), map))
         } else {
-            // Build [width, height]
             (self.width, self.height).to_node()
         }
     }
@@ -111,4 +99,35 @@ fn main() -> anyhow::Result<()> {
     println!("Type:  {}", desc.type_label());
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------------------------- //
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dimensions_round_trip_without_overflow() -> Result<(), NodeError> {
+        for (input, area) in [
+            ("[800, 600]", 480_000),
+            ("#{ side: 512 }", 262_144),
+            ("#{ width: 1920, height: 1080 }", 2_073_600),
+            ("[4294967295, 4294967295]", 18_446_744_065_119_617_025),
+        ] {
+            let rectangle: Rectangle = Node::parse_str(input, Format::Rhai)?.as_type()?;
+            assert_eq!(rectangle.area, area);
+            let output = rectangle.to_node()?.to_string_as(Format::Rhai)?;
+            assert_eq!(Node::parse_str(&output, Format::Rhai)?.as_type::<Rectangle>()?, rectangle);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn map_forms_reject_unknown_empty_values_even_after_prior_reads() -> Result<(), NodeError> {
+        let node = Node::parse_str("#{ side: 5, extra: #{} }", Format::Rhai)?;
+        let _: Node = node.req("extra")?;
+        assert!(node.as_type::<Rectangle>().is_err());
+        Ok(())
+    }
 }

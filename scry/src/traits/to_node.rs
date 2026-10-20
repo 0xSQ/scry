@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use crate::convert::write;
 use crate::key_path::KeyPath;
-use crate::node::{Kind, Leaf, Node, NodeError, Value};
+use crate::node::{Node, NodeError, Value};
 
 // ---------------------------------------------------------------------------------------------- //
 
@@ -22,16 +22,6 @@ use crate::node::{Kind, Leaf, Node, NodeError, Value};
 pub trait ToNode {
     /// Converts this value to a Node.
     fn to_node(&self) -> Result<Node, NodeError>;
-}
-
-// ---------------------------------------------------------------------------------------------- //
-
-/// Creates a leaf node with an empty path.
-fn leaf(value: Value) -> Node {
-    Node {
-        path: KeyPath::new(),
-        kind: Kind::Leaf(Leaf::new(value)),
-    }
 }
 
 // ---------------------------------------------------------------------------------------------- //
@@ -84,9 +74,9 @@ impl ToNode for PathBuf {
 }
 
 // ---------------------------------------------------------------------------------------------- //
-// Floating Point
+// Numeric Values
 
-macro_rules! impl_to_node_float {
+macro_rules! impl_to_node_numeric {
     ($($t:ty => $variant:ident),+ $(,)?) => {
         $(
             impl ToNode for $t {
@@ -98,29 +88,13 @@ macro_rules! impl_to_node_float {
     };
 }
 
-impl_to_node_float!(f32 => F32, f64 => F64);
-
-// ---------------------------------------------------------------------------------------------- //
-// Integers
-
-macro_rules! impl_to_node_int {
-    ($($t:ty => $variant:ident),+ $(,)?) => {
-        $(
-            impl ToNode for $t {
-                fn to_node(&self) -> Result<Node, NodeError> {
-                    Ok(leaf(Value::$variant(*self)))
-                }
-            }
-        )+
-    };
-}
-
-impl_to_node_int!(
+impl_to_node_numeric!(
+    f32 => F32, f64 => F64,
     i8 => I8, i16 => I16, i32 => I32, i64 => I64,
     u8 => U8, u16 => U16, u32 => U32, u64 => U64,
 );
 
-// usize/isize need conversion since Value doesn't have those variants
+// usize/isize need conversion because Value has no pointer-sized variants.
 impl ToNode for usize {
     fn to_node(&self) -> Result<Node, NodeError> {
         Ok(leaf(Value::U64(*self as u64)))
@@ -188,4 +162,11 @@ impl<T: ToNode + ?Sized> ToNode for &mut T {
     fn to_node(&self) -> Result<Node, NodeError> {
         (**self).to_node()
     }
+}
+
+// ---------------------------------------------------------------------------------------------- //
+
+/// Creates a leaf node with an empty path.
+fn leaf(value: Value) -> Node {
+    Node::new_leaf(KeyPath::new(), value)
 }

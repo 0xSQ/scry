@@ -28,8 +28,6 @@
 
 use std::fmt::{self, Write};
 
-use crate::BoxedError;
-
 // ---------------------------------------------------------------------------------------------- //
 // KeyPath
 
@@ -142,8 +140,6 @@ impl fmt::Display for Segment {
 #[error("{message}")]
 pub struct KeyPathError {
     message: String,
-    #[source]
-    source: Option<BoxedError>,
 }
 
 impl KeyPathError {
@@ -151,7 +147,6 @@ impl KeyPathError {
     pub fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
-            source: None,
         }
     }
 }
@@ -201,6 +196,11 @@ impl std::str::FromStr for KeyPath {
                                         'n' => key.push('\n'),
                                         'r' => key.push('\r'),
                                         't' => key.push('\t'),
+                                        'u' => {
+                                            let (character, remaining) = parse_unicode_escape(s)?;
+                                            key.push(character);
+                                            s = remaining;
+                                        }
                                         other => {
                                             return Err(KeyPathError::new(format!(
                                                 "unknown escape sequence: \\{other}"
@@ -238,7 +238,7 @@ impl std::str::FromStr for KeyPath {
                     let seg = &s[..end];
                     if !is_identifier(seg) {
                         return Err(KeyPathError::new(format!(
-                            "invalid identifier '{seg}'; use [\"...\"] quoting for special characters"
+                            "invalid identifier '{seg}'. Use [\"...\"] quoting for special characters"
                         )));
                     }
                     segs.push(Segment::Key(seg.to_string()));
@@ -260,12 +260,30 @@ impl std::str::FromStr for KeyPath {
                         "unexpected '.' before '['; use 'a[0]' not 'a.[0]'",
                     ));
                 }
+            } else if !s.is_empty() && !s.starts_with('[') {
+                return Err(KeyPathError::new("expected '.' or '[' after path segment"));
             }
-            // If starts with '[', next iteration handles it directly
         }
 
         Ok(KeyPath { segs })
     }
+}
+
+/// Parses the braced Unicode escape emitted by [`quote_string`].
+fn parse_unicode_escape(source: &str) -> Result<(char, &str), KeyPathError> {
+    let (digits, remaining) = source
+        .strip_prefix('{')
+        .and_then(|source| source.split_once('}'))
+        .ok_or_else(|| KeyPathError::new("expected a braced Unicode escape: \\u{...}"))?;
+    if digits.is_empty() || digits.len() > 6 || !digits.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(KeyPathError::new("invalid Unicode escape"));
+    }
+    let scalar = u32::from_str_radix(digits, 16)
+        .ok()
+        .and_then(char::from_u32)
+        .ok_or_else(|| KeyPathError::new("invalid Unicode scalar in escape"))?;
+    Ok((scalar, remaining))
 }
 
 // ---------------------------------------------------------------------------------------------- //
@@ -420,6 +438,40 @@ mod tests {
         let kp: KeyPath = r#"["a.b"]"#.parse().unwrap();
         // Display should quote keys containing dots, roundtrip should work
         assert_eq!(kp.to_string().parse::<KeyPath>().unwrap(), kp);
+    }
+
+    #[test]
+    fn quoted_keys_round_trip_control_characters_and_unicode() {
+        for key in [
+            "",
+            "a.b",
+            "[index]",
+            "quote\"\\slash",
+            "\0\u{0007}\u{001f}\u{007f}\u{0085}",
+            "\n\r\t",
+            "配置🦀",
+        ] {
+            let path = KeyPath::from_keys([key]).push_index(2).push_key("next");
+            assert_eq!(path.to_string().parse::<KeyPath>().unwrap(), path);
+        }
+        assert_eq!(r#"["\u{1F980}"]"#.parse::<KeyPath>().unwrap(), KeyPath::from_keys(["🦀"]));
+    }
+
+    #[test]
+    fn malformed_unicode_escapes_and_missing_separators_are_rejected() {
+        for path in [
+            r#"["\u"]"#,
+            r#"["\u1234"]"#,
+            r#"["\u{}"]"#,
+            r#"["\u{xyz}"]"#,
+            r#"["\u{D800}"]"#,
+            r#"["\u{110000}"]"#,
+            r#"["\u{0000000}"]"#,
+            r#"["key"]next"#,
+            "items[0]name",
+        ] {
+            assert!(path.parse::<KeyPath>().is_err(), "unexpectedly accepted {path}");
+        }
     }
 
     // Invalid paths

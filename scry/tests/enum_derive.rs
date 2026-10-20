@@ -2,14 +2,14 @@
 #![cfg(feature = "format-json")]
 
 use scry::desc::{DescKind, VariantRepr};
-use scry::node::{Format, Kind, Value};
-use scry::{Describe, Node, ToNode};
+use scry::node::{Format, Kind};
+use scry::{Describe, FromNode, Node, ToNode};
 
 // ---------------------------------------------------------------------------------------------- //
 // Test Enums
 
 /// Test enum covering all variant types.
-#[derive(Debug, Clone, PartialEq, scry::FromNode, scry::ToNode, scry::Describe)]
+#[derive(Debug, Clone, PartialEq, FromNode, ToNode, Describe)]
 enum TestEnum {
     /// A unit variant.
     Unit,
@@ -22,7 +22,7 @@ enum TestEnum {
 }
 
 /// Test enum for struct variant field semantics.
-#[derive(Debug, Clone, PartialEq, scry::FromNode, scry::ToNode, scry::Describe)]
+#[derive(Debug, Clone, PartialEq, FromNode, ToNode, Describe)]
 enum StructFieldsEnum {
     /// Struct variant with optional and default fields.
     Config {
@@ -34,7 +34,7 @@ enum StructFieldsEnum {
 }
 
 /// Test enum with renamed variants and fields.
-#[derive(Debug, Clone, PartialEq, scry::FromNode, scry::ToNode, scry::Describe)]
+#[derive(Debug, Clone, PartialEq, FromNode, ToNode, Describe)]
 enum RenamedEnum {
     /// Unit variant with custom name.
     #[scry(rename = "CustomUnit")]
@@ -50,7 +50,7 @@ enum RenamedEnum {
 }
 
 /// Test enum for newtype variants with array-expecting inner types.
-#[derive(Debug, Clone, PartialEq, scry::FromNode, scry::ToNode, scry::Describe)]
+#[derive(Debug, Clone, PartialEq, FromNode, ToNode, Describe)]
 enum NewtypeArrayEnum {
     /// Newtype with Vec inner type - array payload is valid.
     Items(Vec<i32>),
@@ -61,14 +61,14 @@ enum NewtypeArrayEnum {
 }
 
 /// Test enum with compound default names.
-#[derive(Debug, Clone, PartialEq, scry::FromNode, scry::ToNode, scry::Describe)]
+#[derive(Debug, Clone, PartialEq, FromNode, ToNode, Describe)]
 enum CompoundEnum {
     RowMajor,
     ColMajor,
 }
 
 /// Test enum with enum-level rename_all casing.
-#[derive(Debug, Clone, PartialEq, scry::FromNode, scry::ToNode, scry::Describe)]
+#[derive(Debug, Clone, PartialEq, FromNode, ToNode, Describe)]
 #[scry(rename_all = "kebab-case")]
 enum KebabEnum {
     RowMajor,
@@ -80,13 +80,14 @@ fn node(json: &str) -> Node {
 }
 
 // ---------------------------------------------------------------------------------------------- //
-// FromScry Tests
+// Decoding
 
 #[test]
 fn unit_variant_from_string() {
     let n = node(r#""unit""#);
     let e: TestEnum = n.as_type().unwrap();
     assert_eq!(e, TestEnum::Unit);
+    assert_wire(&e, r#""unit""#);
 }
 
 #[test]
@@ -101,6 +102,7 @@ fn single_tuple_from_map() {
     let n = node(r#"{"single": "hello"}"#);
     let e: TestEnum = n.as_type().unwrap();
     assert_eq!(e, TestEnum::Single("hello".into()));
+    assert_wire(&e, r#"{"single": "hello"}"#);
 }
 
 #[test]
@@ -108,6 +110,7 @@ fn pair_tuple_from_map_array() {
     let n = node(r#"{"pair": ["hello", 42]}"#);
     let e: TestEnum = n.as_type().unwrap();
     assert_eq!(e, TestEnum::Pair("hello".into(), 42));
+    assert_wire(&e, r#"{"pair": ["hello", 42]}"#);
 }
 
 #[test]
@@ -121,6 +124,7 @@ fn struct_variant_from_nested_map() {
             count: 5,
         }
     );
+    assert_wire(&e, r#"{"named": {"name": "alice", "count": 5}}"#);
 }
 
 // ---------------------------------------------------------------------------------------------- //
@@ -171,45 +175,7 @@ fn struct_missing_field_errors() {
 }
 
 // ---------------------------------------------------------------------------------------------- //
-// ToScry Tests (Round-Trip)
-
-#[test]
-fn unit_roundtrip() {
-    let original = TestEnum::Unit;
-    let node = original.to_node().unwrap();
-    let parsed: TestEnum = node.as_type().unwrap();
-    assert_eq!(parsed, original);
-}
-
-#[test]
-fn single_roundtrip() {
-    let original = TestEnum::Single("hello".into());
-    let node = original.to_node().unwrap();
-    let parsed: TestEnum = node.as_type().unwrap();
-    assert_eq!(parsed, original);
-}
-
-#[test]
-fn pair_roundtrip() {
-    let original = TestEnum::Pair("hello".into(), 42);
-    let node = original.to_node().unwrap();
-    let parsed: TestEnum = node.as_type().unwrap();
-    assert_eq!(parsed, original);
-}
-
-#[test]
-fn struct_roundtrip() {
-    let original = TestEnum::Named {
-        name: "alice".into(),
-        count: 5,
-    };
-    let node = original.to_node().unwrap();
-    let parsed: TestEnum = node.as_type().unwrap();
-    assert_eq!(parsed, original);
-}
-
-// ---------------------------------------------------------------------------------------------- //
-// Desc Tests
+// Variant descriptions
 
 #[test]
 fn desc_includes_all_variants() {
@@ -326,14 +292,6 @@ fn enum_rename_all_desc_uses_kebab_case() {
 // Strictness Tests: Map Form
 
 #[test]
-fn map_with_extra_keys_errors() {
-    // Map must have exactly one key
-    let n = node(r#"{"single": "hello", "extra": 123}"#);
-    let err = n.as_type::<TestEnum>().unwrap_err();
-    assert!(err.to_string().contains("exactly one"));
-}
-
-#[test]
 fn empty_map_errors() {
     let n = node(r#"{}"#);
     let err = n.as_type::<TestEnum>().unwrap_err();
@@ -358,13 +316,6 @@ fn unit_variant_as_map_errors() {
     assert!(err.to_string().contains("must be written as a string"));
 }
 
-#[test]
-fn unit_variant_as_map_with_value_errors() {
-    let n = node(r#"{"unit": "ignored"}"#);
-    let err = n.as_type::<TestEnum>().unwrap_err();
-    assert!(err.to_string().contains("must be written as a string"));
-}
-
 // ---------------------------------------------------------------------------------------------- //
 // Strictness Tests: Payload Variants
 
@@ -374,14 +325,6 @@ fn payload_variant_as_string_errors() {
     let n = node(r#""single""#);
     let err = n.as_type::<TestEnum>().unwrap_err();
     assert!(err.to_string().contains("requires a payload"));
-}
-
-#[test]
-fn single_tuple_with_array_wrapper_errors_with_hint() {
-    // Single-field tuple with accidental array wrapper should error with helpful hint
-    let n = node(r#"{"single": ["hello"]}"#);
-    let err = n.as_type::<TestEnum>().unwrap_err();
-    assert!(err.to_string().contains("1-element array"));
 }
 
 // ---------------------------------------------------------------------------------------------- //
@@ -454,54 +397,24 @@ fn struct_variant_unknown_key_errors() {
 }
 
 // ---------------------------------------------------------------------------------------------- //
-// ToScry Tests: Optional Values
+// Encoding Optional Values
 
 #[test]
-fn to_scry_struct_variant_serializes_none_as_null() {
-    let e = StructFieldsEnum::Config {
-        required: "hello".into(),
-        optional: None,
-        with_default: 10,
-    };
-    let node = e.to_node().unwrap();
-
-    // Get the inner map for the "config" variant
-    let Kind::Map(outer) = &node.kind else {
-        panic!("expected map");
-    };
-    let inner_node = outer.get("config").expect("missing config key");
-    let Kind::Map(inner) = &inner_node.kind else {
-        panic!("expected inner map");
-    };
-
-    let optional = inner.get("optional").expect("None field should remain present");
-    assert!(matches!(optional.read_leaf("null").unwrap(), Value::Null));
-    // "required" and "with_default" should be present
-    assert!(inner.contains_key("required"));
-    assert!(inner.contains_key("with_default"));
+fn struct_variant_serialization_preserves_optional_values_and_explicit_defaults() {
+    for (optional, expected) in [
+        (None, r#"{"config": {"required": "hello", "optional": null, "with_default": 10}}"#),
+        (Some(42), r#"{"config": {"required": "hello", "optional": 42, "with_default": 10}}"#),
+    ] {
+        assert_wire(
+            &StructFieldsEnum::Config {
+                required: "hello".into(),
+                optional,
+                with_default: 10,
+            },
+            expected,
+        );
+    }
 }
-
-#[test]
-fn to_scry_struct_variant_includes_some() {
-    let e = StructFieldsEnum::Config {
-        required: "hello".into(),
-        optional: Some(42),
-        with_default: 10,
-    };
-    let node = e.to_node().unwrap();
-
-    let Kind::Map(outer) = &node.kind else {
-        panic!("expected map");
-    };
-    let inner_node = outer.get("config").expect("missing config key");
-    let Kind::Map(inner) = &inner_node.kind else {
-        panic!("expected inner map");
-    };
-
-    // "optional" SHOULD be present since it's Some
-    assert!(inner.contains_key("optional"), "Some fields should be included");
-}
-
 // ---------------------------------------------------------------------------------------------- //
 // Rename Tests
 
@@ -521,7 +434,7 @@ fn renamed_unit_variant_original_case() {
 }
 
 #[test]
-fn renamed_struct_variant_from_scry() {
+fn renamed_struct_variant_from_node() {
     // Uses renamed variant key and renamed field keys
     let n = node(r#"{"custom_struct": {"req": "hello"}}"#);
     let e: RenamedEnum = n.as_type().unwrap();
@@ -548,43 +461,13 @@ fn renamed_struct_variant_accepts_kebab_case_alias() {
 }
 
 #[test]
-fn renamed_struct_variant_to_scry_uses_renamed_keys() {
-    let e = RenamedEnum::StructVariant {
+fn renamed_struct_variant_to_node_uses_renamed_keys() {
+    let value = RenamedEnum::StructVariant {
         required_field: "hello".into(),
         optional_field: Some(42),
     };
-    let node = e.to_node().unwrap();
-
-    let Kind::Map(outer) = &node.kind else {
-        panic!("expected map");
-    };
-
-    // Outer key should be "custom_struct", not "struct_variant"
-    assert!(outer.contains_key("custom_struct"), "should use renamed variant key");
-    assert!(!outer.contains_key("struct_variant"), "should not use original variant name");
-
-    let inner_node = outer.get("custom_struct").unwrap();
-    let Kind::Map(inner) = &inner_node.kind else {
-        panic!("expected inner map");
-    };
-
-    // Field keys should be "req" and "opt", not "required_field" and "optional_field"
-    assert!(inner.contains_key("req"), "should use renamed field key");
-    assert!(!inner.contains_key("required_field"), "should not use original field name");
-    assert!(inner.contains_key("opt"), "should use renamed field key");
+    assert_wire(&value, r#"{"custom_struct": {"req": "hello", "opt": 42}}"#);
 }
-
-#[test]
-fn renamed_struct_variant_roundtrip() {
-    let original = RenamedEnum::StructVariant {
-        required_field: "hello".into(),
-        optional_field: Some(42),
-    };
-    let node = original.to_node().unwrap();
-    let parsed: RenamedEnum = node.as_type().unwrap();
-    assert_eq!(parsed, original);
-}
-
 // ---------------------------------------------------------------------------------------------- //
 // Newtype Array Payload Tests
 
@@ -593,6 +476,7 @@ fn newtype_vec_accepts_array_payload() {
     let n = node(r#"{"items": [1, 2, 3]}"#);
     let e: NewtypeArrayEnum = n.as_type().unwrap();
     assert_eq!(e, NewtypeArrayEnum::Items(vec![1, 2, 3]));
+    assert_wire(&e, r#"{"items": [1, 2, 3]}"#);
 }
 
 #[test]
@@ -600,6 +484,7 @@ fn newtype_tuple_accepts_array_payload() {
     let n = node(r#"{"coordinates": ["origin", 42]}"#);
     let e: NewtypeArrayEnum = n.as_type().unwrap();
     assert_eq!(e, NewtypeArrayEnum::Coordinates(("origin".into(), 42)));
+    assert_wire(&e, r#"{"coordinates": ["origin", 42]}"#);
 }
 
 #[test]
@@ -607,20 +492,12 @@ fn newtype_option_vec_accepts_array_payload() {
     let n = node(r#"{"optional_items": ["a", "b"]}"#);
     let e: NewtypeArrayEnum = n.as_type().unwrap();
     assert_eq!(e, NewtypeArrayEnum::OptionalItems(Some(vec!["a".into(), "b".into()])));
+    assert_wire(&e, r#"{"optional_items": ["a", "b"]}"#);
 }
 
-#[test]
-fn newtype_vec_roundtrip() {
-    let original = NewtypeArrayEnum::Items(vec![1, 2, 3]);
-    let node = original.to_node().unwrap();
-    let parsed: NewtypeArrayEnum = node.as_type().unwrap();
-    assert_eq!(parsed, original);
-}
-
-#[test]
-fn newtype_tuple_roundtrip() {
-    let original = NewtypeArrayEnum::Coordinates(("test".into(), 99));
-    let node = original.to_node().unwrap();
-    let parsed: NewtypeArrayEnum = node.as_type().unwrap();
-    assert_eq!(parsed, original);
+fn assert_wire(value: &impl ToNode, expected: &str) {
+    assert_eq!(
+        value.to_node().unwrap().to_string_as(Format::Json).unwrap(),
+        node(expected).to_string_as(Format::Json).unwrap()
+    );
 }

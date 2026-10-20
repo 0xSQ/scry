@@ -1,6 +1,5 @@
 use super::*;
 use std::fs;
-use std::io::Write;
 
 // ---------------------------------------------------------------------------------------------- //
 
@@ -47,39 +46,32 @@ fn ext_str_invalid_utf8_on_unix() {
 
 #[test]
 fn ensure_dir_errors_if_path_is_file() {
-    let base = unique_temp_dir("ensure_dir_file");
-    let _ = fs::remove_dir_all(&base);
-    fs::create_dir_all(&base).unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let base = temp.path();
 
     let file_path = base.join("not_a_dir");
     fs::write(&file_path, b"hi").unwrap();
 
     let res = file_path.ensure_dir();
     assert!(matches!(res, Err(PathError::NotADir { .. })));
-
-    let _ = fs::remove_dir_all(&base);
 }
 
 #[test]
 fn ensure_dir_all_errors_if_path_is_file() {
-    let base = unique_temp_dir("ensure_dir_all_file");
-    let _ = fs::remove_dir_all(&base);
-    fs::create_dir_all(&base).unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let base = temp.path();
 
     let file_path = base.join("not_a_dir");
     fs::write(&file_path, b"hi").unwrap();
 
     let res = file_path.ensure_dir_all();
     assert!(matches!(res, Err(PathError::NotADir { .. })));
-
-    let _ = fs::remove_dir_all(&base);
 }
 
 #[test]
 fn ensure_dir_errors_if_parent_missing() {
-    let base = unique_temp_dir("ensure_dir_parent_missing");
-    let _ = fs::remove_dir_all(&base);
-    fs::create_dir_all(&base).unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let base = temp.path();
 
     let p = base.join("missing_parent").join("child");
     let res = p.ensure_dir();
@@ -90,57 +82,46 @@ fn ensure_dir_errors_if_parent_missing() {
         }
         other => panic!("expected ParentNotFound, got: {other:?}"),
     }
-
-    let _ = fs::remove_dir_all(&base);
 }
 
 #[test]
 fn ensure_dir_all_creates_parents() {
-    let base = unique_temp_dir("ensure_dir_all_parents");
-    let _ = fs::remove_dir_all(&base);
+    let temp = tempfile::tempdir().unwrap();
+    let base = temp.path();
 
     let p = base.join("a").join("b").join("c");
     p.ensure_dir_all().unwrap();
 
     assert!(p.is_dir());
-
-    let _ = fs::remove_dir_all(&base);
 }
 
 #[test]
 fn recreate_dir_errors_if_path_is_file() {
-    let base = unique_temp_dir("recreate_dir_file");
-    let _ = fs::remove_dir_all(&base);
-    fs::create_dir_all(&base).unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let base = temp.path();
 
     let file_path = base.join("not_a_dir");
     fs::write(&file_path, b"hi").unwrap();
 
     let res = file_path.recreate_dir();
     assert!(matches!(res, Err(PathError::NotADir { .. })));
-
-    let _ = fs::remove_dir_all(&base);
 }
 
 #[test]
 fn recreate_dir_all_removes_existing_contents() {
-    let base = unique_temp_dir("recreate_dir_all_removes");
-    let _ = fs::remove_dir_all(&base);
+    let temp = tempfile::tempdir().unwrap();
+    let base = temp.path();
 
     let dir = base.join("x").join("y");
     dir.ensure_dir_all().unwrap();
 
     let file = dir.join("old.txt");
-    let mut f = fs::File::create(&file).unwrap();
-    writeln!(f, "hello").unwrap();
-    drop(f);
+    fs::write(&file, "hello").unwrap();
     assert!(file.exists());
 
     dir.recreate_dir_all().unwrap();
     assert!(dir.is_dir());
     assert!(!file.exists());
-
-    let _ = fs::remove_dir_all(&base);
 }
 
 #[cfg(any(unix, windows))]
@@ -208,9 +189,8 @@ fn has_ext_is_case_insensitive() {
 
 #[test]
 fn ensure_dir_errors_if_parent_is_file() {
-    let base = unique_temp_dir("ensure_dir_parent_is_file");
-    let _ = fs::remove_dir_all(&base);
-    fs::create_dir_all(&base).unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let base = temp.path();
 
     // Create a file where the "parent" should be
     let fake_parent = base.join("not_a_dir");
@@ -226,15 +206,12 @@ fn ensure_dir_errors_if_parent_is_file() {
         }
         other => panic!("expected NotADir for parent, got: {other:?}"),
     }
-
-    let _ = fs::remove_dir_all(&base);
 }
 
 #[test]
 fn recreate_dir_errors_if_parent_is_file() {
-    let base = unique_temp_dir("recreate_dir_parent_is_file");
-    let _ = fs::remove_dir_all(&base);
-    fs::create_dir_all(&base).unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let base = temp.path();
 
     // Create a file where the "parent" should be
     let fake_parent = base.join("not_a_dir");
@@ -250,8 +227,6 @@ fn recreate_dir_errors_if_parent_is_file() {
         }
         other => panic!("expected NotADir for parent, got: {other:?}"),
     }
-
-    let _ = fs::remove_dir_all(&base);
 }
 
 // --- require_parent_dir() tests ---
@@ -265,9 +240,8 @@ fn require_parent_dir_ok_for_cwd_relative_file() {
 
 #[test]
 fn require_parent_dir_errors_if_parent_missing() {
-    let base = unique_temp_dir("require_parent_dir_parent_missing");
-    let _ = fs::remove_dir_all(&base);
-    fs::create_dir_all(&base).unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let base = temp.path();
 
     let p = base.join("missing_parent").join("child.txt");
     let res = p.require_parent_dir();
@@ -278,15 +252,12 @@ fn require_parent_dir_errors_if_parent_missing() {
         }
         other => panic!("expected ParentNotFound, got: {other:?}"),
     }
-
-    let _ = fs::remove_dir_all(&base);
 }
 
 #[test]
 fn require_parent_dir_errors_if_parent_is_file() {
-    let base = unique_temp_dir("require_parent_dir_parent_is_file");
-    let _ = fs::remove_dir_all(&base);
-    fs::create_dir_all(&base).unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let base = temp.path();
 
     let fake_parent = base.join("not_a_dir");
     fs::write(&fake_parent, b"hi").unwrap();
@@ -300,8 +271,6 @@ fn require_parent_dir_errors_if_parent_is_file() {
         }
         other => panic!("expected NotADir for parent, got: {other:?}"),
     }
-
-    let _ = fs::remove_dir_all(&base);
 }
 
 #[test]
@@ -652,13 +621,6 @@ fn canonicalization_identifies_a_directory_alias_without_overwriting_the_source(
 // ---------------------------------------------------------------------------------------------- //
 // Test Helpers
 
-fn unique_temp_dir(tag: &str) -> PathBuf {
-    let pid = std::process::id();
-    let nanos =
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-    std::env::temp_dir().join(format!("scry_path_ext_test_{tag}_{pid}_{nanos}"))
-}
-
 fn assert_io_error(
     error: PathError,
     input: &Path,
@@ -712,10 +674,8 @@ fn directory_alias(target: &Path, alias: &Path) -> bool {
     match result {
         Ok(()) => true,
         Err(error)
-            if matches!(
-                error.kind(),
-                std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::Unsupported
-            ) =>
+            if error.kind() == std::io::ErrorKind::Unsupported
+                || (cfg!(windows) && error.raw_os_error() == Some(1314)) =>
         {
             eprintln!("skipping directory alias coverage: {error}");
             false

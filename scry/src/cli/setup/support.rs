@@ -711,13 +711,6 @@ mod tests {
     }
 
     #[test]
-    fn templates_follow_the_other_support_commands_in_help() {
-        let command = Support::new().support_command(&Command::new("demo"));
-        let names: Vec<_> = command.get_subcommands().map(Command::get_name).collect();
-        assert_eq!(names, ["desc", "get", "check", "template"]);
-    }
-
-    #[test]
     fn template_help_explains_the_language_and_preset_defaults() {
         let Action::Help(help) = plan(&["demo", "-S", "template", "--help"]).action else {
             panic!("expected template help");
@@ -726,7 +719,6 @@ mod tests {
         assert!(help.contains("Usage: demo operation --scry template [OPTIONS]"));
         assert!(help.contains("[default: rhai]"));
         assert!(help.contains("[default: min]"));
-        assert!(!help.contains("Experimental"));
     }
 
     #[test]

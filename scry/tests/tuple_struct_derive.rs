@@ -1,127 +1,53 @@
-//! Tests for tuple struct derive support.
-#![cfg(feature = "format-json")]
+//! Checks transparent and positional wire forms for derived tuple structs.
 
-use scry::node::{Format, Kind};
-use scry::{Node, ToNode};
+use scry::node::Format;
+use scry::{FromNode, Node, NodeError, ToNode};
 
 // ---------------------------------------------------------------------------------------------- //
-// Test Types
 
-#[derive(Debug, Clone, PartialEq, scry::FromNode, scry::ToNode, scry::Describe)]
+#[derive(Debug, PartialEq, FromNode, ToNode)]
 struct Port(u16);
 
-#[derive(Debug, Clone, PartialEq, scry::FromNode, scry::ToNode, scry::Describe)]
+#[derive(Debug, PartialEq, FromNode, ToNode)]
 struct Pair(String, i32);
 
-#[derive(Debug, Clone, PartialEq, scry::FromNode, scry::ToNode, scry::Describe)]
+#[derive(Debug, PartialEq, FromNode, ToNode)]
 struct Triple(u8, u8, u8);
 
-#[derive(Debug, Clone, PartialEq, scry::FromNode, scry::ToNode, scry::Describe)]
+#[derive(Debug, PartialEq, FromNode, ToNode)]
 struct NewtypeVec(Vec<i32>);
 
-fn node(json: &str) -> Node {
-    Node::parse_str(json, Format::Json).unwrap()
-}
-
-// ---------------------------------------------------------------------------------------------- //
-// Newtype Tests
-
 #[test]
-fn newtype_parses_from_scalar() {
-    let n = node("8080");
-    let port: Port = n.as_type().unwrap();
+fn newtypes_preserve_their_complete_inner_wire_form() {
+    let port: Port = node("8080").as_type().unwrap();
     assert_eq!(port, Port(8080));
+    assert_eq!(port.to_node().unwrap().as_type::<u16>().unwrap(), 8080);
+
+    let values: NewtypeVec = node("[1, 2, 3]").as_type().unwrap();
+    assert_eq!(values, NewtypeVec(vec![1, 2, 3]));
+    assert_eq!(values.to_node().unwrap().as_type::<Vec<i32>>().unwrap(), [1, 2, 3]);
 }
 
 #[test]
-fn newtype_roundtrip() {
-    let original = Port(443);
-    let node = original.to_node().unwrap();
-    let parsed: Port = node.as_type().unwrap();
-    assert_eq!(parsed, original);
-}
-
-#[test]
-fn newtype_vec_parses_from_array() {
-    let n = node("[1, 2, 3]");
-    let nv: NewtypeVec = n.as_type().unwrap();
-    assert_eq!(nv, NewtypeVec(vec![1, 2, 3]));
-}
-
-#[test]
-fn newtype_vec_roundtrip() {
-    let original = NewtypeVec(vec![10, 20, 30]);
-    let node = original.to_node().unwrap();
-    let parsed: NewtypeVec = node.as_type().unwrap();
-    assert_eq!(parsed, original);
-}
-
-// ---------------------------------------------------------------------------------------------- //
-// Pair Tests
-
-#[test]
-fn pair_parses_from_array() {
-    let n = node(r#"["hello", 42]"#);
-    let pair: Pair = n.as_type().unwrap();
+fn tuples_preserve_field_order_and_values_in_each_direction() {
+    let pair: Pair = node(r#"["hello", 42]"#).as_type().unwrap();
     assert_eq!(pair, Pair("hello".into(), 42));
+    assert_eq!(pair.to_node().unwrap().as_type::<(String, i32)>().unwrap(), ("hello".into(), 42));
+
+    let triple: Triple = node("[255, 128, 0]").as_type().unwrap();
+    assert_eq!(triple, Triple(255, 128, 0));
+    assert_eq!(triple.to_node().unwrap().as_type::<[u8; 3]>().unwrap(), [255, 128, 0]);
 }
 
 #[test]
-fn pair_roundtrip() {
-    let original = Pair("test".into(), 99);
-    let node = original.to_node().unwrap();
-    let parsed: Pair = node.as_type().unwrap();
-    assert_eq!(parsed, original);
+fn tuple_arity_errors_report_expected_and_actual_lengths() {
+    for (source, found) in [(r#"["hello"]"#, 1), (r#"["hello", 42, true]"#, 3)] {
+        let error = node(source).as_type::<Pair>().unwrap_err();
+        assert!(matches!(error, NodeError::ArrayLength { path, expected: 2, found: actual }
+            if path.is_empty() && actual == found));
+    }
 }
 
-#[test]
-fn pair_wrong_length_errors() {
-    let n = node(r#"["hello"]"#);
-    let err = n.as_type::<Pair>().unwrap_err();
-    assert!(err.to_string().contains("2"));
-}
-
-#[test]
-fn pair_too_many_elements_errors() {
-    let n = node(r#"["hello", 42, true]"#);
-    let err = n.as_type::<Pair>().unwrap_err();
-    assert!(err.to_string().contains("2"));
-}
-
-// ---------------------------------------------------------------------------------------------- //
-// Triple Tests
-
-#[test]
-fn triple_parses_from_array() {
-    let n = node("[255, 128, 0]");
-    let rgb: Triple = n.as_type().unwrap();
-    assert_eq!(rgb, Triple(255, 128, 0));
-}
-
-#[test]
-fn triple_roundtrip() {
-    let original = Triple(10, 20, 30);
-    let node = original.to_node().unwrap();
-    let parsed: Triple = node.as_type().unwrap();
-    assert_eq!(parsed, original);
-}
-
-// ---------------------------------------------------------------------------------------------- //
-// ToScry Output Structure Tests
-
-#[test]
-fn newtype_to_scry_is_scalar() {
-    let port = Port(8080);
-    let node = port.to_node().unwrap();
-    assert!(matches!(&node.kind, Kind::Leaf(_)));
-}
-
-#[test]
-fn pair_to_scry_is_array() {
-    let pair = Pair("a".into(), 1);
-    let node = pair.to_node().unwrap();
-    let Kind::Vec(v) = &node.kind else {
-        panic!("expected Vec");
-    };
-    assert_eq!(v.len(), 2);
+fn node(source: &str) -> Node {
+    Node::parse_str(source, Format::Rhai).unwrap()
 }

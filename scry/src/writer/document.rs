@@ -25,8 +25,7 @@ pub struct Document {
 impl Document {
     /// Creates an unannotated document from an owned node.
     pub fn from_node(mut node: Node) -> Self {
-        let path = node.path.clone();
-        anchor(&mut node, &path);
+        node.reanchor(node.path.clone());
         let annotations = Annotations::for_node(&node);
         Self {
             node,
@@ -50,8 +49,7 @@ impl Document {
     }
 
     pub(super) fn from_description(mut node: Node, description: &Desc) -> Self {
-        let path = node.path.clone();
-        anchor(&mut node, &path);
+        node.reanchor(node.path.clone());
         let header = (!description.doc.is_empty()).then(|| normalize_comment(&description.doc));
         let mut annotations = decorate(&mut node, description);
         // The root description belongs to the header rather than the root value's leading text.
@@ -143,7 +141,7 @@ impl Document {
         let path = path.try_into_key_path()?;
         let target = self.node.req_node(&path)?.path.clone();
         let mut replacement = value.to_node().map_err(|error| error.prepend_path(&target))?;
-        anchor(&mut replacement, &target);
+        replacement.reanchor(target);
         let children = Annotations::for_node(&replacement).children;
         let entry = self.at_mut(&path)?;
         entry.annotations.children = children;
@@ -189,7 +187,7 @@ impl MapBuilder {
             return Err(NodeError::invalid_value(&path, "duplicate document key"));
         }
         attach_nested_comments(&mut document).map_err(|error| error.prepend_path(&path))?;
-        anchor(&mut document.node, &path);
+        document.node.reanchor(path);
         let (_, node) = self.entries.insert_full(key, document.node);
         debug_assert!(node.is_none());
         self.annotations.push(document.annotations);
@@ -245,7 +243,7 @@ impl SeqBuilder {
     ) -> Result<DocumentEntry<'_>, NodeError> {
         let path = KeyPath::from_index(self.elements.len());
         attach_nested_comments(&mut document).map_err(|error| error.prepend_path(&path))?;
-        anchor(&mut document.node, &path);
+        document.node.reanchor(path);
         self.elements.push(document.node);
         self.annotations.push(document.annotations);
         let node = self.elements.last().expect("the element was just inserted");
@@ -501,24 +499,6 @@ fn locate_mut<'a>(
         current = &mut current.children[index];
     }
     Ok((target, current))
-}
-
-/// Anchors constructed children without changing their decoding visit state.
-fn anchor(node: &mut Node, path: &KeyPath) {
-    node.path = path.clone();
-    match &mut node.kind {
-        Kind::Leaf(_) => {}
-        Kind::Map(entries) => {
-            for (key, child) in entries {
-                anchor(child, &path.push_key(key));
-            }
-        }
-        Kind::Vec(elements) => {
-            for (index, child) in elements.iter_mut().enumerate() {
-                anchor(child, &path.push_index(index));
-            }
-        }
-    }
 }
 
 fn attach_nested_comments(document: &mut Document) -> Result<(), NodeError> {

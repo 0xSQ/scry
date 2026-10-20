@@ -7,7 +7,8 @@
 //!
 //! # Quick Example
 //!
-//! ```rust,ignore
+//! ```
+//! use scry::node::Format;
 //! use scry::{Config, Node};
 //!
 //! #[derive(Debug, Config)]
@@ -17,8 +18,11 @@
 //!     retries: u32,
 //! }
 //!
-//! let node = Node::parse_file("deploy.json")?;
+//! let node = Node::parse_str(r#"#{ target: "staging" }"#, Format::Rhai)?;
 //! let config: Deploy = node.as_type()?;
+//! assert_eq!(config.target, "staging");
+//! assert_eq!(config.retries, 3);
+//! # Ok::<(), scry::NodeError>(())
 //! ```
 //!
 //! # Modules
@@ -84,8 +88,20 @@ pub use scry_derive::{Config, Describe, FromDefaults, FromNode, StringEnum, ToNo
 /// This keeps Scry's field policies as the single source of truth - no hand-written constructor
 /// that restates the defaults.
 ///
-/// ```ignore
-/// let config: MyConfig = scry::from_defaults()?;
+/// ```
+/// use scry::Config;
+///
+/// #[derive(Config)]
+/// struct Settings {
+///     #[scry(default = 3)]
+///     attempts: u32,
+///     label: Option<String>,
+/// }
+///
+/// let config: Settings = scry::from_defaults()?;
+/// assert_eq!(config.attempts, 3);
+/// assert_eq!(config.label, None);
+/// # Ok::<(), scry::NodeError>(())
 /// ```
 pub fn from_defaults<T: FromDefaults>() -> Result<T, NodeError> {
     T::from_defaults_at(&KeyPath::new())

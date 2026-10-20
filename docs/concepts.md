@@ -331,7 +331,7 @@ enum OutputMode {
 This gives `OutputMode` a `FromDefaults` implementation. A field opts into it with
 `#[scry(from_defaults)]`. The marker is unrelated to Rust's `#[default]`, so an enum may choose
 different variants for Scry construction and `std::default::Default`. Payload variants cannot be
-Scry defaults initially.
+Scry defaults.
 
 Descriptions show the `»` marker when the enum itself is being constructed from Scry defaults,
 including a direct enum field with `#[scry(from_defaults)]`. Required fields and fields with an
@@ -466,14 +466,11 @@ use scry::{FromNode, Node, NodeError};
 struct Rectangle {
     width: u32,
     height: u32,
-    area: u32,
+    area: u64,
 }
 
 impl FromNode for Rectangle {
-    /// Parses a Rectangle from one of three formats:
-    /// - `[800, 600]`: width and height array
-    /// - `{ side: 512 }`: square shorthand
-    /// - `{ width: 800, height: 600 }`: explicit form
+    /// Parses dimensions from an array, square shorthand, or explicit map.
     fn from_node(node: &Node) -> Result<Self, NodeError> {
         let (width, height) = if let Some(arr) = node.as_opt_vec() {
             if arr.len() != 2 {
@@ -496,7 +493,7 @@ impl FromNode for Rectangle {
             return Err(NodeError::invalid_value(&node.path, "height must be positive"));
         }
 
-        Ok(Self { width, height, area: width * height })
+        Ok(Self { width, height, area: u64::from(width) * u64::from(height) })
     }
 }
 ```
@@ -776,13 +773,11 @@ use scry::{KeyPath, Node, NodeError, ToNode};
 struct Rectangle {
     width: u32,
     height: u32,
-    area: u32,
+    area: u64,
 }
 
 impl ToNode for Rectangle {
-    /// Serializes to the most compact form:
-    /// - Squares become `{ side: n }`
-    /// - Non-squares become `[width, height]`
+    /// Serializes squares as a side map and other rectangles as dimension pairs.
     fn to_node(&self) -> Result<Node, NodeError> {
         if self.width == self.height {
             let mut map = IndexMap::new();
@@ -833,7 +828,7 @@ a value failure uses its output position such as `[1][1]`, including when keys r
 Manual structured serializers apply the same rule, as shown for the `side` key above. Input decoding
 uses `NodeError::at_path` to attach only a missing location because input paths are already complete.
 Successful output Nodes can still have empty paths. `Node::set_node` anchors their subtrees at the
-destination as before.
+destination.
 
 ## Describe
 
@@ -918,7 +913,7 @@ use scry::{Desc, Describe};
 struct Rectangle {
     width: u32,
     height: u32,
-    area: u32,
+    area: u64,
 }
 
 impl Describe for Rectangle {

@@ -20,7 +20,7 @@ use crate::key_path::{KeyPath, Segment, TryIntoKeyPath};
 use crate::util::{PathError, PathExt};
 use crate::writer::{FlatConfig, FlatWriter, TreeConfig, TreeWriter};
 use indexmap::IndexMap;
-use std::{cell::RefCell, path::Path, rc::Rc};
+use std::{cell::Cell, path::Path, rc::Rc};
 
 // ---------------------------------------------------------------------------------------------- //
 // Node
@@ -321,106 +321,58 @@ impl Node {
         path: impl TryIntoKeyPath,
         value: impl IntoValue,
     ) -> Result<(), NodeError> {
-        let kp = path.try_into_key_path()?;
-        self.set_value_recursive(&kp.segs, value.into_value())
-    }
-
-    fn set_value_recursive(&mut self, segs: &[Segment], value: Value) -> Result<(), NodeError> {
-        if segs.is_empty() {
-            self.kind = Kind::Leaf(Leaf::new(value));
-            return Ok(());
-        }
-
-        let (first, rest) = segs.split_first().unwrap();
-
-        match first {
-            Segment::Key(key) => {
-                // Ensure we have a map
-                if !self.kind.is_map() {
-                    self.kind = Kind::Map(IndexMap::new());
-                }
-
-                if let Kind::Map(map) = &mut self.kind {
-                    let child = map.entry(key.clone()).or_insert_with(|| {
-                        Node::new_map(self.path.clone().push_key(key), IndexMap::new())
-                    });
-                    child.set_value_recursive(rest, value)?;
-                }
-            }
-            Segment::Index(idx) => {
-                if let Kind::Vec(vec) = &mut self.kind {
-                    if *idx >= vec.len() {
-                        return Err(NodeError::index_out_of_bounds(&self.path, *idx, vec.len()));
-                    }
-                    vec[*idx].set_value_recursive(rest, value)?;
-                } else {
-                    return Err(NodeError::kind_mismatch(&self.path, "array", &self.kind));
-                }
-            }
-        }
-
-        Ok(())
+        let path = path.try_into_key_path()?;
+        self.set_node(path, Self::new_leaf(KeyPath::new(), value.into_value()))
     }
 
     /// Sets a node at the given path, creating intermediate nodes as needed.
     ///
     /// String paths are parsed as dotted paths (e.g., `"server.port"` navigates to `server` then `port`).
+    /// The inserted subtree is anchored at its destination, including when replacing this node.
     pub fn set_node(
         &mut self,
         path: impl TryIntoKeyPath,
         value_node: Node,
     ) -> Result<(), NodeError> {
         let kp = path.try_into_key_path().map_err(NodeError::invalid_path)?;
-        if kp.segs.is_empty() {
-            self.kind = value_node.kind;
-            return Ok(());
-        }
-        self.set_node_recursive(&kp.segs, value_node)
+        self.set_node_recursive(&kp.segs, value_node, self.path.clone())
     }
 
-    fn set_node_recursive(&mut self, segs: &[Segment], value_node: Node) -> Result<(), NodeError> {
-        let (first, rest) = segs.split_first().unwrap();
+    fn set_node_recursive(
+        &mut self,
+        segs: &[Segment],
+        value_node: Node,
+        path: KeyPath,
+    ) -> Result<(), NodeError> {
+        let Some((first, rest)) = segs.split_first() else {
+            self.kind = value_node.kind;
+            self.reanchor(path);
+            return Ok(());
+        };
 
         match first {
             Segment::Key(key) => {
-                // Ensure we have a map
                 if !self.kind.is_map() {
                     self.kind = Kind::Map(IndexMap::new());
                 }
 
                 if let Kind::Map(map) = &mut self.kind {
-                    if rest.is_empty() {
-                        // Final segment - insert the value node with correct path
-                        let mut new_node = value_node;
-                        new_node.path = self.path.push_key(key);
-                        // Recursively fix paths in children
-                        new_node.fix_paths();
-                        map.insert(key.clone(), new_node);
-                    } else {
-                        // Intermediate segment - recurse
-                        let child = map.entry(key.clone()).or_insert_with(|| {
-                            Node::new_map(self.path.push_key(key), IndexMap::new())
-                        });
-                        child.set_node_recursive(rest, value_node)?;
-                    }
+                    let child_path = path.push_key(key);
+                    let child = map
+                        .entry(key.clone())
+                        .or_insert_with(|| Node::empty_map_at(child_path.clone()));
+                    child.set_node_recursive(rest, value_node, child_path)?;
                 }
             }
             Segment::Index(idx) => {
                 if let Kind::Vec(vec) = &mut self.kind {
                     if *idx >= vec.len() {
-                        return Err(NodeError::index_out_of_bounds(&self.path, *idx, vec.len()));
+                        return Err(NodeError::index_out_of_bounds(&path, *idx, vec.len()));
                     }
 
-                    if rest.is_empty() {
-                        let mut new_node = value_node;
-                        new_node.path = self.path.push_index(*idx);
-                        new_node.fix_paths();
-                        vec[*idx] = new_node;
-                    } else {
-                        vec[*idx].set_node_recursive(rest, value_node)?;
-                    }
+                    vec[*idx].set_node_recursive(rest, value_node, path.push_index(*idx))?;
                 } else {
-                    return Err(NodeError::kind_mismatch(&self.path, "array", &self.kind));
+                    return Err(NodeError::kind_mismatch(&path, "array", &self.kind));
                 }
             }
         }
@@ -431,80 +383,65 @@ impl Node {
     /// Appends an element to the array node at the given path.
     ///
     /// Navigates to the node at `path` and pushes `element` onto it. The target node
-    /// must be an array; returns a type mismatch error otherwise. The path must exist -
+    /// must be an array. Returns a type mismatch error otherwise. The path must exist -
     /// missing intermediate nodes are not created.
     pub fn push_to(&mut self, path: impl TryIntoKeyPath, element: Node) -> Result<(), NodeError> {
         let kp = path.try_into_key_path().map_err(NodeError::invalid_path)?;
-        if kp.segs.is_empty() {
-            self.push_element(element)
-        } else {
-            self.push_to_recursive(&kp.segs, element)
-        }
+        self.push_to_recursive(&kp.segs, element)
     }
 
     fn push_to_recursive(&mut self, segs: &[Segment], element: Node) -> Result<(), NodeError> {
-        let (first, rest) = segs.split_first().unwrap();
+        let Some((first, rest)) = segs.split_first() else {
+            return self.push_element(element);
+        };
 
-        match first {
+        let child = match first {
             Segment::Key(key) => {
                 if let Kind::Map(map) = &mut self.kind {
-                    let child = map
-                        .get_mut(key)
-                        .ok_or_else(|| NodeError::missing_required(&self.path.push_key(key)))?;
-                    if rest.is_empty() {
-                        child.push_element(element)
-                    } else {
-                        child.push_to_recursive(rest, element)
-                    }
+                    map.get_mut(key)
+                        .ok_or_else(|| NodeError::missing_required(&self.path.push_key(key)))?
                 } else {
-                    Err(NodeError::kind_mismatch(&self.path, "map", &self.kind))
+                    return Err(NodeError::kind_mismatch(&self.path, "map", &self.kind));
                 }
             }
             Segment::Index(idx) => {
                 if let Kind::Vec(vec) = &mut self.kind {
                     let len = vec.len();
-                    let child = vec
-                        .get_mut(*idx)
-                        .ok_or_else(|| NodeError::index_out_of_bounds(&self.path, *idx, len))?;
-                    if rest.is_empty() {
-                        child.push_element(element)
-                    } else {
-                        child.push_to_recursive(rest, element)
-                    }
+                    vec.get_mut(*idx)
+                        .ok_or_else(|| NodeError::index_out_of_bounds(&self.path, *idx, len))?
                 } else {
-                    Err(NodeError::kind_mismatch(&self.path, "array", &self.kind))
+                    return Err(NodeError::kind_mismatch(&self.path, "array", &self.kind));
                 }
             }
-        }
+        };
+        child.push_to_recursive(rest, element)
     }
 
     /// Pushes an element onto this node, which must be a vec.
     fn push_element(&mut self, element: Node) -> Result<(), NodeError> {
         if let Kind::Vec(vec) = &mut self.kind {
-            let mut el = element;
-            el.path = self.path.push_index(vec.len());
-            el.fix_paths();
-            vec.push(el);
+            let mut element = element;
+            element.reanchor(self.path.push_index(vec.len()));
+            vec.push(element);
             Ok(())
         } else {
             Err(NodeError::kind_mismatch(&self.path, "array", &self.kind))
         }
     }
 
-    /// Recursively updates paths in children after the node is moved.
-    fn fix_paths(&mut self) {
+    /// Anchors a subtree without changing its shared decoding visit state.
+    pub(crate) fn reanchor(&mut self, path: KeyPath) {
+        self.path = path;
         match &mut self.kind {
             Kind::Leaf(_) => {}
             Kind::Vec(vec) => {
                 for (i, child) in vec.iter_mut().enumerate() {
-                    child.path = self.path.push_index(i);
-                    child.fix_paths();
+                    child.reanchor(self.path.push_index(i));
                 }
             }
             Kind::Map(map) => {
                 for (key, child) in map.iter_mut() {
-                    child.path = self.path.push_key(key);
-                    child.fix_paths();
+                    child.reanchor(self.path.push_key(key));
                 }
             }
         }
@@ -548,8 +485,7 @@ impl Node {
                         vec.remove(*idx);
                         // Fix paths for remaining elements after the removed index
                         for (i, child) in vec.iter_mut().enumerate().skip(*idx) {
-                            child.path = self.path.push_index(i);
-                            child.fix_paths();
+                            child.reanchor(self.path.push_index(i));
                         }
                         Ok(RemoveOutcome::Removed)
                     } else {
@@ -758,7 +694,7 @@ impl Kind {
 #[derive(Debug, Clone)]
 pub struct Leaf {
     pub value: Value,
-    visited: Rc<RefCell<bool>>,
+    visited: Rc<Cell<bool>>,
 }
 
 impl Leaf {
@@ -766,18 +702,18 @@ impl Leaf {
     pub fn new(value: Value) -> Self {
         Self {
             value,
-            visited: Rc::new(RefCell::new(false)),
+            visited: Rc::new(Cell::new(false)),
         }
     }
 
     /// Returns true if this leaf has been visited (read).
     pub fn is_visited(&self) -> bool {
-        *self.visited.borrow()
+        self.visited.get()
     }
 
     /// Marks this leaf as visited.
     pub fn mark_visited(&self) {
-        *self.visited.borrow_mut() = true;
+        self.visited.set(true);
     }
 }
 
@@ -978,6 +914,55 @@ mod tests {
 
     mod set_value {
         use super::*;
+        use crate::ToNode;
+
+        #[test]
+        fn replacement_paths_follow_the_destination_in_unanchored_output_trees() {
+            let mut node = vec![vec![1_u8]].to_node().unwrap();
+            assert!(node.req_node("[0][0]").unwrap().path.is_empty());
+            node.set_value("[0][0]", 2_u8).unwrap();
+            assert_eq!(node.req_node("[0][0]").unwrap().path.to_string(), "[0][0]");
+
+            let mut node = Node::new_map(
+                KeyPath::from_keys(["config"]),
+                IndexMap::from([("child".to_owned(), Node::new())]),
+            );
+            node.set_node("child", vec![true].to_node().unwrap()).unwrap();
+            assert_eq!(node.req_node("child[0]").unwrap().path.to_string(), "config.child[0]");
+        }
+
+        #[test]
+        fn replacing_subtrees_reanchors_every_descendant_and_preserves_visit_state() {
+            for destination in [KeyPath::new(), KeyPath::from_keys(["nested"])] {
+                let source = node_from_json(r#"{"source": {"items": [{"port": "invalid"}]}}"#);
+                let replacement = source.req_node("source").unwrap().clone();
+                let mut node = Node::empty_map_at(KeyPath::from_keys(["config"]));
+                node.set_node(&destination, replacement).unwrap();
+
+                let path = destination.join(&"items[0].port".parse().unwrap());
+                let expected = node.full_path(&path).unwrap();
+                let port = node.req_node(&path).unwrap();
+                assert_eq!(port.path, expected);
+                let error = port.as_type::<u16>().unwrap_err();
+                assert_eq!(error.path(), Some(&expected));
+                assert!(source
+                    .req_node("source.items[0].port")
+                    .unwrap()
+                    .as_leaf()
+                    .unwrap()
+                    .is_visited());
+            }
+        }
+
+        #[test]
+        fn set_value_creates_nested_maps_and_replaces_existing_values() {
+            let mut node = Node::new();
+            node.set_value("server.port", 8080_u16).unwrap();
+            assert_eq!(node.req::<u16>("server.port").unwrap(), 8080);
+            assert_eq!(node.req_node("server.port").unwrap().path.to_string(), "server.port");
+            node.set_value("server", false).unwrap();
+            assert!(!node.req::<bool>("server").unwrap());
+        }
 
         #[test]
         fn set_existing_element_succeeds() {

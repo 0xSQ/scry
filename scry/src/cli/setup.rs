@@ -152,7 +152,7 @@ impl Setup {
         self
     }
 
-    // ---------------------------------------------------------------------------------------------- //
+    // ------------------------------------------------------------------------------------------ //
     // Bundle Creation
 
     /// Creates a bundle with a function that takes the target type.
@@ -197,7 +197,7 @@ impl Setup {
         })
     }
 
-    // ---------------------------------------------------------------------------------------------- //
+    // ------------------------------------------------------------------------------------------ //
     // Helpers
 
     /// Builds the clap Command from the current setup configuration.
@@ -296,14 +296,13 @@ impl Setup {
 // ---------------------------------------------------------------------------------------------- //
 // Setup Bundle
 
+/// A bundle that returns a payload result or completes a support action.
 pub type SetupBundle<R> = Bundle<Option<R>, SetupError>;
 
 /// Creates a bundle with a handler function whose output is always wrapped in `Option::Some`.
 ///
-/// Use this factory function if you want to mix user payload function that are built through the
-/// [`Setup`] builder with other bundles that are created manually. It creates a bundle where the
-/// payload function's return type is lifted into `Option<R>::Some` so that it matches the common
-/// return type of bundles created via `Setup`.
+/// Gives a manually constructed command the same return type as bundles created through [`Setup`].
+/// This allows both kinds of bundles to share a command group.
 pub fn create_setup_bundle<R, F>(command: Command, func: F) -> SetupBundle<R>
 where
     R: 'static,

@@ -918,13 +918,13 @@ pub struct UnknownPathError {
 impl UnknownPathError {
     /// Creates a new unknown path error.
     fn new(
-        prefix: &[&str],
+        prefix: &KeyPath,
         key: impl Into<String>,
         desc: Desc,
         default: Option<&DefaultDesc>,
     ) -> Self {
         Self {
-            valid_prefix: prefix.join("."),
+            valid_prefix: prefix.to_string(),
             invalid_key: key.into(),
             desc_at_prefix: Box::new(desc),
             default_at_prefix: default.cloned(),
@@ -981,7 +981,7 @@ impl Desc {
     pub fn validate_path(&self, path: impl TryIntoKeyPath) -> Result<(), DescPathError> {
         let key_path = path.try_into_key_path()?;
         let segments: Vec<_> = key_path.iter().collect();
-        self.validate_segments(&segments, &[], self.type_default.as_ref())
+        self.validate_segments(&segments, &KeyPath::new(), self.type_default.as_ref())
     }
 
     /// Finds an entry using path segments.
@@ -1066,7 +1066,7 @@ impl Desc {
     fn validate_segments(
         &self,
         segments: &[&Segment],
-        prefix: &[&str],
+        prefix: &KeyPath,
         default: Option<&DefaultDesc>,
     ) -> Result<(), DescPathError> {
         let Some(first) = segments.first() else {
@@ -1093,9 +1093,7 @@ impl Desc {
                         .into());
                     }
                     if segments.len() > 1 {
-                        // Continue validation into the tuple element
-                        // (We don't add the index to prefix since it's already validated)
-                        items[*i].validate_segments(&segments[1..], prefix, None)
+                        items[*i].validate_segments(&segments[1..], &prefix.push_index(*i), None)
                     } else {
                         Ok(())
                     }
@@ -1103,7 +1101,7 @@ impl Desc {
                 DescKind::List { item } => {
                     // Lists accept any index (bounds checked at runtime on actual data).
                     if segments.len() > 1 {
-                        item.validate_segments(&segments[1..], prefix, None)
+                        item.validate_segments(&segments[1..], &prefix.push_index(*i), None)
                     } else {
                         Ok(())
                     }
@@ -1127,8 +1125,7 @@ impl Desc {
                 match field {
                     Some(f) => {
                         if segments.len() > 1 {
-                            let mut new_prefix = prefix.to_vec();
-                            new_prefix.push(key);
+                            let new_prefix = prefix.push_key(key);
                             f.value.validate_segments(&segments[1..], &new_prefix, f.fallback())
                         } else {
                             Ok(())
@@ -1144,14 +1141,12 @@ impl Desc {
                         if segments.len() > 1 {
                             match &v.repr {
                                 VariantRepr::Payload { payload, .. } => {
-                                    let mut new_prefix = prefix.to_vec();
-                                    new_prefix.push(key);
+                                    let new_prefix = prefix.push_key(key);
                                     payload.validate_segments(&segments[1..], &new_prefix, None)
                                 }
                                 VariantRepr::Unit => {
                                     // Unit variants cannot have deeper paths
-                                    let mut new_prefix = prefix.to_vec();
-                                    new_prefix.push(key);
+                                    let new_prefix = prefix.push_key(key);
                                     let invalid_key = segments
                                         .get(1)
                                         .map(|s| match s {

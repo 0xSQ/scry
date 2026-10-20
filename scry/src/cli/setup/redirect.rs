@@ -29,17 +29,18 @@
 //!    An entry pointing at a missing file is an error, not a fallthrough.
 //! 3. `<command>.*` inside the redirect file's `dir`.
 //!
-//! Relative paths in the redirect file resolve against the redirect file's directory; a leading
+//! Relative paths in the redirect file resolve against the redirect file's directory. A leading
 //! `~/` resolves against the home directory.
 
 use std::path::{Path, PathBuf};
 
 use indexmap::IndexMap;
+use rhai::Engine;
 
 use super::config_source::{find_config_default, home_config_dir, FindConfigError};
 use crate::desc::Desc;
 use crate::node::{Node, NodeError};
-use crate::rhai::{eval_script, eval_script_var, RhaiError};
+use crate::rhai::RhaiEnv;
 use crate::util::PathExt;
 use crate::{BoxedError, Describe, FromNode};
 
@@ -85,8 +86,8 @@ pub fn require_command_config(app: &str, command_path: &[&str]) -> Result<PathBu
 pub struct RedirectSpec {
     /// Default directory to discover `<command>.<ext>` files in.
     pub dir: Option<String>,
-    /// Explicit per-command target files. Keys are dotted command paths (e.g. `"meta.inspect"`);
-    /// a group key (e.g. `"meta"`) redirects all its subcommands.
+    /// Explicit per-command target files with dotted command paths, such as `"meta.inspect"`.
+    /// A group key, such as `"meta"`, redirects all its subcommands.
     pub commands: IndexMap<String, String>,
 }
 
@@ -233,12 +234,10 @@ fn load_redirect_node(path: &Path) -> Result<Node, BoxedError> {
         return Ok(Node::parse_file(path)?);
     }
 
-    match eval_script_var(path, "config") {
-        Ok(dynamic) => return Ok(Node::from_rhai_dynamic(dynamic)?),
-        Err(RhaiError::VarNotFound { .. }) => {}
-        Err(err) => return Err(err.into()),
-    }
-    Ok(Node::from_rhai_dynamic(eval_script(path)?)?)
+    let env = RhaiEnv::new();
+    let mut engine = Engine::new();
+    engine.set_module_resolver(env.module_resolver());
+    Ok(Node::from_rhai_dynamic(env.eval_var_or_value(&engine, path, "config")?)?)
 }
 
 /// Resolves a path value from a redirect file: `~/` expands to the home directory, relative

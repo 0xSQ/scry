@@ -104,8 +104,14 @@ pub struct PathPatternSpec {
 
 impl PathPatternSpec {
     /// Creates a path pattern by auto-detecting syntax from wildcards in the string.
-    pub fn auto_detect(s: String) -> Self {
-        auto_detect_path_pattern(s)
+    pub fn auto_detect(path: String) -> Self {
+        let syntax = detect_pattern_syntax(&path);
+        Self {
+            path,
+            syntax,
+            must_exist: syntax == PatternSyntax::Exact,
+            recursive: true,
+        }
     }
 }
 
@@ -177,8 +183,9 @@ pub struct TextPatternSpec {
 
 impl TextPatternSpec {
     /// Creates a text pattern by auto-detecting syntax from wildcards in the string.
-    pub fn auto_detect(s: String) -> Self {
-        auto_detect_text_pattern(s)
+    pub fn auto_detect(pattern: String) -> Self {
+        let syntax = detect_pattern_syntax(&pattern);
+        Self { pattern, syntax }
     }
 
     /// Creates an exact text pattern.
@@ -462,7 +469,7 @@ impl FromNode for PathPatternSpec {
         // String shorthand: auto-detect syntax from wildcards.
         if node.kind.is_leaf() {
             let s: String = node.as_type()?;
-            return Ok(auto_detect_path_pattern(s));
+            return Ok(Self::auto_detect(s));
         }
 
         // Explicit map form.
@@ -470,7 +477,7 @@ impl FromNode for PathPatternSpec {
             let path: String = node.req("path")?;
             let syntax: PatternSyntax = match node.opt("syntax")? {
                 Some(syntax) => syntax,
-                None => auto_detect_path_syntax(&path),
+                None => detect_pattern_syntax(&path),
             };
             let default_must_exist = syntax == PatternSyntax::Exact;
             let must_exist: bool = node.opt("must_exist")?.unwrap_or(default_must_exist);
@@ -603,7 +610,7 @@ impl FromNode for TextPatternSpec {
         // String shorthand: auto-detect syntax from wildcards.
         if node.kind.is_leaf() {
             let s: String = node.as_type()?;
-            return Ok(auto_detect_text_pattern(s));
+            return Ok(Self::auto_detect(s));
         }
 
         // Explicit map form.
@@ -611,7 +618,7 @@ impl FromNode for TextPatternSpec {
             let pattern: String = node.req("pattern")?;
             let syntax: PatternSyntax = match node.opt("syntax")? {
                 Some(syntax) => syntax,
-                None => auto_detect_text_syntax(&pattern),
+                None => detect_pattern_syntax(&pattern),
             };
             node.ensure_only_keys(&["pattern", "syntax"])?;
             return Ok(TextPatternSpec { pattern, syntax });
@@ -675,58 +682,29 @@ impl SourceSpec {
         base_dir: Option<&Path>,
         on_error: OnError,
     ) -> Result<Vec<PathBuf>, FilesError> {
-        // Determine effective from spec. If omitted, use base_dir as implicit root.
-        let default_from;
-        let from = match &self.from {
-            Some(f) => f,
-            None => {
-                let base = base_dir.ok_or_else(|| FilesError::MissingBaseDir {
-                    path: "<implicit root>".to_string(),
-                })?;
-                require_unicode_path(base)?;
-                default_from = FromSpec {
-                    root: OneOrMany::one(PathPatternSpec {
-                        path: String::new(),
-                        syntax: PatternSyntax::Exact,
-                        must_exist: true,
-                        recursive: true,
-                    }),
-                    prune: OneOrMany::default(),
-                };
-                &default_from
-            }
-        };
-
-        // If root is empty, also default to base_dir.
-        let default_root_from;
-        let effective_from = if from.root.is_empty() {
+        let default_from = FromSpec::default();
+        let from = self.from.as_ref().unwrap_or(&default_from);
+        let implicit_root;
+        let roots = if from.root.is_empty() {
             let base = base_dir.ok_or_else(|| FilesError::MissingBaseDir {
                 path: "<implicit root>".to_string(),
             })?;
             require_unicode_path(base)?;
-            default_root_from = FromSpec {
-                root: OneOrMany::one(PathPatternSpec {
-                    path: String::new(),
-                    syntax: PatternSyntax::Exact,
-                    must_exist: true,
-                    recursive: true,
-                }),
-                prune: from.prune.clone(),
-            };
-            &default_root_from
+            implicit_root = [PathPatternSpec::auto_detect(String::new())];
+            &implicit_root[..]
         } else {
-            from
+            from.root.as_slice()
         };
 
         // Compile prune rules.
-        let compiled_prune = CompiledPrune::build(base_dir, &effective_from.prune)?;
+        let compiled_prune = CompiledPrune::build(base_dir, &from.prune)?;
 
         // Compile where spec (if present).
         let compiled_where = self.where_.as_ref().map(CompiledWhereSpec::build).transpose()?;
 
         // Expand all roots.
         let mut files: IndexSet<PathBuf> = IndexSet::new();
-        for root_pattern in effective_from.root.iter() {
+        for root_pattern in roots {
             expand_root(
                 root_pattern,
                 base_dir,
@@ -815,7 +793,7 @@ impl CompiledPrune {
                             require_unicode_path(base_dir)?;
                         }
                     }
-                    let escaped = escape_wildcard_for_globset(&pp.path);
+                    let escaped = escape_wildcard_literals(&pp.path);
                     let glob = GlobBuilder::new(&escaped).literal_separator(true).build().map_err(
                         |e| FilesError::PruneWildcardPattern {
                             pattern: pp.path.clone(),
@@ -936,7 +914,7 @@ fn expand_root(
         }
         PatternSyntax::Wildcard => {
             let adapted = adapt_pattern(base_dir, &pp.path)?;
-            let compiled = escape_for_glob(&adapted);
+            let compiled = escape_wildcard_literals(&adapted);
             let mut batch = expand_wildcard(
                 &compiled,
                 &pp.path,
@@ -1318,7 +1296,7 @@ impl CompiledPathPattern {
                 case_insensitive,
             }),
             PatternSyntax::Wildcard => {
-                let escaped = escape_wildcard_for_globset(&normalized);
+                let escaped = escape_wildcard_literals(&normalized);
                 let glob = GlobBuilder::new(&escaped)
                     .case_insensitive(case_insensitive)
                     .literal_separator(true)
@@ -1419,7 +1397,7 @@ impl CompiledTextPattern {
                 case_insensitive,
             }),
             PatternSyntax::Wildcard => {
-                let escaped = escape_wildcard_for_globset(pattern);
+                let escaped = escape_wildcard_literals(pattern);
                 let glob = GlobBuilder::new(&escaped)
                     .case_insensitive(case_insensitive)
                     .literal_separator(false)
@@ -1455,59 +1433,13 @@ impl CompiledTextPattern {
 // ---------------------------------------------------------------------------------------------- //
 // Helper Functions
 
-/// Auto-detects a path pattern from a plain string.
-///
-/// If the string contains `*` or `?`, it becomes a `Wildcard` pattern with `must_exist=false`.
-/// Otherwise, it becomes an `Exact` pattern with `must_exist=true` and `recursive=true`.
-fn auto_detect_path_pattern(s: String) -> PathPatternSpec {
-    let syntax = auto_detect_path_syntax(&s);
-    if syntax == PatternSyntax::Wildcard {
-        PathPatternSpec {
-            path: s,
-            syntax,
-            must_exist: false,
-            recursive: true,
-        }
-    } else {
-        PathPatternSpec {
-            path: s,
-            syntax,
-            must_exist: true,
-            recursive: true,
-        }
-    }
-}
-
-/// Auto-detects a text pattern from a plain string.
-///
-/// If the string contains `*` or `?`, it becomes a `Wildcard` pattern.
-/// Otherwise, it becomes an `Exact` pattern.
-fn auto_detect_text_pattern(s: String) -> TextPatternSpec {
-    let syntax = auto_detect_text_syntax(&s);
-    TextPatternSpec { pattern: s, syntax }
-}
-
-/// Auto-detects path pattern syntax from wildcard characters.
-fn auto_detect_path_syntax(s: &str) -> PatternSyntax {
-    if contains_wildcard(s) {
+/// Detects the shared path and text wildcard syntax.
+fn detect_pattern_syntax(s: &str) -> PatternSyntax {
+    if s.contains(['*', '?']) {
         PatternSyntax::Wildcard
     } else {
         PatternSyntax::Exact
     }
-}
-
-/// Auto-detects text pattern syntax from wildcard characters.
-fn auto_detect_text_syntax(s: &str) -> PatternSyntax {
-    if contains_wildcard(s) {
-        PatternSyntax::Wildcard
-    } else {
-        PatternSyntax::Exact
-    }
-}
-
-/// Checks if a pattern string contains wildcard characters.
-fn contains_wildcard(s: &str) -> bool {
-    s.contains('*') || s.contains('?')
 }
 
 /// Normalizes backslash path separators to forward slashes.
@@ -1573,16 +1505,11 @@ fn require_unicode_path(path: &Path) -> Result<&str, FilesError> {
     })
 }
 
-/// Escapes a wildcard pattern for the `glob` crate.
-fn escape_for_glob(pattern: &str) -> String {
-    escape_wildcard_for_globset(pattern)
-}
-
-/// Escapes a wildcard pattern for use with `globset`.
+/// Escapes literal brackets and braces for `glob` and `globset`.
 ///
 /// `*`, `?`, and `**` keep their wildcard meaning. Braces and brackets are escaped so they are
 /// treated as literal characters.
-fn escape_wildcard_for_globset(pattern: &str) -> String {
+fn escape_wildcard_literals(pattern: &str) -> String {
     let needs_work = pattern.contains('{')
         || pattern.contains('}')
         || pattern.contains('[')

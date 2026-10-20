@@ -1,22 +1,13 @@
-//! Integration tests for CLI Setup behaviors.
-//!
-//! These tests document and lock down the current behavior of the Setup. They cover:
-//! - Config path resolution (positional, flag, both, auto-discover)
-//! - Support inspection (`desc`, `get`, and output formats)
-//! - Input edits (`--set`, `--remove`)
-//! - Expose args (flags and options)
-//! - Collision detection
+//! Covers config-source policies, exposed arguments, and setup composition.
 #![cfg(feature = "format-json")]
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 
 use scry::cli::setup::{
     ConfigSource, ExposeMap, MissingConfigPolicy, MultiSourcePolicy, Setup, SetupError,
 };
 use scry::node::Format;
-use scry::{Config, Node};
+use scry::{Config, Describe, FromNode, Node, ToNode};
 
 // ---------------------------------------------------------------------------------------------- //
 // Test Config Types
@@ -48,15 +39,7 @@ struct DatabaseConfig {
     port: u16,
 }
 
-#[derive(Debug, Config)]
-#[allow(dead_code)]
-struct ListTestConfig {
-    /// Items list.
-    #[scry(default = Vec::new())]
-    items: Vec<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, scry::FromNode, scry::ToNode, scry::Describe)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromNode, ToNode, Describe)]
 enum ProcessOrder {
     /// Traverses rows first.
     RowMajor,
@@ -85,348 +68,142 @@ struct PresetConfig {
 }
 
 // ---------------------------------------------------------------------------------------------- //
-// Test Helpers
-
-fn json_loader(json: &'static str) -> impl Fn(&Path) -> Result<Node, std::convert::Infallible> {
-    move |_| Ok(Node::parse_str(json, Format::Json).unwrap())
-}
-
-fn simple_config_loader() -> impl Fn(&Path) -> Result<Node, std::convert::Infallible> {
-    json_loader(r#"{"value": "test"}"#)
-}
-
-fn nested_config_loader() -> impl Fn(&Path) -> Result<Node, std::convert::Infallible> {
-    json_loader(
-        r#"{"name": "myapp", "database": {"host": "localhost", "port": 5432}, "verbose": false}"#,
-    )
-}
-
-// ---------------------------------------------------------------------------------------------- //
 // Config Path Resolution Tests
 
 mod config_path_resolution {
     use super::*;
 
     #[test]
-    fn positional_only() {
-        let handler_called = Arc::new(AtomicBool::new(false));
-        let handler_called_clone = handler_called.clone();
-
-        let bundle = Setup::new("test")
-            .config_source(|_| {
-                ConfigSource::new()
-                    .positional("CONFIG", "Path to config file")
-                    .loader(simple_config_loader())
-            })
-            .into_bundle(move |cfg: SimpleConfig| {
-                assert_eq!(cfg.value, "test");
-                handler_called_clone.store(true, Ordering::SeqCst);
-            });
-
-        let result = bundle.run_from(["test", "config.json"]);
-        assert!(result.is_ok());
-        assert!(handler_called.load(Ordering::SeqCst));
-    }
-
-    #[test]
-    fn flag_only() {
-        let handler_called = Arc::new(AtomicBool::new(false));
-        let handler_called_clone = handler_called.clone();
-
-        // Start fresh ConfigSource to get only a flag, no positional.
-        let bundle = Setup::new("test")
-            .config_source(|_| {
-                ConfigSource::new()
-                    .option("config", None, "Path to config file")
-                    .loader(simple_config_loader())
-            })
-            .into_bundle(move |cfg: SimpleConfig| {
-                assert_eq!(cfg.value, "test");
-                handler_called_clone.store(true, Ordering::SeqCst);
-            });
-
-        let result = bundle.run_from(["test", "--config", "config.json"]);
-        assert!(result.is_ok());
-        assert!(handler_called.load(Ordering::SeqCst));
-    }
-
-    #[test]
-    fn flag_with_short() {
-        let handler_called = Arc::new(AtomicBool::new(false));
-        let handler_called_clone = handler_called.clone();
-
-        // Start fresh ConfigSource to get only a flag, no positional.
-        let bundle = Setup::new("test")
-            .config_source(|_| {
-                ConfigSource::new()
-                    .option("config", Some('c'), "Path to config file")
-                    .loader(simple_config_loader())
-            })
-            .into_bundle(move |cfg: SimpleConfig| {
-                assert_eq!(cfg.value, "test");
-                handler_called_clone.store(true, Ordering::SeqCst);
-            });
-
-        let result = bundle.run_from(["test", "-c", "config.json"]);
-        assert!(result.is_ok());
-        assert!(handler_called.load(Ordering::SeqCst));
-    }
-
-    #[test]
-    fn both_positional_and_flag_uses_positional_first() {
-        // Current behavior: positional is checked first, then flag
-        let handler_called = Arc::new(AtomicBool::new(false));
-        let handler_called_clone = handler_called.clone();
-
-        let bundle = Setup::new("test")
-            .config_source(|_| {
-                ConfigSource::new()
-                    .positional("CONFIG", "Path to config file")
-                    .option("config", None, "Path to config file")
-                    .multi_source_policy(MultiSourcePolicy::PreferPositional)
-                    .loader(simple_config_loader())
-            })
-            .into_bundle(move |cfg: SimpleConfig| {
-                assert_eq!(cfg.value, "test");
-                handler_called_clone.store(true, Ordering::SeqCst);
-            });
-
-        // Provide positional
-        let result = bundle.run_from(["test", "config.json"]);
-        assert!(result.is_ok());
-        assert!(handler_called.load(Ordering::SeqCst));
-    }
-
-    #[test]
-    fn both_positional_and_flag_uses_flag_when_no_positional() {
-        let handler_called = Arc::new(AtomicBool::new(false));
-        let handler_called_clone = handler_called.clone();
-
-        let bundle = Setup::new("test")
-            .config_source(|_| {
-                ConfigSource::new()
-                    .positional("CONFIG", "Path to config file")
-                    .option("config", None, "Path to config file")
-                    .multi_source_policy(MultiSourcePolicy::PreferPositional)
-                    .loader(simple_config_loader())
-            })
-            .into_bundle(move |cfg: SimpleConfig| {
-                assert_eq!(cfg.value, "test");
-                handler_called_clone.store(true, Ordering::SeqCst);
-            });
-
-        // Provide flag only
-        let result = bundle.run_from(["test", "--config", "config.json"]);
-        assert!(result.is_ok());
-        assert!(handler_called.load(Ordering::SeqCst));
-    }
-
-    #[test]
-    fn error_on_multiple_rejects_both_sources() {
-        let bundle = Setup::new("test")
-            .config_source(|_| {
-                ConfigSource::new()
-                    .positional("CONFIG", "Path to config file")
-                    .option("config", None, "Path to config file")
-                    .multi_source_policy(MultiSourcePolicy::ErrorOnMultiple)
-                    .loader(simple_config_loader())
-            })
-            .into_bundle(|_cfg: SimpleConfig| {});
-
-        // Providing both positional and flag should error
-        let result = bundle.run_from(["test", "config.json", "--config", "other.json"]);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(
-            matches!(err, SetupError::MultipleConfigPaths),
-            "Expected SetupError::MultipleConfigPaths, got {:?}",
-            err
-        );
-    }
-
-    #[test]
-    fn prefer_option_policy_uses_option_over_positional() {
-        let handler_called = Arc::new(AtomicBool::new(false));
-        let handler_called_clone = handler_called.clone();
-
-        // Create a loader that returns different configs based on path.
-        let loader = move |path: &Path| -> Result<Node, std::convert::Infallible> {
-            let value = if path.to_str().unwrap().contains("from_option") {
-                "from_option"
-            } else {
-                "from_positional"
-            };
-            Ok(Node::parse_str(&format!(r#"{{"value": "{}"}}"#, value), Format::Json).unwrap())
-        };
-
-        let bundle = Setup::new("test")
-            .config_source(|_| {
-                ConfigSource::new()
-                    .positional("CONFIG", "Path to config file")
-                    .option("config", None, "Path to config file")
-                    .multi_source_policy(MultiSourcePolicy::PreferOption)
-                    .loader(loader)
-            })
-            .into_bundle(move |cfg: SimpleConfig| {
-                assert_eq!(cfg.value, "from_option");
-                handler_called_clone.store(true, Ordering::SeqCst);
-            });
-
-        // Providing both should use option (PreferOption policy)
-        let result = bundle.run_from(["test", "positional.json", "--config", "from_option.json"]);
-        assert!(result.is_ok());
-        assert!(handler_called.load(Ordering::SeqCst));
-    }
-
-    #[test]
-    fn discovery_function_resolves_config() {
-        let handler_called = Arc::new(AtomicBool::new(false));
-        let handler_called_clone = handler_called.clone();
-
-        let bundle = Setup::new("test")
-            .config_source(|_| {
-                ConfigSource::new()
-                    .positional("CONFIG", "Path to config file")
-                    .discover(|_cmd| {
-                        Ok::<_, std::convert::Infallible>(Some(PathBuf::from("discovered.json")))
+    fn explicit_sources_select_their_paths_and_skip_discovery() {
+        for arguments in [
+            vec!["test", "positional.json"],
+            vec!["test", "--config", "option.json"],
+            vec!["test", "-c", "option.json"],
+            vec!["test", "positional.json", "--config", "option.json"],
+        ] {
+            for policy in [
+                MultiSourcePolicy::PreferPositional,
+                MultiSourcePolicy::PreferOption,
+            ] {
+                let source = ConfigSource::new()
+                    .positional("CONFIG", "Path to config file.")
+                    .option("config", Some('c'), "Path to config file.")
+                    .multi_source_policy(policy)
+                    .discover(|_| -> Result<Option<PathBuf>, std::convert::Infallible> {
+                        panic!("explicit paths must skip discovery")
                     })
-                    .loader(simple_config_loader())
-            })
-            .into_bundle(move |cfg: SimpleConfig| {
-                assert_eq!(cfg.value, "test");
-                handler_called_clone.store(true, Ordering::SeqCst);
-            });
-
-        // No positional provided, should use discovery.
-        let result = bundle.run_from(["test"]);
-        assert!(result.is_ok());
-        assert!(handler_called.load(Ordering::SeqCst));
+                    .loader(|path: &Path| -> Result<Node, std::convert::Infallible> {
+                        let mut node = Node::empty_map();
+                        node.set_value("value", path.to_str().unwrap()).unwrap();
+                        Ok(node)
+                    });
+                let value = Setup::new("test")
+                    .config_source(|_| source)
+                    .into_bundle(|config: SimpleConfig| config.value)
+                    .run_from(&arguments)
+                    .unwrap()
+                    .unwrap();
+                let expected = if arguments.len() == 2
+                    || (arguments.len() == 4 && policy == MultiSourcePolicy::PreferPositional)
+                {
+                    "positional.json"
+                } else {
+                    "option.json"
+                };
+                assert_eq!(value, expected, "{policy:?}, {arguments:?}");
+            }
+        }
     }
 
     #[test]
-    fn discovery_error_is_cli_error() {
-        let bundle = Setup::new("test")
-            .config_source(|_| {
-                ConfigSource::new()
-                    .positional("CONFIG", "Path to config file")
-                    .discover(|_cmd| Err::<Option<PathBuf>, _>(anyhow::anyhow!("discovery failed")))
-                    .loader(simple_config_loader())
+    fn multiple_explicit_paths_are_rejected_by_default() {
+        let error = Setup::new("test")
+            .config_source(|source| {
+                source
+                    .positional("CONFIG", "Path to config file.")
+                    .option("config", None, "Path to config file.")
+                    .discover(|_| -> Result<Option<PathBuf>, std::convert::Infallible> {
+                        panic!("conflicting paths must skip discovery")
+                    })
+                    .loader(|_: &Path| -> Result<Node, std::convert::Infallible> {
+                        panic!("conflicting paths must skip loading")
+                    })
             })
-            .into_bundle(|_cfg: SimpleConfig| {});
-
-        let result = bundle.run_from(["test"]);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(
-            matches!(err, SetupError::ConfigNotFound { .. }),
-            "Expected SetupError::ConfigNotFound, got {:?}",
-            err
-        );
+            .into_bundle(|_: SimpleConfig| panic!("conflicting paths must skip execution"))
+            .run_from(["test", "positional.json", "--config", "option.json"])
+            .unwrap_err();
+        assert!(matches!(error, SetupError::MultipleConfigPaths));
     }
 
     #[test]
-    fn no_config_source_is_error() {
-        let bundle = Setup::new("test")
-            .config_source(|_| {
-                ConfigSource::new()
-                    .positional("CONFIG", "Path to config file")
-                    .loader(simple_config_loader())
-            })
-            .into_bundle(|_cfg: SimpleConfig| {});
-
-        let result = bundle.run_from(["test"]);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(
-            matches!(err, SetupError::NoConfigFile { .. }),
-            "Expected SetupError::NoConfigFile, got {:?}",
-            err
-        );
+    fn discovery_precedes_the_missing_input_policy() {
+        for policy in [MissingConfigPolicy::Error, MissingConfigPolicy::EmptyNode] {
+            let value = Setup::new("test")
+                .config_source(|source| {
+                    source
+                        .missing_policy(policy)
+                        .discover(|command| -> Result<Option<PathBuf>, std::convert::Infallible> {
+                            assert_eq!(command, "test");
+                            Ok(Some(PathBuf::from("discovered.json")))
+                        })
+                        .loader(|path: &Path| {
+                            assert_eq!(path, Path::new("discovered.json"));
+                            simple_config_loader()(path)
+                        })
+                })
+                .into_bundle(|config: SimpleConfig| config.value)
+                .run_from(["test"])
+                .unwrap()
+                .unwrap();
+            assert_eq!(value, "test");
+        }
     }
 
     #[test]
-    fn no_config_source_can_start_from_empty_node() {
-        let handler_called = Arc::new(AtomicBool::new(false));
-        let handler_called_clone = handler_called.clone();
-
-        let bundle = Setup::new("test")
-            .config_source(|_| {
-                ConfigSource::new().positional("CONFIG", "Path to config file").or_empty()
-            })
-            .into_bundle(move |cfg: SimpleConfig| {
-                assert_eq!(cfg.value, "from_cli");
-                handler_called_clone.store(true, Ordering::SeqCst);
-            });
-
-        let result = bundle.run_from(["test", "--scry", "--set", "value", "from_cli"]);
-        assert!(result.is_ok());
-        assert!(handler_called.load(Ordering::SeqCst));
-    }
-
-    #[test]
-    fn empty_discovery_falls_through_to_empty_node_policy() {
-        let handler_called = Arc::new(AtomicBool::new(false));
-        let handler_called_clone = handler_called.clone();
-
-        let bundle = Setup::new("test")
-            .config_source(|_| {
-                ConfigSource::new()
-                    .positional("CONFIG", "Path to config file")
-                    .discover(|_cmd| Ok::<_, std::convert::Infallible>(None))
+    fn discovery_errors_preserve_their_cause_even_with_empty_input_enabled() {
+        let error = Setup::new("test")
+            .config_source(|source| {
+                source
                     .or_empty()
+                    .discover(|_| Err::<Option<PathBuf>, _>(anyhow::anyhow!("discovery failed")))
             })
-            .into_bundle(move |cfg: SimpleConfig| {
-                assert_eq!(cfg.value, "from_cli");
-                handler_called_clone.store(true, Ordering::SeqCst);
-            });
-
-        let result = bundle.run_from(["test", "--scry", "--set", "value", "from_cli"]);
-        assert!(result.is_ok());
-        assert!(handler_called.load(Ordering::SeqCst));
+            .into_bundle(|_: SimpleConfig| panic!("failed discovery must skip execution"))
+            .run_from(["test"])
+            .unwrap_err();
+        let SetupError::ConfigNotFound { cmd_name, source } = error else {
+            panic!("expected a discovery error");
+        };
+        assert_eq!(cmd_name, "test");
+        assert_eq!(source.to_string(), "discovery failed");
     }
 
     #[test]
-    fn empty_discovery_without_empty_node_policy_is_error() {
-        let bundle = Setup::new("test")
-            .config_source(|_| {
-                ConfigSource::new()
-                    .positional("CONFIG", "Path to config file")
-                    .discover(|_cmd| Ok::<_, std::convert::Infallible>(None))
-                    .loader(simple_config_loader())
-            })
-            .into_bundle(|_cfg: SimpleConfig| {});
-
-        let result = bundle.run_from(["test"]);
-        assert!(result.is_err());
-        assert!(
-            matches!(result.unwrap_err(), SetupError::NoConfigFile { .. }),
-            "Expected SetupError::NoConfigFile"
-        );
-    }
-
-    #[test]
-    fn discovery_takes_precedence_over_empty_node_policy() {
-        let handler_called = Arc::new(AtomicBool::new(false));
-        let handler_called_clone = handler_called.clone();
-
-        let bundle = Setup::new("test")
-            .config_source(|_| {
-                ConfigSource::new()
-                    .positional("CONFIG", "Path to config file")
-                    .missing_policy(MissingConfigPolicy::EmptyNode)
-                    .discover(|_cmd| {
-                        Ok::<_, std::convert::Infallible>(Some(PathBuf::from("discovered.json")))
+    fn absent_input_obeys_the_missing_policy_with_or_without_discovery() {
+        for discover in [false, true] {
+            for policy in [MissingConfigPolicy::Error, MissingConfigPolicy::EmptyNode] {
+                let result = Setup::new("test")
+                    .config_source(|mut source| {
+                        if discover {
+                            source = source.discover(|_| Ok::<_, std::convert::Infallible>(None));
+                        }
+                        source.missing_policy(policy).loader(
+                            |_: &Path| -> Result<Node, std::convert::Infallible> {
+                                panic!("absent input must skip loading")
+                            },
+                        )
                     })
-                    .loader(simple_config_loader())
-            })
-            .into_bundle(move |cfg: SimpleConfig| {
-                assert_eq!(cfg.value, "test");
-                handler_called_clone.store(true, Ordering::SeqCst);
-            });
-
-        let result = bundle.run_from(["test"]);
-        assert!(result.is_ok());
-        assert!(handler_called.load(Ordering::SeqCst));
+                    .into_bundle(|config: SimpleConfig| config.value)
+                    .run_from(["test", "--scry", "--set", "value", "from-cli"]);
+                match policy {
+                    MissingConfigPolicy::Error => {
+                        assert!(matches!(result, Err(SetupError::NoConfigFile { .. })));
+                    }
+                    MissingConfigPolicy::EmptyNode => {
+                        assert_eq!(result.unwrap().unwrap(), "from-cli");
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -437,30 +214,11 @@ mod support_actions {
     use super::*;
 
     #[test]
-    fn desc_exits_early_without_config() {
-        // Descriptions do not require a config file.
-        let bundle = Setup::new("test")
-            .config_source(|_| {
-                ConfigSource::new().positional("CONFIG", "Path to config file").loader(
-                    |_: &Path| -> Result<Node, std::io::Error> {
-                        panic!("loader should not be called")
-                    },
-                )
-            })
-            .into_bundle(|_cfg: SimpleConfig| -> Result<(), std::io::Error> {
-                panic!("handler should not be called");
-            });
-
-        let result = bundle.run_from(["test", "--scry", "desc"]);
-        assert!(result.is_ok());
-    }
-
-    #[test]
     fn desc_with_key_validates_path() {
         let bundle = Setup::new("test")
             .config_source(|_| {
                 ConfigSource::new()
-                    .positional("CONFIG", "Path to config file")
+                    .positional("CONFIG", "Path to config file.")
                     .loader(simple_config_loader())
             })
             .into_bundle(|_cfg: SimpleConfig| {});
@@ -471,176 +229,28 @@ mod support_actions {
     }
 
     #[test]
-    fn get_outputs_tree_format() {
-        let bundle = Setup::new("test")
-            .config_source(|c| {
-                c.positional("CONFIG", "Path to config file").loader(nested_config_loader())
-            })
-            .into_bundle(|_cfg: NestedConfig| -> Result<(), std::io::Error> {
-                panic!("get must not call the handler");
-            });
-
-        // Should succeed and exit early
-        let result = bundle.run_from(["test", "config.json", "--scry", "get"]);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn get_with_key() {
-        let bundle = Setup::new("test")
-            .config_source(|c| {
-                c.positional("CONFIG", "Path to config file").loader(nested_config_loader())
-            })
-            .into_bundle(|_cfg: NestedConfig| -> Result<(), std::io::Error> {
-                panic!("handler should not be called");
-            });
-
-        let result = bundle.run_from(["test", "config.json", "--scry", "get", "database.host"]);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn get_flat_outputs_flat_format() {
-        let bundle = Setup::new("test")
-            .config_source(|c| {
-                c.positional("CONFIG", "Path to config file").loader(nested_config_loader())
-            })
-            .into_bundle(|_cfg: NestedConfig| -> Result<(), std::io::Error> {
-                panic!("handler should not be called");
-            });
-
-        let result = bundle.run_from(["test", "config.json", "--scry", "get", "--as", "flat"]);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn get_as_json() {
-        let bundle = Setup::new("test")
-            .config_source(|c| {
-                c.positional("CONFIG", "Path to config file").loader(nested_config_loader())
-            })
-            .into_bundle(|_cfg: NestedConfig| -> Result<(), std::io::Error> {
-                panic!("handler should not be called");
-            });
-
-        let result = bundle.run_from(["test", "config.json", "--scry", "get", "--as", "json"]);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn get_as_rhai() {
-        let bundle = Setup::new("test")
-            .config_source(|c| {
-                c.positional("CONFIG", "Path to config file").loader(nested_config_loader())
-            })
-            .into_bundle(|_cfg: NestedConfig| -> Result<(), std::io::Error> {
-                panic!("handler should not be called");
-            });
-
-        let result = bundle.run_from(["test", "config.json", "--scry", "get", "--as", "rhai"]);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn get_as_unknown_format_errors() {
-        let bundle = Setup::new("test")
-            .config_source(|c| {
-                c.positional("CONFIG", "Path to config file").loader(nested_config_loader())
-            })
-            .into_bundle(|_cfg: NestedConfig| {});
-
-        let result = bundle.run_from(["test", "config.json", "--scry", "get", "--as", "ini"]);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(
-            matches!(err, SetupError::Support(_)),
-            "Expected a support parse error, got {:?}",
-            err
-        );
-    }
-
-    #[test]
-    fn set_modifies_config() {
-        let handler_called = Arc::new(AtomicBool::new(false));
-        let handler_called_clone = handler_called.clone();
-
-        let bundle = Setup::new("test")
-            .config_source(|c| {
-                c.positional("CONFIG", "Path to config file").loader(nested_config_loader())
-            })
-            .into_bundle(move |cfg: NestedConfig| {
-                assert_eq!(cfg.database.host, "remotehost");
-                handler_called_clone.store(true, Ordering::SeqCst);
-            });
-
-        let result = bundle.run_from([
-            "test",
-            "config.json",
-            "--scry",
-            "--set",
-            "database.host",
-            "remotehost",
-        ]);
-        assert!(result.is_ok());
-        assert!(handler_called.load(Ordering::SeqCst));
-    }
-
-    #[test]
-    fn set_multiple_values() {
-        let handler_called = Arc::new(AtomicBool::new(false));
-        let handler_called_clone = handler_called.clone();
-
-        let bundle = Setup::new("test")
-            .config_source(|c| {
-                c.positional("CONFIG", "Path to config file").loader(nested_config_loader())
-            })
-            .into_bundle(move |cfg: NestedConfig| {
-                assert_eq!(cfg.database.host, "remotehost");
-                assert_eq!(cfg.name, "changed");
-                handler_called_clone.store(true, Ordering::SeqCst);
-            });
-
-        let result = bundle.run_from([
-            "test",
-            "config.json",
-            "--scry",
-            "--set",
-            "database.host",
-            "remotehost",
-            "--set",
-            "name",
-            "changed",
-        ]);
-        assert!(result.is_ok());
-        assert!(handler_called.load(Ordering::SeqCst));
-    }
-
-    #[test]
     fn remove_removes_key() {
-        let handler_called = Arc::new(AtomicBool::new(false));
-        let handler_called_clone = handler_called.clone();
-
         let bundle = Setup::new("test")
             .config_source(|c| {
-                c.positional("CONFIG", "Path to config file").loader(nested_config_loader())
+                c.positional("CONFIG", "Path to config file.").loader(json_loader(
+                    r#"{ "name": "app", "database": { "host": "localhost", "port": 9000 } }"#,
+                ))
             })
             .into_bundle(move |cfg: NestedConfig| {
-                // Port should fall back to default after removal
+                // Removing a loaded value restores its typed default.
                 assert_eq!(cfg.database.port, 5432);
-                handler_called_clone.store(true, Ordering::SeqCst);
             });
 
         let result =
             bundle.run_from(["test", "config.json", "--scry", "--remove", "database.port"]);
-        assert!(result.is_ok());
-        assert!(handler_called.load(Ordering::SeqCst));
+        assert!(matches!(result, Ok(Some(()))));
     }
 
     #[test]
-    fn remove_nonexistent_path_errors() {
+    fn removing_an_absent_path_reports_the_missing_key_and_available_fields() {
         let bundle = Setup::new("test")
             .config_source(|c| {
-                c.positional("CONFIG", "Path to config file").loader(nested_config_loader())
+                c.positional("CONFIG", "Path to config file.").loader(nested_config_loader())
             })
             .into_bundle(|_cfg: NestedConfig| {});
 
@@ -648,36 +258,9 @@ mod support_actions {
             bundle.run_from(["test", "config.json", "--scry", "--remove", "database.nope"]);
         let err = result.unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("does not exist"), "expected 'does not exist' in: {msg}");
-    }
-
-    #[test]
-    fn remove_nonexistent_path_shows_hint() {
-        let bundle = Setup::new("test")
-            .config_source(|c| {
-                c.positional("CONFIG", "Path to config file").loader(nested_config_loader())
-            })
-            .into_bundle(|_cfg: NestedConfig| {});
-
-        let result =
-            bundle.run_from(["test", "config.json", "--scry", "--remove", "database.nope"]);
-        let err = result.unwrap_err();
-        let msg = err.to_string();
-        // The hint from UnknownPathError should mention available fields.
+        assert!(msg.contains("does not exist"), "{msg}");
         assert!(msg.contains("Unknown key"), "expected 'Unknown key' hint in: {msg}");
         assert!(msg.contains("host"), "expected 'host' in available fields hint: {msg}");
-    }
-
-    #[test]
-    fn support_actions_have_one_parent_entrance() {
-        let bundle = Setup::new("test").into_bundle(|_cfg: SimpleConfig| {});
-        let names: Vec<_> =
-            bundle.command().get_arguments().filter_map(|arg| arg.get_long()).collect();
-
-        assert_eq!(names.iter().filter(|name| **name == "scry").count(), 1);
-        for name in ["desc", "get", "get-flat", "get-as", "set", "remove"] {
-            assert!(!names.contains(&name), "unexpected parent --{name}");
-        }
     }
 }
 
@@ -689,46 +272,37 @@ mod expose_args {
 
     #[test]
     fn expose_option_overrides_value() {
-        let handler_called = Arc::new(AtomicBool::new(false));
-        let handler_called_clone = handler_called.clone();
-
         let bundle = Setup::new("test")
             .expose(|e: &mut ExposeMap| {
                 e.option("database.port");
             })
             .config_source(|c| {
-                c.positional("CONFIG", "Path to config file").loader(nested_config_loader())
+                c.positional("CONFIG", "Path to config file.").loader(nested_config_loader())
             })
             .into_bundle(move |cfg: NestedConfig| {
                 assert_eq!(cfg.database.port, 9999);
-                handler_called_clone.store(true, Ordering::SeqCst);
+                assert_eq!(cfg.database.host, "localhost");
             });
 
         let result = bundle.run_from(["test", "config.json", "--database-port", "9999"]);
-        assert!(result.is_ok());
-        assert!(handler_called.load(Ordering::SeqCst));
+        assert!(matches!(result, Ok(Some(()))));
     }
 
     #[test]
     fn expose_true_flag_sets_true() {
-        let handler_called = Arc::new(AtomicBool::new(false));
-        let handler_called_clone = handler_called.clone();
-
         let bundle = Setup::new("test")
             .expose(|e: &mut ExposeMap| {
                 e.flag("verbose", true);
             })
             .config_source(|c| {
-                c.positional("CONFIG", "Path to config file").loader(nested_config_loader())
+                c.positional("CONFIG", "Path to config file.").loader(nested_config_loader())
             })
             .into_bundle(move |cfg: NestedConfig| {
                 assert!(cfg.verbose);
-                handler_called_clone.store(true, Ordering::SeqCst);
             });
 
         let result = bundle.run_from(["test", "config.json", "--verbose"]);
-        assert!(result.is_ok());
-        assert!(handler_called.load(Ordering::SeqCst));
+        assert!(matches!(result, Ok(Some(()))));
     }
 
     #[test]
@@ -738,7 +312,7 @@ mod expose_args {
                 e.flag("verbose", true);
             })
             .config_source(|c| {
-                c.positional("CONFIG", "Path to config file").loader(nested_config_loader())
+                c.positional("CONFIG", "Path to config file.").loader(nested_config_loader())
             })
             .into_bundle(|cfg: NestedConfig| assert!(!cfg.verbose));
 
@@ -754,7 +328,7 @@ mod expose_args {
                 e.flag("verbose", false).long("quiet").short('Q');
             })
             .config_source(|c| {
-                c.positional("CONFIG", "Path to config file")
+                c.positional("CONFIG", "Path to config file.")
                     .loader(json_loader(
                         r#"{"name":"myapp","database":{"host":"localhost","port":5432},"verbose":true}"#,
                     ))
@@ -903,46 +477,36 @@ mod expose_args {
 
     #[test]
     fn expose_with_custom_long() {
-        let handler_called = Arc::new(AtomicBool::new(false));
-        let handler_called_clone = handler_called.clone();
-
         let bundle = Setup::new("test")
             .expose(|e: &mut ExposeMap| {
                 e.option("database.port").long("port");
             })
             .config_source(|c| {
-                c.positional("CONFIG", "Path to config file").loader(nested_config_loader())
+                c.positional("CONFIG", "Path to config file.").loader(nested_config_loader())
             })
             .into_bundle(move |cfg: NestedConfig| {
                 assert_eq!(cfg.database.port, 8080);
-                handler_called_clone.store(true, Ordering::SeqCst);
             });
 
         let result = bundle.run_from(["test", "config.json", "--port", "8080"]);
-        assert!(result.is_ok());
-        assert!(handler_called.load(Ordering::SeqCst));
+        assert!(matches!(result, Ok(Some(()))));
     }
 
     #[test]
     fn expose_with_short() {
-        let handler_called = Arc::new(AtomicBool::new(false));
-        let handler_called_clone = handler_called.clone();
-
         let bundle = Setup::new("test")
             .expose(|e: &mut ExposeMap| {
                 e.flag("verbose", true).short('v');
             })
             .config_source(|c| {
-                c.positional("CONFIG", "Path to config file").loader(nested_config_loader())
+                c.positional("CONFIG", "Path to config file.").loader(nested_config_loader())
             })
             .into_bundle(move |cfg: NestedConfig| {
                 assert!(cfg.verbose);
-                handler_called_clone.store(true, Ordering::SeqCst);
             });
 
         let result = bundle.run_from(["test", "config.json", "-v"]);
-        assert!(result.is_ok());
-        assert!(handler_called.load(Ordering::SeqCst));
+        assert!(matches!(result, Ok(Some(()))));
     }
 
     #[test]
@@ -957,7 +521,7 @@ mod expose_args {
                 e.option("nested.mixedCase"); // Mixed dot and camelCase
             })
             .config_source(|c| {
-                c.positional("CONFIG", "Path to config file").loader(simple_config_loader())
+                c.positional("CONFIG", "Path to config file.").loader(simple_config_loader())
             })
             .into_bundle(|_cfg: SimpleConfig| {});
 
@@ -970,101 +534,6 @@ mod expose_args {
         assert!(long_names.contains(&"some-nested-path-here")); // some_nested.path_here -> some-nested-path-here
         assert!(long_names.contains(&"camel-case")); // CamelCase -> camel-case
         assert!(long_names.contains(&"nested-mixed-case")); // nested.mixedCase -> nested-mixed-case
-    }
-
-    #[test]
-    fn expose_append_appends_to_existing() {
-        let handler_called = Arc::new(AtomicBool::new(false));
-        let handler_called_clone = handler_called.clone();
-
-        let bundle = Setup::new("test")
-            .expose(|e: &mut ExposeMap| {
-                e.option("items").append();
-            })
-            .config_source(|c| {
-                c.positional("CONFIG", "Path to config file")
-                    .loader(json_loader(r#"{"items": ["a"]}"#))
-            })
-            .into_bundle(move |cfg: ListTestConfig| {
-                assert_eq!(cfg.items, vec!["a", "b", "c"]);
-                handler_called_clone.store(true, Ordering::SeqCst);
-            });
-
-        let result = bundle.run_from(["test", "config.json", "--items", "b", "--items", "c"]);
-        assert!(result.is_ok());
-        assert!(handler_called.load(Ordering::SeqCst));
-    }
-
-    #[test]
-    fn expose_append_creates_when_missing() {
-        let handler_called = Arc::new(AtomicBool::new(false));
-        let handler_called_clone = handler_called.clone();
-
-        let bundle = Setup::new("test")
-            .expose(|e: &mut ExposeMap| {
-                e.option("items").append();
-            })
-            .config_source(|c| {
-                c.positional("CONFIG", "Path to config file").loader(json_loader(r#"{}"#))
-            })
-            .into_bundle(move |cfg: ListTestConfig| {
-                assert_eq!(cfg.items, vec!["a"]);
-                handler_called_clone.store(true, Ordering::SeqCst);
-            });
-
-        let result = bundle.run_from(["test", "config.json", "--items", "a"]);
-        assert!(result.is_ok());
-        assert!(handler_called.load(Ordering::SeqCst));
-    }
-
-    #[test]
-    fn expose_append_errors_on_scalar() {
-        let bundle = Setup::new("test")
-            .expose(|e: &mut ExposeMap| {
-                e.option("items").append();
-            })
-            .config_source(|c| {
-                c.positional("CONFIG", "Path to config file")
-                    .loader(json_loader(r#"{"items": "x"}"#))
-            })
-            .into_bundle(|_cfg: ListTestConfig| {});
-
-        let result = bundle.run_from(["test", "config.json", "--items", "y"]);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("expected array"), "expected 'expected array' in: {msg}");
-    }
-
-    #[test]
-    fn expose_append_preserves_argv_order() {
-        let handler_called = Arc::new(AtomicBool::new(false));
-        let handler_called_clone = handler_called.clone();
-
-        let bundle = Setup::new("test")
-            .expose(|e: &mut ExposeMap| {
-                e.option("items").append();
-            })
-            .config_source(|c| {
-                c.positional("CONFIG", "Path to config file").loader(json_loader(r#"{}"#))
-            })
-            .into_bundle(move |cfg: ListTestConfig| {
-                assert_eq!(cfg.items, vec!["c", "a", "b"]);
-                handler_called_clone.store(true, Ordering::SeqCst);
-            });
-
-        let result = bundle.run_from([
-            "test",
-            "config.json",
-            "--items",
-            "c",
-            "--items",
-            "a",
-            "--items",
-            "b",
-        ]);
-        assert!(result.is_ok());
-        assert!(handler_called.load(Ordering::SeqCst));
     }
 
     #[test]
@@ -1107,40 +576,30 @@ mod expose_args {
 
     #[test]
     fn expose_unit_enum_accepts_case_insensitive_cli_value() {
-        let handler_called = Arc::new(AtomicBool::new(false));
-        let handler_called_clone = handler_called.clone();
-
         let bundle = Setup::new("test")
             .expose(|e: &mut ExposeMap| {
                 e.option("order");
             })
             .into_bundle(move |cfg: EnumExposeConfig| {
                 assert_eq!(cfg.order, ProcessOrder::ColMajor);
-                handler_called_clone.store(true, Ordering::SeqCst);
             });
 
         let result = bundle.run_from(["test", "--order", "COL-MAJOR"]);
-        assert!(result.is_ok());
-        assert!(handler_called.load(Ordering::SeqCst));
+        assert!(matches!(result, Ok(Some(()))));
     }
 
     #[test]
     fn expose_unit_enum_accepts_snake_case_alias() {
-        let handler_called = Arc::new(AtomicBool::new(false));
-        let handler_called_clone = handler_called.clone();
-
         let bundle = Setup::new("test")
             .expose(|e: &mut ExposeMap| {
                 e.option("order");
             })
             .into_bundle(move |cfg: EnumExposeConfig| {
                 assert_eq!(cfg.order, ProcessOrder::ColMajor);
-                handler_called_clone.store(true, Ordering::SeqCst);
             });
 
         let result = bundle.run_from(["test", "--order", "col_major"]);
-        assert!(result.is_ok());
-        assert!(handler_called.load(Ordering::SeqCst));
+        assert!(matches!(result, Ok(Some(()))));
     }
 }
 
@@ -1179,7 +638,7 @@ mod collision_detection {
         Setup::new("test")
             .config_source(|_| {
                 ConfigSource::new()
-                    .option("config", None, "Path to config file")
+                    .option("config", None, "Path to config file.")
                     .loader(simple_config_loader())
             })
             .expose(|e: &mut ExposeMap| {
@@ -1197,7 +656,7 @@ mod collision_detection {
             .arg(Arg::new("output").long("output"))
             .arg(Arg::new("output").long("output2")) // Same ID, different long
             .config_source(|c| {
-                c.positional("CONFIG", "Path to config file").loader(simple_config_loader())
+                c.positional("CONFIG", "Path to config file.").loader(simple_config_loader())
             })
             .into_bundle(|_cfg: SimpleConfig| {});
     }
@@ -1210,7 +669,7 @@ mod collision_detection {
         Setup::new("test")
             .config_source(|_| {
                 ConfigSource::new()
-                    .option("config", None, "Path to config file")
+                    .option("config", None, "Path to config file.")
                     .loader(simple_config_loader())
             })
             .arg(Arg::new("cfg").long("config")) // ID is "cfg", but long is "config"
@@ -1225,7 +684,7 @@ mod collision_detection {
                 e.flag("verbose", true).short('S'); // Shares the support switch's short alias.
             })
             .config_source(|c| {
-                c.positional("CONFIG", "Path to config file").loader(simple_config_loader())
+                c.positional("CONFIG", "Path to config file.").loader(simple_config_loader())
             })
             .into_bundle(|_cfg: SimpleConfig| {});
     }
@@ -1238,7 +697,7 @@ mod collision_detection {
         Setup::new("test")
             .arg(Arg::new("scry_support").long("fetch")) // Shares the support argument ID.
             .config_source(|c| {
-                c.positional("CONFIG", "Path to config file").loader(simple_config_loader())
+                c.positional("CONFIG", "Path to config file.").loader(simple_config_loader())
             })
             .into_bundle(|_cfg: SimpleConfig| {});
     }
@@ -1251,7 +710,7 @@ mod collision_detection {
         Setup::new("test")
             .config_source(|_| {
                 ConfigSource::new()
-                    .option("config", None, "Path to config file")
+                    .option("config", None, "Path to config file.")
                     .loader(simple_config_loader())
             })
             .arg(Arg::new("config").long("settings")) // ID is "config", long is "settings"
@@ -1269,7 +728,7 @@ mod collision_detection {
             })
             .arg(Arg::new("verbose").long("debug")) // ID is "verbose", long is "debug"
             .config_source(|c| {
-                c.positional("CONFIG", "Path to config file").loader(simple_config_loader())
+                c.positional("CONFIG", "Path to config file.").loader(simple_config_loader())
             })
             .into_bundle(|_cfg: SimpleConfig| {});
     }
@@ -1280,8 +739,8 @@ mod collision_detection {
         Setup::new("test")
             .config_source(|_| {
                 ConfigSource::new()
-                    .positional("config", "Path to config file")
-                    .option("config", None, "Path to config file")
+                    .positional("config", "Path to config file.")
+                    .option("config", None, "Path to config file.")
                     .loader(simple_config_loader())
             })
             .into_bundle(|_cfg: SimpleConfig| {});
@@ -1300,12 +759,11 @@ mod setup_behavior {
             // Replacing the source removes the standard named config option.
             .config_source(|_| {
                 ConfigSource::new()
-                    .positional("FILE", "Path to config file")
+                    .positional("FILE", "Path to config file.")
                     .loader(simple_config_loader())
             })
             .into_bundle(|_cfg: SimpleConfig| {});
 
-        // Verify the command uses "FILE" (the replacement)
         let args: Vec<_> = bundle.command().get_positionals().collect();
         assert_eq!(args.len(), 1);
         assert_eq!(args[0].get_id().as_str(), "FILE");
@@ -1315,15 +773,14 @@ mod setup_behavior {
     #[test]
     fn config_source_can_add_option_to_existing() {
         let bundle = Setup::new("test")
-            .config_source(|source| source.positional("CONFIG", "Path to config file"))
+            .config_source(|source| source.positional("CONFIG", "Path to config file."))
             .config_source(|source| {
                 source
-                    .option("config", Some('c'), "Path to config file")
+                    .option("config", Some('c'), "Path to config file.")
                     .loader(simple_config_loader())
             })
             .into_bundle(|_cfg: SimpleConfig| {});
 
-        // Should have both positional and --config flag
         let positionals: Vec<_> = bundle.command().get_positionals().collect();
         assert_eq!(positionals.len(), 1);
         assert_eq!(positionals[0].get_id().as_str(), "CONFIG");
@@ -1335,8 +792,6 @@ mod setup_behavior {
 
     #[test]
     fn expose_setup_accumulates() {
-        // Multiple expose() calls accumulate fields
-
         let bundle = Setup::new("test")
             .expose(|e: &mut ExposeMap| {
                 e.option("first");
@@ -1345,11 +800,10 @@ mod setup_behavior {
                 e.option("second");
             })
             .config_source(|c| {
-                c.positional("CONFIG", "Path to config file").loader(simple_config_loader())
+                c.positional("CONFIG", "Path to config file.").loader(simple_config_loader())
             })
             .into_bundle(|_cfg: SimpleConfig| {});
 
-        // Both "first" and "second" should be exposed
         let args: Vec<_> = bundle.command().get_arguments().collect();
         let long_names: Vec<_> = args.iter().filter_map(|a| a.get_long()).collect();
         assert!(long_names.contains(&"first"));
@@ -1358,7 +812,6 @@ mod setup_behavior {
 
     #[test]
     fn new_has_no_positional_config() {
-        // Setup::new() has no config source, so no positional.
         let bundle = Setup::new("test").into_bundle(|_cfg: SimpleConfig| {});
 
         let args: Vec<_> = bundle.command().get_positionals().collect();
@@ -1378,44 +831,6 @@ mod setup_behavior {
         assert_eq!(argument.get_short(), Some('C'));
         assert!(!argument.is_required_set());
     }
-
-    #[test]
-    fn standard_setup_has_one_support_and_named_source() {
-        let bundle = Setup::standard("test").into_bundle(|_cfg: SimpleConfig| {});
-        let names: Vec<_> =
-            bundle.command().get_arguments().filter_map(|arg| arg.get_long()).collect();
-
-        assert!(names.contains(&"config-file"));
-        assert!(names.contains(&"scry"));
-        for name in ["desc", "get", "get-flat", "get-as", "set", "remove"] {
-            assert!(!names.contains(&name), "unexpected parent --{name}");
-        }
-    }
-
-    #[test]
-    fn standard_argument_help_uses_terminal_punctuation() {
-        let bundle = Setup::standard("test").into_bundle(|_cfg: SimpleConfig| {});
-
-        for argument in bundle.command().get_arguments() {
-            if argument.get_id().as_str() == "help" {
-                continue;
-            }
-            let Some(help) = argument.get_help() else {
-                continue;
-            };
-            let help = help.to_string();
-            assert!(
-                matches!(help.chars().last(), Some('.' | '?' | '!')),
-                "argument '{}' has unpunctuated help: {help:?}",
-                argument.get_id()
-            );
-            assert!(
-                !help.contains(';'),
-                "argument '{}' uses a semicolon in help: {help:?}",
-                argument.get_id()
-            );
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------------------------- //
@@ -1432,12 +847,6 @@ mod argv_ordering {
         value: String,
         /// A secondary value.
         other: String,
-    }
-
-    #[test]
-    fn repeated_suffix_sets_keep_the_last_value() {
-        let config = run(&["--scry", "--set", "value", "a", "--set", "value", "b"]).unwrap();
-        assert_eq!(config.value, "b");
     }
 
     #[test]
@@ -1525,7 +934,7 @@ mod variant_expose {
     use super::*;
 
     /// A data-carrying enum in Scry's standard single-key-map form.
-    #[derive(Debug, PartialEq, scry::FromNode, scry::ToNode, scry::Describe)]
+    #[derive(Debug, PartialEq, FromNode, ToNode, Describe)]
     enum ImageSource {
         /// A grid directory.
         Grid(String),
@@ -1542,27 +951,22 @@ mod variant_expose {
     /// Runs a bundle exposing `--grid` / `--files` variant options over a prior config state,
     /// asserting the source the handler receives.
     fn assert_source(prior: &'static str, args: &[&str], expected: ImageSource) {
-        let handler_called = Arc::new(AtomicBool::new(false));
-        let handler_called_clone = handler_called.clone();
-
         let bundle = Setup::new("test")
             .expose(|e: &mut ExposeMap| {
                 e.option("source").variant("grid");
                 e.option("source").variant("files");
             })
             .config_source(|c| {
-                c.positional("CONFIG", "Path to config file").loader(json_loader(prior))
+                c.positional("CONFIG", "Path to config file.").loader(json_loader(prior))
             })
             .into_bundle(move |cfg: SourceConfig| {
                 assert_eq!(cfg.source, expected);
-                handler_called_clone.store(true, Ordering::SeqCst);
             });
 
         let mut argv = vec!["test", "config.json"];
         argv.extend_from_slice(args);
         let result = bundle.run_from(argv);
-        assert!(result.is_ok(), "run failed: {result:?}");
-        assert!(handler_called.load(Ordering::SeqCst));
+        assert!(matches!(result, Ok(Some(()))), "run failed: {result:?}");
     }
 
     #[test]
@@ -1572,8 +976,7 @@ mod variant_expose {
 
     #[test]
     fn variant_replaces_other_arm_wholesale() {
-        // The regression this feature exists for: selecting one arm over a config holding the
-        // other arm must replace the map, not graft a second (ambiguous) key into it.
+        // Selecting another arm replaces the whole map, preserving its single-key invariant.
         assert_source(
             r#"{"source": {"grid": "from-config"}}"#,
             &["--files", "f"],
@@ -1691,7 +1094,7 @@ mod variant_expose {
     #[test]
     fn renamed_arm_uses_serialized_key() {
         // The variant key is the serialized config key, not the Rust variant name.
-        #[derive(Debug, PartialEq, scry::FromNode, scry::ToNode, scry::Describe)]
+        #[derive(Debug, PartialEq, FromNode, ToNode, Describe)]
         enum RenamedSource {
             /// A directory arm, renamed in config.
             #[scry(rename = "dir")]
@@ -1732,13 +1135,6 @@ mod variant_expose {
     }
 
     #[test]
-    #[should_panic(expected = "cannot combine append with a variant wrapper")]
-    fn variant_on_append_panics() {
-        let mut map = ExposeMap::new();
-        map.option("source").append().variant("files");
-    }
-
-    #[test]
     #[should_panic(expected = "cannot take a variant wrapper")]
     fn variant_on_preset_panics() {
         let mut map = ExposeMap::new();
@@ -1765,4 +1161,21 @@ mod variant_expose {
             })
             .into_bundle(|_cfg: SourceConfig| {});
     }
+}
+
+// ---------------------------------------------------------------------------------------------- //
+// Test Helpers
+
+fn json_loader(json: &'static str) -> impl Fn(&Path) -> Result<Node, std::convert::Infallible> {
+    move |_| Ok(Node::parse_str(json, Format::Json).unwrap())
+}
+
+fn simple_config_loader() -> impl Fn(&Path) -> Result<Node, std::convert::Infallible> {
+    json_loader(r#"{"value": "test"}"#)
+}
+
+fn nested_config_loader() -> impl Fn(&Path) -> Result<Node, std::convert::Infallible> {
+    json_loader(
+        r#"{"name": "myapp", "database": {"host": "localhost", "port": 5432}, "verbose": false}"#,
+    )
 }

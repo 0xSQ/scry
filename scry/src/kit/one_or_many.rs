@@ -118,7 +118,7 @@ pub fn write_with<T>(
 
 /// Builds the one-or-many label from the supplied item description.
 ///
-/// Retains the container's existing label convention, including its fallback for unlabelled values.
+/// Uses `value` when the supplied description has no type label.
 pub fn description(item: Desc) -> Desc {
     let inner = item.type_label();
     let type_part = if inner.is_empty() { "value" } else { &inner };
@@ -198,124 +198,51 @@ mod tests {
     use crate::kit::key_values::KeyValues;
     use crate::node::Format;
 
-    // ------------------------------------------------------------------------------------------ //
-    // Parsing tests
-
     #[test]
-    fn parse_single_string() {
-        let node = Node::parse_str("\"hello\"", Format::Rhai).unwrap();
-        let result: OneOrMany<String> = node.as_type().unwrap();
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0], "hello");
+    fn native_scalar_and_array_inputs_emit_canonical_arrays() {
+        for (source, expected) in [
+            (r#""hello""#, vec!["hello"]),
+            (r#"["a", "b", "c"]"#, vec!["a", "b", "c"]),
+            ("[]", vec![]),
+        ] {
+            let input = Node::parse_str(source, Format::Rhai).unwrap();
+            let values: OneOrMany<String> = input.as_type().unwrap();
+            assert_eq!(values.as_slice(), expected);
+            input.ensure_no_unknown_keys().unwrap();
+
+            let output = values.to_node().unwrap();
+            assert_eq!(output.as_type::<Vec<String>>().unwrap(), expected);
+            assert_eq!(output.as_type::<OneOrMany<String>>().unwrap(), values);
+        }
     }
 
     #[test]
-    fn parse_single_number() {
-        let node = Node::parse_str("42", Format::Rhai).unwrap();
-        let result: OneOrMany<i64> = node.as_type().unwrap();
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0], 42);
+    fn native_maps_are_single_items_and_arrays_preserve_each_map() {
+        for (source, expected) in [
+            ("#{ key: 42 }", vec![KeyValues::new(vec![("key".to_string(), 42)])]),
+            (
+                "[#{ a: 1 }, #{ b: 2 }]",
+                vec![
+                    KeyValues::new(vec![("a".to_string(), 1)]),
+                    KeyValues::new(vec![("b".to_string(), 2)]),
+                ],
+            ),
+        ] {
+            let input = Node::parse_str(source, Format::Rhai).unwrap();
+            let values: OneOrMany<KeyValues<i64>> = input.as_type().unwrap();
+            assert_eq!(values.as_slice(), expected);
+            input.ensure_no_unknown_keys().unwrap();
+
+            let output = values.to_node().unwrap();
+            assert_eq!(output.as_type::<OneOrMany<KeyValues<i64>>>().unwrap(), values);
+        }
     }
 
     #[test]
-    fn parse_single_map() {
-        // Critical test: non-leaf single value should work.
-        // KeyValues<i64> parses from a map: #{ key: 42 } -> [("key", 42)]
-        let node = Node::parse_str("#{ key: 42 }", Format::Rhai).unwrap();
-        let result: OneOrMany<KeyValues<i64>> = node.as_type().unwrap();
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].len(), 1);
-    }
+    fn empty_defaults_do_not_require_an_element_default() {
+        struct NoDefault;
 
-    #[test]
-    fn parse_array_of_strings() {
-        let node = Node::parse_str("[\"a\", \"b\", \"c\"]", Format::Rhai).unwrap();
-        let result: OneOrMany<String> = node.as_type().unwrap();
-        assert_eq!(result.len(), 3);
-        assert_eq!(result.as_slice(), &["a", "b", "c"]);
-    }
-
-    #[test]
-    fn parse_empty_array() {
-        let node = Node::parse_str("[]", Format::Rhai).unwrap();
-        let result: OneOrMany<String> = node.as_type().unwrap();
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn parse_array_of_maps() {
-        // Array of maps - each map parses as KeyValues<i64>.
-        let node = Node::parse_str("[#{ a: 1 }, #{ b: 2 }]", Format::Rhai).unwrap();
-        let result: OneOrMany<KeyValues<i64>> = node.as_type().unwrap();
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0].len(), 1);
-        assert_eq!(result[1].len(), 1);
-    }
-
-    // ------------------------------------------------------------------------------------------ //
-    // Encoding tests
-
-    #[test]
-    fn encode_single_as_array() {
-        let one: OneOrMany<String> = OneOrMany::one("hello".to_string());
-        let node = one.to_node().unwrap();
-        assert!(node.kind.is_vec());
-        let vec = node.as_vec().unwrap();
-        assert_eq!(vec.len(), 1);
-    }
-
-    #[test]
-    fn encode_many_as_array() {
-        let many: OneOrMany<i64> = OneOrMany::new(vec![1, 2, 3]);
-        let node = many.to_node().unwrap();
-        assert!(node.kind.is_vec());
-        let vec = node.as_vec().unwrap();
-        assert_eq!(vec.len(), 3);
-    }
-
-    // ------------------------------------------------------------------------------------------ //
-    // API tests
-
-    #[test]
-    fn default_is_empty() {
-        let empty: OneOrMany<String> = OneOrMany::default();
-        assert!(empty.is_empty());
-        assert_eq!(empty.len(), 0);
-    }
-
-    #[test]
-    fn into_vec_consumes() {
-        let items: OneOrMany<i64> = OneOrMany::new(vec![1, 2, 3]);
-        let vec = items.into_vec();
-        assert_eq!(vec, vec![1, 2, 3]);
-    }
-
-    #[test]
-    fn deref_to_slice() {
-        let items: OneOrMany<i64> = OneOrMany::new(vec![10, 20]);
-        let slice: &[i64] = &items;
-        assert_eq!(slice, &[10, 20]);
-    }
-
-    #[test]
-    fn iter_borrows() {
-        let items: OneOrMany<i64> = OneOrMany::new(vec![1, 2, 3]);
-        let sum: i64 = items.iter().sum();
-        assert_eq!(sum, 6);
-        // items still usable
-        assert_eq!(items.len(), 3);
-    }
-
-    #[test]
-    fn into_iterator_owned() {
-        let items: OneOrMany<i64> = OneOrMany::new(vec![1, 2, 3]);
-        let collected: Vec<i64> = items.into_iter().collect();
-        assert_eq!(collected, vec![1, 2, 3]);
-    }
-
-    #[test]
-    fn from_iterator() {
-        let items: OneOrMany<i64> = [1, 2, 3].into_iter().collect();
-        assert_eq!(items.len(), 3);
+        assert!(OneOrMany::<NoDefault>::default().is_empty());
+        assert!(KeyValues::<NoDefault>::default().is_empty());
     }
 }

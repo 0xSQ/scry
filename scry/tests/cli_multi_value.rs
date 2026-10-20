@@ -207,7 +207,12 @@ fn append_rejects_existing_scalar_map_and_null_values() {
                     entry.array(1);
                 }
             });
-            assert!(result.is_err(), "append must reject {json}, grouped={grouped}");
+            let error = result.unwrap_err();
+            assert!(
+                matches!(error.downcast_ref::<SetupError>(),
+                    Some(SetupError::AppendToNonArray { path }) if path == "values"),
+                "append must reject {json}, grouped={grouped}: {error}"
+            );
         }
     }
 }

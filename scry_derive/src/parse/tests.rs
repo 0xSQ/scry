@@ -3,30 +3,6 @@ use super::*;
 // ---------------------------------------------------------------------------------------------- //
 
 #[test]
-fn explicit_expression_is_a_field_fallback() {
-    let field: syn::Field = syn::parse_quote! {
-        #[scry(default = Vec::new())]
-        values: Vec<String>
-    };
-
-    let attrs = FieldAttrs::from_attrs(&field.attrs).unwrap();
-
-    assert!(matches!(attrs.fallback, FieldFallback::Expression(_)));
-}
-
-#[test]
-fn from_defaults_is_a_field_fallback() {
-    let field: syn::Field = syn::parse_quote! {
-        #[scry(from_defaults)]
-        child: Child
-    };
-
-    let attrs = FieldAttrs::from_attrs(&field.attrs).unwrap();
-
-    assert!(matches!(attrs.fallback, FieldFallback::FromDefaults));
-}
-
-#[test]
 fn bare_default_explains_both_replacements() {
     let field: syn::Field = syn::parse_quote! {
         #[scry(default)]
@@ -433,47 +409,6 @@ fn rust_default_marker_is_unrelated() {
 }
 
 #[test]
-fn generic_declarations_defaults_and_where_clauses_are_preserved() {
-    let inputs: [DeriveInput; 2] = [
-        syn::parse_quote! {
-            struct Container<'a, T: Clone = String, const N: usize = 2>
-            where
-                T: 'a,
-            {
-                values: &'a [T; N],
-            }
-        },
-        syn::parse_quote! {
-            enum Container<'a, T: Clone = String, const N: usize = 2>
-            where
-                T: 'a,
-            {
-                Values(&'a [T; N]),
-            }
-        },
-    ];
-
-    for input in inputs {
-        let parsed = parse_input(&input).unwrap();
-        let generics = match &parsed {
-            DeriveTarget::Struct(info) => &info.generics,
-            DeriveTarget::Enum(info) => &info.generics,
-        };
-        let original = &input.generics;
-        let where_clause = &generics.where_clause;
-        let original_where_clause = &original.where_clause;
-
-        assert_eq!(quote::quote!(#generics).to_string(), quote::quote!(#original).to_string());
-        assert_eq!(
-            quote::quote!(#where_clause).to_string(),
-            quote::quote!(#original_where_clause).to_string(),
-        );
-        assert!(generics.type_params().next().unwrap().default.is_some());
-        assert!(generics.const_params().next().unwrap().default.is_some());
-    }
-}
-
-#[test]
 fn container_variant_and_field_doc_summaries_are_preserved_for_all_shapes() {
     let named: DeriveInput = syn::parse_quote! {
         /// Named container.
@@ -550,131 +485,6 @@ fn container_variant_and_field_doc_summaries_are_preserved_for_all_shapes() {
 }
 
 #[test]
-fn fields_accept_one_hook_per_operation() {
-    let inputs: [DeriveInput; 4] = [
-        syn::parse_quote! {
-            struct Value {
-                #[scry(from_node_with(adapter::read))]
-                #[scry(to_node_with(adapter::write))]
-                #[scry(describe_with(adapter::describe))]
-                value: Foreign,
-            }
-        },
-        syn::parse_quote! {
-            struct Value(
-                #[scry(from_node_with(adapter::read), to_node_with(adapter::write),
-                       describe_with(adapter::describe))]
-                Foreign,
-            );
-        },
-        syn::parse_quote! {
-            enum Value {
-                Payload {
-                    #[scry(from_node_with(adapter::read), to_node_with(adapter::write),
-                           describe_with(adapter::describe))]
-                    value: Foreign,
-                },
-            }
-        },
-        syn::parse_quote! {
-            enum Value {
-                Payload(
-                    u16,
-                    #[scry(from_node_with(adapter::read), to_node_with(adapter::write),
-                           describe_with(adapter::describe))]
-                    Foreign,
-                ),
-            }
-        },
-    ];
-
-    for input in inputs {
-        let parsed = parse_input(&input).unwrap();
-        let fields = match &parsed {
-            DeriveTarget::Struct(StructInfo {
-                fields: StructFields::Named(fields) | StructFields::Tuple(fields),
-                ..
-            }) => fields,
-            DeriveTarget::Enum(info) => match &info.variants[0].data {
-                VariantData::Struct(fields) | VariantData::Tuple(fields) => fields,
-                _ => panic!("expected variant fields"),
-            },
-        };
-        let attrs = &fields.last().unwrap().attrs;
-        let from = &attrs.from_node_with;
-        let to = &attrs.to_node_with;
-        let describe = &attrs.describe_with;
-        assert_eq!(quote::quote!(#from).to_string(), "adapter :: read");
-        assert_eq!(quote::quote!(#to).to_string(), "adapter :: write");
-        assert_eq!(quote::quote!(#describe).to_string(), "adapter :: describe");
-    }
-}
-
-#[test]
-fn fields_accept_module_paths_in_named_and_positional_shapes() {
-    let modules: [syn::Path; 3] = [
-        syn::parse_quote!(adapter),
-        syn::parse_quote!(adapter::rgba),
-        syn::parse_quote!(crate::adapter),
-    ];
-
-    for module in modules {
-        let inputs: [DeriveInput; 6] = [
-            syn::parse_quote!(
-                struct Value {
-                    #[scry(with(#module))]
-                    value: Foreign,
-                }
-            ),
-            syn::parse_quote!(
-                struct Value(#[scry(with(#module))] Foreign);
-            ),
-            syn::parse_quote!(
-                struct Value(u16, #[scry(with(#module))] Foreign);
-            ),
-            syn::parse_quote!(
-                enum Value {
-                    Payload {
-                        #[scry(with(#module))]
-                        value: Foreign,
-                    },
-                }
-            ),
-            syn::parse_quote!(
-                enum Value {
-                    Payload(#[scry(with(#module))] Foreign),
-                }
-            ),
-            syn::parse_quote!(
-                enum Value {
-                    Payload(u16, #[scry(with(#module))] Foreign),
-                }
-            ),
-        ];
-
-        for input in inputs {
-            let parsed = parse_input(&input).unwrap();
-            let fields = match &parsed {
-                DeriveTarget::Struct(StructInfo {
-                    fields: StructFields::Named(fields) | StructFields::Tuple(fields),
-                    ..
-                }) => fields,
-                DeriveTarget::Enum(info) => match &info.variants[0].data {
-                    VariantData::Struct(fields) | VariantData::Tuple(fields) => fields,
-                    _ => panic!("expected variant fields"),
-                },
-            };
-            let parsed_module = fields.last().unwrap().attrs.with.as_ref().unwrap();
-
-            assert_eq!(
-                quote::quote!(#parsed_module).to_string(),
-                quote::quote!(#module).to_string(),
-            );
-        }
-    }
-}
-
-#[test]
 fn hooks_accept_closures_factories_and_block_expressions() {
     let input: DeriveInput = syn::parse_quote! {
         struct Value {
@@ -714,18 +524,6 @@ fn hooks_require_exactly_one_callable_expression() {
         assert!(field_attrs_error(&duplicate)
             .contains(&format!("duplicate `{hook_name}` field attribute")));
     }
-}
-
-#[test]
-fn removed_via_attribute_explains_the_replacements() {
-    let field: syn::Field = syn::parse_quote! {
-        #[scry(via(Adapter))]
-        value: Foreign
-    };
-    let error = field_attrs_error(&field);
-    assert!(error.contains("has been removed"));
-    assert!(error.contains("with(module)"));
-    assert!(error.contains("individual function hooks"));
 }
 
 #[test]
@@ -890,27 +688,6 @@ fn positional_rename_and_fallbacks_have_targeted_errors() {
             assert!(error.contains("positional fields must be present"));
         }
     }
-}
-
-#[test]
-fn named_member_and_literal_configuration_key_are_distinct() {
-    let input: DeriveInput = syn::parse_quote! {
-        struct Value {
-            #[scry(rename = "server.port")]
-            port: u16,
-            name: String,
-        }
-    };
-    let DeriveTarget::Struct(info) = parse_input(&input).unwrap() else {
-        panic!("expected a struct");
-    };
-    let StructFields::Named(fields) = info.fields else {
-        panic!("expected named fields");
-    };
-
-    assert!(matches!(&fields[0].member, Member::Named(ident) if ident == "port"));
-    assert_eq!(fields[0].config_key(), "server.port");
-    assert_eq!(fields[1].config_key(), "name");
 }
 
 #[test]

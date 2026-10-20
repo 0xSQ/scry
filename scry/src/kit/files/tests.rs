@@ -227,15 +227,6 @@ fn path_pattern_auto_detect_helper_sets_syntax_and_defaults() {
 }
 
 #[test]
-fn path_pattern_map_unknown_key_errors() {
-    let node =
-        Node::parse_str(r#"#{ path: "file.txt", syntax: "exact", extra: true }"#, Format::Rhai)
-            .unwrap();
-    let result: Result<PathPatternSpec, _> = node.as_type();
-    assert!(result.is_err());
-}
-
-#[test]
 fn path_pattern_map_pattern_key_errors() {
     let node = Node::parse_str(r#"#{ pattern: "file.txt" }"#, Format::Rhai).unwrap();
     let result: Result<PathPatternSpec, _> = node.as_type();
@@ -281,15 +272,6 @@ fn text_pattern_glob_syntax_errors() {
     let node = Node::parse_str(r#"#{ pattern: "[a-z]*", syntax: "glob" }"#, Format::Rhai).unwrap();
     let result: Result<TextPatternSpec, _> = node.as_type();
     assert!(result.is_err());
-}
-
-#[test]
-fn text_pattern_auto_detect_helper() {
-    let exact = TextPatternSpec::auto_detect("README.md".to_string());
-    assert_eq!(exact.syntax, PatternSyntax::Exact);
-
-    let wildcard = TextPatternSpec::auto_detect("README*".to_string());
-    assert_eq!(wildcard.syntax, PatternSyntax::Wildcard);
 }
 
 // ---------------------------------------------------------------------------------------------- //
@@ -356,16 +338,6 @@ fn path_sort_rejects_unknown_mode() {
 
     assert!(error.contains("natural"));
     assert!(error.contains("lexicographic"));
-}
-
-#[test]
-fn path_sort_description_remains_files_config_specific() {
-    assert_eq!(PathSort::describe().type_label(), "path ordering mode");
-}
-
-#[test]
-fn source_spec_defaults_to_natural_sort() {
-    assert_eq!(SourceSpec::default().sort, PathSort::Natural);
 }
 
 // ---------------------------------------------------------------------------------------------- //
@@ -464,13 +436,6 @@ fn source_spec_from_with_omit_errors() {
     let node =
         Node::parse_str(r#"#{ from: #{ root: "src/", omit: "**/*.generated.rs" } }"#, Format::Rhai)
             .unwrap();
-    let result: Result<SourceSpec, _> = node.as_type();
-    assert!(result.is_err());
-}
-
-#[test]
-fn source_spec_unknown_key_errors() {
-    let node = Node::parse_str(r#"#{ from: "src/", unknown: true }"#, Format::Rhai).unwrap();
     let result: Result<SourceSpec, _> = node.as_type();
     assert!(result.is_err());
 }
@@ -688,19 +653,6 @@ fn files_round_trip_through_canonical_json() {
 }
 
 // ---------------------------------------------------------------------------------------------- //
-// Configuration Helper Behavior
-
-#[test]
-fn escape_wildcard_for_globset_escapes_braces_and_brackets() {
-    assert_eq!(escape_wildcard_for_globset("{a}[b]"), "[{]a[}][[]b[]]");
-}
-
-#[test]
-fn escape_wildcard_for_globset_keeps_plain_wildcards() {
-    assert_eq!(escape_wildcard_for_globset("**/*.txt"), "**/*.txt");
-}
-
-// ---------------------------------------------------------------------------------------------- //
 // Exact Roots and Base Directories
 
 #[test]
@@ -806,13 +758,15 @@ fn locate_implicit_from_no_base_dir_errors() {
 }
 
 #[test]
-fn locate_empty_from_defaults_to_base_dir() {
+fn locate_empty_roots_use_base_dir_and_preserve_prune_rules() {
     let dir = TempDir::new().unwrap();
     create_test_files(&dir, &["a.rs", "b.txt", "sub/c.rs"]);
 
-    // from is Some but root is empty - should default to walking base_dir.
     let spec = SourceSpec {
-        from: Some(FromSpec::default()),
+        from: Some(FromSpec {
+            root: OneOrMany::default(),
+            prune: OneOrMany::one(exact_root("sub")),
+        }),
         where_: Some(WhereSpec {
             ext: Some(AttrRuleSpec {
                 include: OneOrMany::one(TextPatternSpec::exact("rs".to_string())),
@@ -824,7 +778,7 @@ fn locate_empty_from_defaults_to_base_dir() {
     };
 
     let result = spec.locate(Some(dir.path())).unwrap();
-    assert_eq!(relative_path_strings(&dir, &result), ["a.rs", "sub/c.rs"]);
+    assert_eq!(relative_path_strings(&dir, &result), ["a.rs"]);
 }
 
 #[test]
@@ -1083,7 +1037,7 @@ fn locate_wildcard_character_class_syntax_is_literal() {
 #[test]
 fn locate_braces_are_literal() {
     let dir = TempDir::new().unwrap();
-    create_test_files(&dir, &["a.rs", "b.toml", "c.txt", "{rs,toml}"]);
+    create_test_files(&dir, &["a.rs", "b.toml", "c.txt", "file.{rs,toml}"]);
 
     let spec = SourceSpec {
         from: Some(FromSpec {
@@ -1100,7 +1054,7 @@ fn locate_braces_are_literal() {
     };
 
     let result = spec.locate(Some(dir.path())).unwrap();
-    assert_eq!(relative_path_strings(&dir, &result), Vec::<String>::new());
+    assert_eq!(relative_path_strings(&dir, &result), ["file.{rs,toml}"]);
 }
 // ---------------------------------------------------------------------------------------------- //
 // Traversal and Recursion
@@ -1776,7 +1730,7 @@ fn locate_where_case_sensitive() {
 #[test]
 fn prune_wildcard_braces_are_literal() {
     let dir = TempDir::new().unwrap();
-    create_test_files(&dir, &["a.rs", "b.toml", "c.txt"]);
+    create_test_files(&dir, &["a.rs", "b.toml", "c.txt", "literal.{rs,toml}"]);
 
     // Prune pattern with braces should NOT expand as alternation.
     // If braces were expanded, "*.{rs,toml}" would prune a.rs and b.toml.

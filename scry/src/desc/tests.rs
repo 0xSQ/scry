@@ -321,6 +321,24 @@ fn test_validate_path_nested_failure() {
 }
 
 #[test]
+fn invalid_nested_paths_preserve_literal_keys_and_each_collection_index() {
+    let desc = Desc::structure(vec![FieldDesc::new(
+        "service.list",
+        Desc::list(Desc::tuple(vec![Desc::structure(vec![FieldDesc::new(
+            "known",
+            Desc::plain("u32"),
+        )])])),
+    )]);
+    let error = desc.validate_path(r#"["service.list"][3][0].missing"#).unwrap_err();
+    let DescPathError::UnknownPath(error) = error else {
+        panic!("expected a valid path with an unknown field");
+    };
+    assert_eq!(error.valid_prefix, r#"["service.list"][3][0]"#);
+    assert_eq!(error.invalid_key, "missing");
+    assert!(error.to_string().contains("known: u32"));
+}
+
+#[test]
 fn test_validate_path_unit_variant_blocks_deeper() {
     let desc = Desc::enumeration(vec![VariantDesc::unit("auto")]);
 

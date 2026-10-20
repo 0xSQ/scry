@@ -1,11 +1,12 @@
 //! Deploy example - demonstrates building a config-driven CLI with Scry.
 //!
 //! Run with: cargo run --example deploy -- --help
-//! Or: cargo run --example deploy -- -C examples/deploy.json
-#![allow(dead_code)]
+//! Or: cargo run --example deploy -- -C scry/examples/deploy.json
 
 use scry::cli::setup::{Setup, SetupError};
 use scry::Config;
+
+// ---------------------------------------------------------------------------------------------- //
 
 #[derive(Debug, Config)]
 struct Deploy {
@@ -53,6 +54,7 @@ fn deploy(config: Deploy) {
     println!("Deploying to: {}", config.target);
     println!("Environment: {}", config.environment);
     println!("Retries: {}", config.retries);
+    println!("Log output: {:?}", config.log_output);
     if let Some(timeout) = config.timeout_secs {
         println!("Timeout: {}s", timeout);
     }

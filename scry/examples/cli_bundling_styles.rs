@@ -1,28 +1,45 @@
-//! Comprehensive example demonstrating CLI composing styles.
+//! Composes commands with custom-error, anyhow, and infallible handlers.
 //!
-//! This example shows different ways to use the CLI setup module:
-//! - Fallible handlers returning `anyhow::Result<()>` (most common)
-//! - Infallible handlers returning `()`
-//! - Custom error types in handler returns
-//! - Parent/child command composition
-//!
-//! Run with: cargo run --example cli_bundling_styles -- --help
-//! Or: cargo run --example cli_bundling_styles -- serve -C examples/server.json
-//! Or: cargo run --example cli_bundling_styles -- check -C examples/check.json
-//! Or: cargo run --example cli_bundling_styles -- migrate -C examples/server.json
-
-use std::error::Error;
-use std::fmt;
-use std::io;
+//! Run from the repository root:
+//!   cargo run --example cli_bundling_styles -- --help
+//!   cargo run --example cli_bundling_styles -- serve -C scry/examples/server.json
+//!   cargo run --example cli_bundling_styles -- check -C scry/examples/check.json
 
 use scry::cli::setup::{Setup, SetupError};
 use scry::cli::Bundle;
 use scry::Config;
 
 // ---------------------------------------------------------------------------------------------- //
-// Config Types
 
-/// Server configuration.
+fn main() -> anyhow::Result<()> {
+    // Setup errors are the outer Result. A support action returns None.
+    // Executed handlers return Some, containing their own result.
+    if let Some(result) = build_cli().run()? {
+        result?;
+    }
+    Ok(())
+}
+
+fn build_cli() -> Bundle<Option<anyhow::Result<()>>, SetupError> {
+    // Grouped handlers share one return type. Convert custom errors at this boundary.
+    let serve = Setup::standard("serve").about("Starts the server.").into_bundle(
+        |config: ServerConfig| -> anyhow::Result<()> {
+            serve(config)?;
+            Ok(())
+        },
+    );
+
+    // An infallible handler can participate by returning Ok after it runs.
+    let check = Setup::standard("check").about("Checks a path.").into_bundle(
+        |config: CheckConfig| -> anyhow::Result<()> {
+            check(config);
+            Ok(())
+        },
+    );
+
+    Bundle::group("server", "Manages a server.", vec![serve, check])
+}
+
 #[derive(Debug, Config)]
 struct ServerConfig {
     /// Server hostname.
@@ -32,186 +49,30 @@ struct ServerConfig {
     port: u16,
 }
 
-/// Check configuration.
-#[derive(Debug, Config)]
-struct CheckConfig {
-    /// Path to validate.
-    path: String,
-    /// Enable strict mode.
-    #[scry(default = false)]
-    strict: bool,
-}
-
-// ---------------------------------------------------------------------------------------------- //
-// Custom Error Types
-
-/// Error for the serve command.
-#[derive(Debug)]
-#[allow(dead_code)]
-enum ServeError {
-    InvalidPort(u16),
-    BindFailed(io::Error),
-}
-
-impl fmt::Display for ServeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ServeError::InvalidPort(port) => write!(f, "invalid port: {}", port),
-            ServeError::BindFailed(e) => write!(f, "failed to bind: {}", e),
-        }
-    }
-}
-
-impl Error for ServeError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            ServeError::BindFailed(e) => Some(e),
-            _ => None,
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------------------------- //
-// Handlers
-
-/// Serve handler - returns a custom error type.
-fn serve_handler(config: ServerConfig) -> Result<(), ServeError> {
+fn serve(config: ServerConfig) -> Result<(), InvalidPort> {
     if config.port == 0 {
-        return Err(ServeError::InvalidPort(config.port));
+        return Err(InvalidPort);
     }
     println!("Starting server at {}:{}", config.host, config.port);
     Ok(())
 }
 
-/// Check handler - infallible (returns unit).
-fn check_handler(config: CheckConfig) {
+#[derive(Debug, thiserror::Error)]
+#[error("server port must be nonzero")]
+struct InvalidPort;
+
+#[derive(Debug, Config)]
+struct CheckConfig {
+    /// Path to validate.
+    path: String,
+    /// Enables strict mode.
+    #[scry(default = false)]
+    strict: bool,
+}
+
+fn check(config: CheckConfig) {
     println!("Checking path: {}", config.path);
     if config.strict {
         println!("  (strict mode enabled)");
-    }
-}
-
-/// Status handler - returns io::Error.
-fn status_handler(_config: ServerConfig) -> Result<(), io::Error> {
-    println!("Server status: running");
-    Ok(())
-}
-
-/// Migrate handler - returns anyhow::Result (most common pattern).
-fn migrate_handler(config: ServerConfig) -> anyhow::Result<()> {
-    println!("Migrating server at {}:{}", config.host, config.port);
-    // In a real app, you could use anyhow's context methods:
-    // some_operation().context("failed to migrate")?;
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------------------------- //
-// Building the CLI with anyhow::Result<()>
-//
-// The recommended pattern is for all handlers to return the same type - typically
-// `anyhow::Result<()>`. This allows composing them into parent commands.
-
-fn build_anyhow_cli() -> Bundle<Option<anyhow::Result<()>>, SetupError> {
-    // Serve command - wrap ServeError in anyhow
-    let serve = Setup::standard("serve").about("Start the server").into_bundle(
-        |config: ServerConfig| -> anyhow::Result<()> {
-            serve_handler(config)?;
-            Ok(())
-        },
-    );
-
-    // Check command - infallible, wrap in Ok(())
-    let check = Setup::standard("check").about("Check configuration").into_bundle(
-        |config: CheckConfig| -> anyhow::Result<()> {
-            check_handler(config);
-            Ok(())
-        },
-    );
-
-    // Status command - wrap io::Error in anyhow
-    let status = Setup::standard("status").about("Show server status").into_bundle(
-        |config: ServerConfig| -> anyhow::Result<()> {
-            status_handler(config)?;
-            Ok(())
-        },
-    );
-
-    // Migrate command - already returns anyhow::Result
-    let migrate =
-        Setup::standard("migrate").about("Run database migrations").into_bundle(migrate_handler);
-
-    // Parent command grouping all subcommands
-    Bundle::group("server", "Server management tool", vec![serve, check, status, migrate])
-}
-
-// ---------------------------------------------------------------------------------------------- //
-// Building the CLI with () (infallible handlers)
-//
-// When all handlers are infallible, the CLI returns Option<()>.
-
-#[allow(dead_code)]
-fn build_infallible_cli() -> Bundle<Option<()>, SetupError> {
-    let check = Setup::standard("check").about("Check configuration").into_bundle(check_handler);
-
-    Bundle::group("tools", "Tool commands", vec![check])
-}
-
-// ---------------------------------------------------------------------------------------------- //
-// Error Handling Pattern
-//
-// Execution errors (config loading, CLI parsing) are SetupError.
-// User/domain errors live inside the handler's return type (e.g., anyhow::Result).
-
-#[allow(dead_code)]
-fn handle_cli_result(result: Result<Option<anyhow::Result<()>>, SetupError>) {
-    match result {
-        Ok(Some(Ok(()))) => {
-            // Handler ran successfully
-        }
-        Ok(Some(Err(user_err))) => {
-            // Handler ran but returned an error
-            eprintln!("Error: {}", user_err);
-            std::process::exit(1);
-        }
-        Ok(None) => {
-            // A support action handled the request, such as -S desc or -S get.
-        }
-        Err(e) => {
-            // Setup/pipeline error (config loading, CLI parsing, etc.)
-            eprintln!("Error: {}", e);
-            std::process::exit(1);
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------------------------- //
-// Main
-
-fn main() -> anyhow::Result<()> {
-    // run() returns Result<Option<anyhow::Result<()>>, SetupError>.
-    // - Err(e): pipeline error (config loading, CLI parsing)
-    // - Ok(None): a support action handled the request.
-    // - Ok(Some(result)): the handler ran and returned its result.
-    if let Some(handler_result) = build_anyhow_cli().run()? {
-        handler_result?;
-    }
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------------------------- //
-// Tests
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn anyhow_cli_builds() {
-        let _bundle = build_anyhow_cli();
-    }
-
-    #[test]
-    fn infallible_cli_builds() {
-        let _bundle = build_infallible_cli();
     }
 }
