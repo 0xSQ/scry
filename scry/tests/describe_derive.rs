@@ -121,19 +121,19 @@ fn named_fields_compose_their_complete_types_and_aliases_identically() {
 fn nullability_and_omission_describe_different_policies() {
     let desc = NullPolicies::describe();
     let samples = field(&desc, "samples");
-    assert!(!samples.optional);
+    assert!(!samples.is_optional());
     assert!(!samples.value.nullable);
     let DescKind::List { item } = &samples.value.kind else {
         panic!("expected list items");
     };
     assert!(item.nullable);
-    assert!(field(&desc, "threshold").optional);
+    assert!(field(&desc, "threshold").is_optional());
     assert!(field(&desc, "threshold").value.nullable);
-    assert!(!field(&desc, "alias").optional);
+    assert!(!field(&desc, "alias").is_optional());
     assert!(field(&desc, "alias").value.nullable);
-    assert!(field(&desc, "retries").optional);
+    assert!(field(&desc, "retries").is_optional());
     assert!(!field(&desc, "retries").value.nullable);
-    assert_eq!(field(&desc, "retries").default_display.as_deref(), Some("0"));
+    assert_eq!(field(&desc, "retries").default_display(), Some("0"));
 
     let input = Node::parse_str("#{ samples: [1, ()], alias: () }", Format::Rhai).unwrap();
     let value = input.as_type::<NullPolicies>().unwrap();
@@ -167,7 +167,7 @@ fn owning_and_borrowed_wrappers_forward_shape_and_nullability() {
         desc.validate_path(path).unwrap();
         assert!(desc.entry_at_path(path).is_some());
     }
-    assert!(!field(&desc, "local").optional);
+    assert!(!field(&desc, "local").is_optional());
     assert!(field(&desc, "local").value.nullable);
 }
 
@@ -205,9 +205,12 @@ fn nullable_structures_and_enums_keep_children_and_contextual_defaults() {
     assert!(child.entry_at_path("count").is_some());
 
     let desc = EnumContexts::describe();
-    assert!(!has_default(&field(&desc, "required").value));
+    assert!(has_default(&field(&desc, "required").value));
     assert!(!has_default(&field(&desc, "optional").value));
     assert!(has_default(&field(&desc, "recursive").value));
+    assert!(field(&desc, "required").fallback().is_none());
+    assert_eq!(field(&desc, "optional").fallback().unwrap().variant_name(), None);
+    assert_eq!(field(&desc, "recursive").fallback().unwrap().variant_name(), Some("fast"));
     let DescKind::List { item } = &field(&desc, "items").value.kind else {
         panic!("expected list of enums");
     };
@@ -233,7 +236,7 @@ fn custom_descriptions_replace_the_complete_value_without_native_bounds() {
     let desc = Hooked::describe();
     let custom = field(&desc, r#"["encoded.samples"]"#);
     assert_eq!(custom.value.type_label(), "encoded samples");
-    assert!(custom.optional);
+    assert!(custom.is_optional());
     assert_eq!(custom.doc, "Samples in a custom encoding.");
     assert!(desc.display().contains("encoded.samples: encoded samples"));
 }
@@ -249,7 +252,7 @@ fn description_queries_accept_deep_lists_and_keep_useful_item_hints() {
 #[test]
 fn description_queries_show_optional_struct_fields_and_enum_choices() {
     assert_eq!(format_description::<Option<Child>>("").unwrap(), "◆ count: u32\n");
-    assert_eq!(format_description::<Option<Mode>>("").unwrap(), "» fast\n› careful\n");
+    assert_eq!(format_description::<Option<Mode>>("").unwrap(), "› fast\n› careful\n");
 
     assert_eq!(
         format_description::<Payloads>("named.child").unwrap(),
@@ -260,6 +263,9 @@ fn description_queries_show_optional_struct_fields_and_enum_choices() {
         format_description::<EnumContexts>("optional").unwrap(),
         "◇ optional\n   › fast\n   › careful\n"
     );
+    assert_eq!(format_description::<EnumContexts>("required.fast").unwrap(), "› fast\n");
+    assert_eq!(format_description::<EnumContexts>("optional.fast").unwrap(), "› fast\n");
+    assert_eq!(format_description::<EnumContexts>("recursive.fast").unwrap(), "» fast\n");
 }
 
 #[test]
@@ -304,6 +310,24 @@ fn nullable_unit_enums_retain_cli_possible_values() {
     assert!(command.try_get_matches_from(["test", "--optional", "unknown"]).is_err());
 }
 
+#[test]
+fn cli_choice_help_uses_the_enclosing_fields_fallback_policy() {
+    let desc = EnumContexts::describe();
+    let mut expose = ExposeMap::new();
+    for name in ["required", "optional", "recursive"] {
+        expose.option(name);
+    }
+    let command = expose.augment(Command::new("test"), &desc);
+
+    for name in ["required", "optional", "recursive"] {
+        let argument = command.get_arguments().find(|arg| arg.get_id() == name).unwrap();
+        let mut values = argument.get_value_parser().possible_values().unwrap();
+        let fast = values.find(|value| value.get_name() == "fast").unwrap();
+        let help = fast.get_help().map(ToString::to_string);
+        assert_eq!(help.as_deref(), (name == "recursive").then_some("[default]"));
+    }
+}
+
 fn field<'a>(desc: &'a Desc, path: &str) -> &'a FieldDesc {
     let Some(EntryRef::Field(field)) = desc.entry_at_path(path) else {
         panic!("expected field at {path}");
@@ -312,5 +336,5 @@ fn field<'a>(desc: &'a Desc, path: &str) -> &'a FieldDesc {
 }
 
 fn has_default(desc: &Desc) -> bool {
-    desc.unit_enum_variants().unwrap().iter().any(|variant| variant.is_default())
+    desc.type_default.as_ref().and_then(|default| default.variant_name()).is_some()
 }

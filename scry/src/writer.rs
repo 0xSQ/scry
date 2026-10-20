@@ -6,10 +6,12 @@
 //! - `Json5Writer` for JSON5 rendering when enabled.
 //! - [`FlatWriter`] for serializing Node trees to flat key-value format.
 //! - [`TreeWriter`] for serializing Node trees to visual tree format.
+//! - [`format_template`] for generating documented configuration scaffolds.
 
 mod document;
 mod flat;
 mod literal;
+mod template;
 mod tree;
 
 pub use document::{Document, DocumentBuilder, DocumentEntry, MapBuilder, SeqBuilder};
@@ -17,6 +19,7 @@ pub use flat::{FlatConfig, FlatWriter};
 #[cfg(feature = "format-json5")]
 pub use literal::{Json5Writer, Json5WriterConfig};
 pub use literal::{LiteralWriterConfig, RhaiWriter, RhaiWriterConfig, StdoutRhaiWriter};
+pub use template::{format_template, TemplateMode};
 pub use tree::{Color, TreeConfig, TreeWriter};
 
 use crate::key_path::quote_string;

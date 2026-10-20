@@ -209,7 +209,7 @@ fn nested_output_errors_prepend_indices_and_literal_fields_once() {
 fn composition_keeps_structural_descriptions_child_defaults_and_cli_choices() {
     let desc = Addresses::describe();
     let addresses = field(&desc, "server.addresses");
-    assert!(!addresses.optional);
+    assert!(!addresses.is_optional());
     assert!(!addresses.value.nullable);
     let DescKind::List { item } = &addresses.value.kind else {
         panic!("expected list");
@@ -217,7 +217,7 @@ fn composition_keeps_structural_descriptions_child_defaults_and_cli_choices() {
     assert!(item.nullable);
     assert_eq!(item.type_label(), "IP address");
     let fallback = field(&desc, "fallback");
-    assert!(fallback.optional);
+    assert!(fallback.is_optional());
     assert!(fallback.value.nullable);
     let DescKind::List { item } = &fallback.value.kind else {
         panic!("expected optional list");
@@ -231,8 +231,8 @@ fn composition_keeps_structural_descriptions_child_defaults_and_cli_choices() {
         panic!("expected list");
     };
     assert!(item.nullable);
-    assert_eq!(field(item, "retries").default_display.as_deref(), Some("3"));
-    assert!(field(item, "retries").optional);
+    assert_eq!(field(item, "retries").default_display(), Some("3"));
+    assert!(field(item, "retries").is_optional());
     let choices = field(item, "transport").value.unit_enum_variants().unwrap();
     assert_eq!(
         choices.iter().map(|variant| variant.name.as_str()).collect::<Vec<_>>(),

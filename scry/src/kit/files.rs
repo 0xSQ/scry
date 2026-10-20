@@ -342,13 +342,8 @@ impl FromNode for Files {
 
 impl Describe for Files {
     fn describe() -> Desc {
-        Desc::structure(vec![desc::FieldDesc {
-            name: "sources".to_string(),
-            doc: "The sources to collect files from.".to_string(),
-            optional: false,
-            default_display: None,
-            value: Desc::plain("file source…"),
-        }])
+        Desc::structure(vec![desc::FieldDesc::new("sources", Desc::plain("file source…"))
+            .with_doc("The sources to collect files from.")])
     }
 }
 

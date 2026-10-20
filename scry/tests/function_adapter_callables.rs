@@ -123,7 +123,7 @@ fn config_composes_input_and_description_without_output() {
     let DescKind::Struct { fields } = Settings::describe().kind else {
         panic!("expected a struct description");
     };
-    assert!(fields[0].optional);
+    assert!(fields[0].is_optional());
     assert!(fields[0].value.nullable);
     let DescKind::List { item } = &fields[0].value.kind else {
         panic!("expected a nullable list description");
@@ -202,12 +202,13 @@ fn function_paths_and_modules_preserve_string_and_slice_coercions() {
 }
 
 #[test]
-fn individual_description_hooks_retain_existing_literal_default_metadata() {
+fn individual_description_hooks_keep_fallback_values_unknown() {
     let DescKind::Struct { fields } = HookDefault::describe().kind else {
         panic!("expected fields")
     };
-    assert!(fields[0].optional);
-    assert_eq!(fields[0].default_display.as_deref(), Some("7"));
+    assert!(fields[0].is_optional());
+    assert_eq!(fields[0].default_display(), None);
+    assert!(fields[0].fallback().unwrap().value.is_none());
     assert_eq!(fields[0].value.type_label(), "level");
 }
 

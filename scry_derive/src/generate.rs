@@ -53,8 +53,8 @@ pub fn derive_string_enum_impl(input: &DeriveInput) -> syn::Result<TokenStream> 
 /// Generates `Describe` implementation for documentation.
 pub fn derive_describe_impl(input: &DeriveInput) -> syn::Result<TokenStream> {
     match parse::parse_input(input)? {
-        DeriveTarget::Struct(info) => generate_struct_describe(&info),
-        DeriveTarget::Enum(info) => generate_enum_describe(&info),
+        DeriveTarget::Struct(info) => generate_struct_describe(&info, false),
+        DeriveTarget::Enum(info) => generate_enum_describe(&info, false),
     }
 }
 
@@ -72,7 +72,7 @@ pub fn derive_config_impl(input: &DeriveInput) -> syn::Result<TokenStream> {
             };
             (
                 generate_struct_from_node(&info)?,
-                generate_struct_describe(&info)?,
+                generate_struct_describe(&info, true)?,
                 defaults,
                 quote! {},
             )
@@ -86,7 +86,7 @@ pub fn derive_config_impl(input: &DeriveInput) -> syn::Result<TokenStream> {
             };
             (
                 generate_enum_from_node(&info)?,
-                generate_enum_describe(&info)?,
+                generate_enum_describe(&info, true)?,
                 from_defaults,
                 string_enum,
             )
@@ -828,31 +828,38 @@ fn generate_enum_string_enum(info: &EnumInfo) -> syn::Result<TokenStream> {
 // ---------------------------------------------------------------------------------------------- //
 // Describe Generation (generates Desc)
 
-fn generate_struct_describe(info: &StructInfo) -> syn::Result<TokenStream> {
+fn generate_struct_describe(info: &StructInfo, config: bool) -> syn::Result<TokenStream> {
     let scry = scry_crate_path();
     let struct_name = &info.ident;
     let generics = struct_generics(info, Operation::Describe, &scry);
     let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
     let doc = doc_override(&info.doc);
+    let defaults = config.then(|| {
+        quote! {
+            .with_type_default(#scry::desc::DefaultDesc::unknown().with_value(|| {
+                <Self as #scry::Describe>::describe().field_defaults()
+            }))
+        }
+    });
 
     match &info.fields {
         StructFields::Named(fields) => {
             let field_descs: Vec<TokenStream> =
-                fields.iter().map(|f| generate_field_desc(f, &scry)).collect();
+                fields.iter().map(|f| generate_field_desc(f, &scry, config)).collect();
 
             Ok(quote! {
                 impl #impl_generics #scry::Describe for #struct_name #type_generics #where_clause {
                     fn describe() -> #scry::Desc {
                         #scry::Desc::structure(vec![
                             #(#field_descs),*
-                        ]) #doc
+                        ]) #defaults #doc
                     }
                 }
             })
         }
         StructFields::Tuple(fields) => {
             if fields.len() == 1 {
-                // Newtype: desc of the inner type
+                // The wrapper accepts the inner shape, but has no generated default policy.
                 let value = generate_positional_desc(&fields[0], &scry);
                 Ok(quote! {
                     impl #impl_generics #scry::Describe for #struct_name #type_generics #where_clause {
@@ -877,49 +884,174 @@ fn generate_struct_describe(info: &StructInfo) -> syn::Result<TokenStream> {
     }
 }
 
-fn generate_field_desc(field: &FieldInfo, scry: &TokenStream) -> TokenStream {
+fn generate_field_desc(field: &FieldInfo, scry: &TokenStream, config: bool) -> TokenStream {
     let field_name = field.config_key();
     let doc = &field.doc;
-    let ty = &field.ty;
+    let description = private_ident("description");
+    let value_expr = generate_value_desc(field, scry);
+    let fallback = generate_field_fallback(field, scry, config, &description);
+    let fallback_binding = private_ident("fallback");
+    let bind_fallback = fallback.as_ref().map(|fallback| {
+        quote! { let #fallback_binding = #fallback; }
+    });
+    let apply_fallback = fallback.map(|_| quote! { .with_fallback(#fallback_binding) });
 
-    // Determine optionality:
-    // - Option<T> is optional (implicit None)
-    // - An explicit expression or recursive defaults make it optional
-    let is_optional =
-        is_option_type(ty) || !matches!(field.attrs.fallback, FieldFallback::Unspecified);
+    quote! {{
+        let #description = #value_expr;
+        #bind_fallback
+        #scry::desc::FieldDesc::new(#field_name, #description)
+            .with_doc(#doc)
+            #apply_fallback
+    }}
+}
+
+/// Resolves a field's omission policy without changing its accepted value description.
+fn generate_field_fallback(
+    field: &FieldInfo,
+    scry: &TokenStream,
+    config: bool,
+    description: &Ident,
+) -> Option<TokenStream> {
+    if matches!(field.attrs.fallback, FieldFallback::Unspecified) && !is_option_type(&field.ty) {
+        return None;
+    }
+
+    if field.attrs.with.is_some()
+        || field.attrs.from_node_with.is_some()
+        || field.attrs.describe_with.is_some()
+        || field.attrs.to_node_with.is_some()
+    {
+        return Some(quote! { #scry::desc::DefaultDesc::unknown() });
+    }
+
+    if matches!(field.attrs.fallback, FieldFallback::FromDefaults) {
+        let strip_value = (!config).then(|| quote! { .without_value() });
+        return Some(quote! {
+            #description.type_default.clone()
+                .unwrap_or_else(#scry::desc::DefaultDesc::unknown)
+                #strip_value
+        });
+    }
 
     // Only simple literals are honest config-oriented display values. Arbitrary Rust syntax is
     // construction machinery rather than user-facing configuration documentation.
-    let default_display = match &field.attrs.fallback {
-        _ if field.attrs.with.is_some() => quote! {},
-        FieldFallback::Expression(expr) => literal_default_display(expr)
-            .map(|display| quote! { .with_default(#display) })
-            .unwrap_or_default(),
-        FieldFallback::Unspecified | FieldFallback::FromDefaults => quote! {},
-    };
+    let summary = match &field.attrs.fallback {
+        FieldFallback::Expression(expression) => literal_default_display(expression)
+            .map(|display| quote! { #scry::desc::DefaultDesc::text(#display) }),
+        FieldFallback::Unspecified | FieldFallback::FromDefaults => None,
+    }
+    .unwrap_or_else(|| quote! { #scry::desc::DefaultDesc::unknown() });
+    let value = config.then(|| generate_template_default(field, scry));
+    Some(quote! { #summary #value })
+}
 
-    // Mark as optional if needed
-    let optional_expr = if is_optional && default_display.is_empty() {
-        quote! { .optional() }
-    } else {
-        quote! {}
+/// Exposes concrete defaults only when their complete configuration encoding is known.
+fn generate_template_default(field: &FieldInfo, scry: &TokenStream) -> TokenStream {
+    let ty = &field.ty;
+    let provider = match &field.attrs.fallback {
+        FieldFallback::Unspecified if is_option_type(ty) => quote! {
+            Ok(Some(#scry::Node::new_leaf(#scry::KeyPath::new(), #scry::node::Value::Null)))
+        },
+        FieldFallback::Unspecified | FieldFallback::FromDefaults => return quote! {},
+        FieldFallback::Expression(expression) => {
+            let expr = ungroup_expression(expression);
+            if is_option_type(ty) && is_none_expression(expr) {
+                quote! {
+                    let _: #ty = #expr;
+                    Ok(Some(#scry::Node::new_leaf(#scry::KeyPath::new(), #scry::node::Value::Null)))
+                }
+            } else if is_empty_vec_expression(ty, expr) {
+                quote! {
+                    let _: #ty = #expr;
+                    Ok(Some(#scry::Node::new_vec(#scry::KeyPath::new(), ::std::vec::Vec::new())))
+                }
+            } else if has_builtin_node_encoding(ty) {
+                quote! {
+                    let value: #ty = #expr;
+                    #scry::ToNode::to_node(&value).map(Some)
+                }
+            } else {
+                return quote! {};
+            }
+        }
     };
+    quote! { .with_value(|| { #provider }) }
+}
 
-    // Custom desc function overrides normal type-based desc generation
-    let value_expr = generate_value_desc(field, scry);
-    let value_expr = if field.attrs.with.is_none()
-        && matches!(field.attrs.fallback, FieldFallback::FromDefaults)
-    {
-        value_expr
-    } else {
-        quote! { (#value_expr).without_default_variant() }
+/// Removes grouping that would become an unnecessary-parentheses warning in an assignment.
+fn ungroup_expression(expr: &syn::Expr) -> &syn::Expr {
+    match expr {
+        syn::Expr::Paren(expr) => ungroup_expression(&expr.expr),
+        syn::Expr::Group(expr) => ungroup_expression(&expr.expr),
+        _ => expr,
+    }
+}
+
+/// Recognizes built-in encodings without adding writing bounds to generic or custom fields.
+fn has_builtin_node_encoding(ty: &syn::Type) -> bool {
+    match ty {
+        syn::Type::Paren(ty) => has_builtin_node_encoding(&ty.elem),
+        syn::Type::Group(ty) => has_builtin_node_encoding(&ty.elem),
+        syn::Type::Reference(ty) => has_builtin_node_encoding(&ty.elem),
+        syn::Type::Array(ty) => has_builtin_node_encoding(&ty.elem),
+        syn::Type::Tuple(ty) => {
+            (ty.elems.is_empty() || (2..=4).contains(&ty.elems.len()))
+                && ty.elems.iter().all(has_builtin_node_encoding)
+        }
+        syn::Type::Path(path) if path.qself.is_none() => {
+            let Some(segment) = path.path.segments.last() else {
+                return false;
+            };
+            match segment.ident.to_string().as_str() {
+                "bool" | "u8" | "u16" | "u32" | "u64" | "usize" | "i8" | "i16" | "i32" | "i64"
+                | "isize" | "f32" | "f64" | "String" | "str" | "PathBuf" => {
+                    matches!(segment.arguments, syn::PathArguments::None)
+                }
+                "Option" | "Vec" => match &segment.arguments {
+                    syn::PathArguments::AngleBracketed(arguments) => {
+                        arguments.args.len() == 1
+                            && matches!(arguments.args.first(), Some(syn::GenericArgument::Type(inner)) if has_builtin_node_encoding(inner))
+                    }
+                    _ => false,
+                },
+                _ => false,
+            }
+        }
+        _ => false,
+    }
+}
+
+fn is_none_expression(expr: &syn::Expr) -> bool {
+    match expr {
+        syn::Expr::Paren(expr) => is_none_expression(&expr.expr),
+        syn::Expr::Group(expr) => is_none_expression(&expr.expr),
+        syn::Expr::Path(path) if path.qself.is_none() => {
+            path.path.segments.last().is_some_and(|segment| segment.ident == "None")
+        }
+        _ => false,
+    }
+}
+
+fn is_empty_vec_expression(ty: &syn::Type, expr: &syn::Expr) -> bool {
+    let syn::Type::Path(ty) = ty else {
+        return false;
     };
-
-    quote! {
-        #scry::desc::FieldDesc::new(#field_name, #value_expr)
-            .with_doc(#doc)
-            #optional_expr
-            #default_display
+    if !ty.path.segments.last().is_some_and(|segment| segment.ident == "Vec") {
+        return false;
+    }
+    match expr {
+        syn::Expr::Paren(expr) => is_empty_vec_expression(&syn::Type::Path(ty.clone()), &expr.expr),
+        syn::Expr::Group(expr) => is_empty_vec_expression(&syn::Type::Path(ty.clone()), &expr.expr),
+        syn::Expr::Macro(expr) => expr.mac.path.is_ident("vec") && expr.mac.tokens.is_empty(),
+        syn::Expr::Call(expr) if expr.args.is_empty() => {
+            let syn::Expr::Path(path) = expr.func.as_ref() else {
+                return false;
+            };
+            let mut segments = path.path.segments.iter().rev();
+            segments.next().is_some_and(|segment| segment.ident == "new")
+                && segments.next().is_some_and(|segment| segment.ident == "Vec")
+        }
+        _ => false,
     }
 }
 
@@ -959,12 +1091,26 @@ fn numeric_literal_display(expr: &syn::Expr) -> Option<String> {
     }
 }
 
-fn generate_enum_describe(info: &EnumInfo) -> syn::Result<TokenStream> {
+fn generate_enum_describe(info: &EnumInfo, config: bool) -> syn::Result<TokenStream> {
     let scry = scry_crate_path();
     let enum_name = &info.ident;
     let generics = enum_generics(info, Operation::Describe, &scry);
     let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
     let doc = doc_override(&info.doc);
+    let default = info.variants.iter().find(|variant| variant.attrs.is_default).map(|variant| {
+        let key = variant.attrs.rename.clone().unwrap_or_else(|| {
+            rename_all_variant(&variant.ident.to_string(), info.attrs.rename_all)
+        });
+        let value = config.then(|| {
+            quote! {
+                .with_value(|| Ok(Some(#scry::Node::new_leaf(
+                    #scry::KeyPath::new(),
+                    #scry::node::Value::String(#key.to_owned()),
+                ))))
+            }
+        });
+        quote! { .with_type_default(#scry::desc::DefaultDesc::variant(#key) #value) }
+    });
 
     let mut variant_descs = Vec::new();
 
@@ -976,12 +1122,10 @@ fn generate_enum_describe(info: &EnumInfo) -> syn::Result<TokenStream> {
             .clone()
             .unwrap_or_else(|| rename_all_variant(&v_ident.to_string(), info.attrs.rename_all));
         let variant_doc = &variant.doc;
-        let is_default = variant.attrs.is_default;
-
         match &variant.data {
             VariantData::Unit => {
                 variant_descs.push(quote! {
-                    #scry::desc::VariantDesc::unit(#key, #is_default)
+                    #scry::desc::VariantDesc::unit(#key)
                         .with_doc(#variant_doc)
                 });
             }
@@ -991,7 +1135,6 @@ fn generate_enum_describe(info: &EnumInfo) -> syn::Result<TokenStream> {
                 variant_descs.push(quote! {
                     #scry::desc::VariantDesc::payload(
                         #key,
-                        #is_default,
                         #value
                     ).with_doc(#variant_doc)
                 });
@@ -1003,7 +1146,6 @@ fn generate_enum_describe(info: &EnumInfo) -> syn::Result<TokenStream> {
                 variant_descs.push(quote! {
                     #scry::desc::VariantDesc::payload(
                         #key,
-                        #is_default,
                         #scry::Desc::tuple(vec![#(#elem_descs),*])
                     ).with_doc(#variant_doc)
                 });
@@ -1011,11 +1153,10 @@ fn generate_enum_describe(info: &EnumInfo) -> syn::Result<TokenStream> {
             VariantData::Struct(fields) => {
                 // Struct variant: payload is a struct desc with the nested fields
                 let field_descs: Vec<TokenStream> =
-                    fields.iter().map(|f| generate_field_desc(f, &scry)).collect();
+                    fields.iter().map(|f| generate_field_desc(f, &scry, config)).collect();
                 variant_descs.push(quote! {
                     #scry::desc::VariantDesc::payload(
                         #key,
-                        #is_default,
                         #scry::Desc::structure(vec![#(#field_descs),*])
                     ).with_doc(#variant_doc)
                 });
@@ -1026,7 +1167,7 @@ fn generate_enum_describe(info: &EnumInfo) -> syn::Result<TokenStream> {
     Ok(quote! {
         impl #impl_generics #scry::Describe for #enum_name #type_generics #where_clause {
             fn describe() -> #scry::Desc {
-                #scry::Desc::enumeration(vec![#(#variant_descs),*]) #doc
+                #scry::Desc::enumeration(vec![#(#variant_descs),*]) #default #doc
             }
         }
     })
@@ -1116,7 +1257,7 @@ fn is_path_expression(expression: &syn::Expr) -> bool {
 fn generate_positional_desc(field: &FieldInfo, scry: &TokenStream) -> TokenStream {
     let value = generate_value_desc(field, scry);
     let doc = doc_override(&field.doc);
-    quote! { (#value) #doc }
+    quote! { (#value).without_type_default() #doc }
 }
 
 /// Overrides delegated prose only when the enclosing declaration supplies its own summary.

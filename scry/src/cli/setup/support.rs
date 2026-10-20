@@ -8,10 +8,10 @@ use clap::parser::ValueSource;
 use clap::{Arg, ArgAction, ArgMatches, Command};
 
 use super::edits;
-use super::{Action, DescRequest, GetFormat, GetRequest, Invocation, SetupError};
+use super::{Action, DescRequest, GetFormat, GetRequest, Invocation, SetupError, TemplateRequest};
 use crate::desc::DisplayConfig;
 use crate::node::Format;
-use crate::writer::TreeConfig;
+use crate::writer::{TemplateMode, TreeConfig};
 
 // ---------------------------------------------------------------------------------------------- //
 
@@ -171,13 +171,32 @@ impl Support {
                 })
             }
             Some(("check", _)) => Action::Check,
+            Some(("template", request)) => {
+                if has_edits(&matches) {
+                    return Err(command.error(
+                        ErrorKind::ArgumentConflict,
+                        "'template' cannot be combined with '--set' or '--remove' because templates do not load or edit configuration",
+                    ).into());
+                }
+                let format =
+                    request.get_one::<String>("as").expect("template format has a default");
+                let mode = match request.get_one::<String>("mode").map(String::as_str) {
+                    Some("ref") => TemplateMode::Ref,
+                    Some("explicit") => TemplateMode::Explicit,
+                    _ => TemplateMode::Min,
+                };
+                Action::Template(TemplateRequest {
+                    format: format.parse().expect("template formats are valid identifiers"),
+                    mode,
+                })
+            }
             None => Action::Execute,
             Some(_) => unreachable!("only the fixed support actions are installed"),
         };
 
         let edits = match action {
             Action::Execute | Action::Get(_) | Action::Check => edits::collect_support(&matches)?,
-            Action::Describe(_) | Action::Help(_) => Vec::new(),
+            Action::Describe(_) | Action::Template(_) | Action::Help(_) => Vec::new(),
         };
         Ok(Invocation { action, edits })
     }
@@ -202,12 +221,13 @@ impl Support {
                     format!("Put all application arguments before --{}. Put edits before get or check.", self.long),
                     "Edits without a terminal action execute the application command with the edited input.".to_owned(),
                     "Edits affect this invocation and do not write the config file.".to_owned(),
-                    "Descriptions cannot be combined with edits.".to_owned(),
+                    "Descriptions and templates cannot be combined with edits.".to_owned(),
                     String::new(),
                     "Examples:".to_owned(),
                     format!("  {example_prefix} desc"),
                     format!("  {example_prefix} get"),
                     format!("  {example_prefix} check"),
+                    format!("  {example_prefix} template"),
                     format!("  {example_prefix} --set setting value"),
                     format!("  {example_prefix} --set setting value get --as rhai"),
                 ]
@@ -284,7 +304,35 @@ impl Support {
                  Loading and decoding perform their ordinary work. Checks inside the command payload are not run.\n\
                  Success prints 'Configuration decoded successfully.'. Failures use ordinary decoding diagnostics.",
             );
-        command.subcommand(desc).subcommand(get).subcommand(check)
+        let mut template_formats = vec!["rhai"];
+        if cfg!(feature = "format-json5") {
+            template_formats.push("json5");
+        }
+        let template = Command::new("template")
+            .about("Generates a documented configuration scaffold without loading or executing.")
+            .arg(
+                Arg::new("as")
+                    .long("as")
+                    .value_name("FORMAT")
+                    .default_value("rhai")
+                    .value_parser(PossibleValuesParser::new(template_formats))
+                    .help("Selects the template's configuration language."),
+            )
+            .arg(
+                Arg::new("mode")
+                    .long("mode")
+                    .value_name("MODE")
+                    .default_value("min")
+                    .value_parser(["min", "ref", "explicit"])
+                    .help("Selects min (required fields), ref (commented defaults), or explicit (active defaults)."),
+            )
+            .after_help(
+                "Templates use the configuration type's descriptions and declared defaults.\n\
+                 Unknown values appear as commented placeholders. Complete them before running the command.\n\
+                 Templates do not load input, apply edits, or guarantee application-specific validity.\n\
+                 Output is written to stdout. Templates cannot be combined with --set or --remove.",
+            );
+        command.subcommand(desc).subcommand(get).subcommand(check).subcommand(template)
     }
 }
 
@@ -422,6 +470,7 @@ mod tests {
             vec!["demo", "-S", "get", "--help"],
             vec!["demo", "-S", "desc", "--help"],
             vec!["demo", "-S", "check", "--help"],
+            vec!["demo", "-S", "template", "--help"],
         ] {
             let command = Command::new("demo").styles(styles.clone());
             let Action::Help(help) =
@@ -570,6 +619,114 @@ mod tests {
         let error = error(&["demo", "--scry", "--set", "field", "value", "desc"]);
         assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
         assert!(error.to_string().contains("demo operation --scry"));
+    }
+
+    #[test]
+    fn templates_select_the_language_and_named_preset() {
+        for format in [None, Some("rhai")] {
+            for (mode, expected) in [
+                (None, TemplateMode::Min),
+                (Some("min"), TemplateMode::Min),
+                (Some("ref"), TemplateMode::Ref),
+                (Some("explicit"), TemplateMode::Explicit),
+            ] {
+                let mut arguments = vec!["demo", "-S", "template"];
+                if let Some(format) = format {
+                    arguments.extend(["--as", format]);
+                }
+                if let Some(mode) = mode {
+                    arguments.extend(["--mode", mode]);
+                }
+                let Action::Template(request) = plan(&arguments).action else {
+                    panic!("expected template outcome");
+                };
+                assert_eq!(request.format, Format::Rhai);
+                assert_eq!(request.mode, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn templates_accept_only_supported_languages_and_exact_preset_names() {
+        for format in ["json", "toml", "yaml", "tree", "flat", "unsupported"] {
+            assert_eq!(
+                error(&["demo", "-S", "template", "--as", format]).kind(),
+                ErrorKind::InvalidValue
+            );
+        }
+        for mode in ["minimal", "reference", "unknown"] {
+            assert_eq!(
+                error(&["demo", "-S", "template", "--mode", mode]).kind(),
+                ErrorKind::InvalidValue
+            );
+        }
+    }
+
+    #[test]
+    fn template_json5_availability_follows_the_feature() {
+        let result = parse(&Support::new(), &["demo", "-S", "template", "--as", "json5"]);
+        #[cfg(feature = "format-json5")]
+        {
+            let Action::Template(request) = result.unwrap().action else {
+                panic!("expected JSON5 template");
+            };
+            assert_eq!(request.format, Format::Json5);
+        }
+        #[cfg(not(feature = "format-json5"))]
+        {
+            assert_eq!(clap_error(result.err().unwrap()).kind(), ErrorKind::InvalidValue);
+        }
+    }
+
+    #[test]
+    fn templates_reject_edits_and_keep_options_in_the_support_suffix() {
+        for edit in [vec!["--set", "field", "value"], vec!["--remove", "field"]] {
+            let mut arguments = vec!["demo", "-S"];
+            arguments.extend(edit);
+            arguments.push("template");
+            assert_eq!(error(&arguments).kind(), ErrorKind::ArgumentConflict);
+        }
+        let support = Support::new();
+        let mut command = support.augment(
+            Command::new("demo")
+                .arg(Arg::new("application_mode").long("mode"))
+                .arg(Arg::new("application_as").long("as")),
+        );
+        let matches = command
+            .try_get_matches_from_mut([
+                "demo", "--mode", "custom", "--as", "svg", "-S", "template", "--as", "rhai",
+                "--mode", "min",
+            ])
+            .unwrap();
+        assert_eq!(
+            matches.get_one::<String>("application_mode").map(String::as_str),
+            Some("custom")
+        );
+        assert_eq!(matches.get_one::<String>("application_as").map(String::as_str), Some("svg"));
+        let Action::Template(request) = support.parse(&matches, &command).unwrap().action else {
+            panic!("expected template outcome");
+        };
+        assert_eq!(request.format, Format::Rhai);
+        assert_eq!(request.mode, TemplateMode::Min);
+    }
+
+    #[test]
+    fn templates_follow_the_other_support_commands_in_help() {
+        let command = Support::new().support_command(&Command::new("demo"));
+        let names: Vec<_> = command.get_subcommands().map(Command::get_name).collect();
+        assert_eq!(names, ["desc", "get", "check", "template"]);
+    }
+
+    #[test]
+    fn template_help_explains_the_language_and_preset_defaults() {
+        let Action::Help(help) = plan(&["demo", "-S", "template", "--help"]).action else {
+            panic!("expected template help");
+        };
+        let help = help.to_string();
+        assert!(help.contains("Usage: demo operation --scry template [OPTIONS]"));
+        assert!(help.contains("[default: rhai]"));
+        assert!(help.contains("[default: min]"));
+        assert!(!help.contains("Experimental"));
     }
 
     #[test]

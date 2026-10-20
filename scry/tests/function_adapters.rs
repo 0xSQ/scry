@@ -274,7 +274,7 @@ fn optional_adapters_receive_present_null_and_missing_keys_use_target_fallbacks(
 
     let desc = OptionalAddress::describe();
     let address = field(&desc, "address");
-    assert!(address.optional);
+    assert!(address.is_optional());
     assert!(address.value.nullable);
     assert_eq!(address.value.type_label(), "IP address");
 }
@@ -301,8 +301,8 @@ fn target_defaults_are_missing_only_and_description_does_not_evaluate_them() {
 
     let desc = UnevaluatedDefault::describe();
     let value = field(&desc, "value");
-    assert!(value.optional);
-    assert_eq!(value.default_display, None);
+    assert!(value.is_optional());
+    assert_eq!(value.default_display(), None);
     assert_eq!(value.value.type_label(), "level");
 }
 
@@ -310,23 +310,23 @@ fn target_defaults_are_missing_only_and_description_does_not_evaluate_them() {
 fn adapted_defaults_hide_target_literals_and_direct_enum_markers_but_keep_nested_defaults() {
     let desc = AdaptedDefaults::describe();
     let toggle = field(&desc, "toggle");
-    assert!(toggle.optional);
-    assert_eq!(toggle.default_display, None);
+    assert!(toggle.is_optional());
+    assert_eq!(toggle.default_display(), None);
     let mode = field(&desc, "mode");
-    assert!(mode.optional);
+    assert!(mode.is_optional());
     let DescKind::Enum { variants } = &mode.value.kind else {
         panic!("expected adapted enum description");
     };
-    assert!(variants.iter().all(|variant| !variant.is_default()));
-    assert!(ModeRepresentation::describe().unit_enum_variants().is_none());
-    let DescKind::Enum { variants: native } = ModeRepresentation::describe().kind else {
-        panic!("expected representation enum");
-    };
-    assert!(native[0].is_default());
+    assert_eq!(mode.fallback().unwrap().variant_name(), None);
+    assert_eq!(mode.value.type_default.as_ref().unwrap().variant_name(), Some("automatic"));
+    let native = ModeRepresentation::describe();
+    assert!(native.unit_enum_variants().is_none());
+    assert_eq!(native.type_default.as_ref().unwrap().variant_name(), Some("automatic"));
+    assert!(!desc.display().contains("» automatic"));
     let VariantRepr::Payload { payload, .. } = &variants[1].repr else {
         panic!("expected nested representation payload");
     };
-    assert_eq!(field(payload, "count").default_display.as_deref(), Some("7"));
+    assert_eq!(field(payload, "count").default_display(), Some("7"));
 }
 
 #[test]

@@ -101,9 +101,9 @@ pub fn derive_string_enum(input: TokenStream) -> TokenStream {
 /// bounds for native operations. Type and positional field prose override delegated prose only
 /// when nonempty. Named field prose remains separate from its value's description.
 /// `#[scry(with(adapter))]` calls `adapter::describe` without a native description requirement.
-/// Module-adapted named fields retain omission metadata but suppress inferred target-domain
-/// default displays and directly described enum default markers. Individual hooks retain their
-/// existing default metadata and accept callable expressions returning `Desc`.
+/// Individual hooks accept callable expressions returning `Desc`. Adapted fields retain their
+/// omission policy, while inferred default summaries and value providers remain unavailable.
+/// Their value description's type default does not become the field's missing-value fallback.
 #[proc_macro_derive(Describe, attributes(scry))]
 pub fn derive_describe(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);

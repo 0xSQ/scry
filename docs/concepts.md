@@ -901,10 +901,7 @@ The help overview favors concise hints over listing every accepted value, so it 
 ```
 
 `values` is required and its elements accept null. `limit` can be omitted and accepts a present null.
-`retries` can be omitted but rejects a present null. `FieldDesc.optional` records omission, while
-`Desc.nullable` records acceptance of null alongside the described shape. A nullable structured
-value retains its children and enum choices. Repeated `Option` layers share one nullable shape.
-This does not change how missing keys select defaults. A type alias hiding `Option<T>` still needs
+`retries` can be omitted but rejects a present null. A type alias hiding `Option<T>` still needs
 an explicit fallback to permit omission.
 
 Every field described by a derive needs `Describe`, a `describe_with` hook, or a selected

@@ -186,20 +186,20 @@ fn descriptions_keep_plain_expression_shapes_and_container_metadata() {
 
     let settings = Settings::describe();
     let required = field(&settings, "required.expr");
-    assert!(!required.optional);
+    assert!(!required.is_optional());
     assert!(!required.value.nullable);
     let optional = field(&settings, "optional");
-    assert!(optional.optional);
+    assert!(optional.is_optional());
     assert!(optional.value.nullable);
     let defaulted = field(&settings, "defaulted");
-    assert!(defaulted.optional);
+    assert!(defaulted.is_optional());
     assert!(!defaulted.value.nullable);
     settings.validate_path(r#"["required.expr"]"#).unwrap();
     assert!(settings.validate_path(r#"["required.expr"][0]"#).is_err());
 
     let expressions = Expressions::describe();
     let values = field(&expressions, "experiments.values");
-    assert!(!values.optional);
+    assert!(!values.is_optional());
     assert!(!values.value.nullable);
     let DescKind::List { item } = &values.value.kind else {
         panic!("native expression vectors must retain their list shape");

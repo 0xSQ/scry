@@ -257,26 +257,23 @@ fn descriptions_display_literals_but_not_rust_construction_syntax() {
 
     let field = |name: &str| fields.iter().find(|field| field.name == name).unwrap();
 
-    assert_eq!(field("literal_bool").default_display.as_deref(), Some("true"));
-    assert_eq!(field("literal_number").default_display.as_deref(), Some("-3"));
-    assert_eq!(field("literal_string").default_display.as_deref(), Some("\"cache\""));
-    assert_eq!(field("constructed_list").default_display, None);
-    assert_eq!(field("constructed_path").default_display, None);
-    assert_eq!(field("enum_path").default_display, None);
-    assert_eq!(field("constant").default_display, None);
-    assert_eq!(field("nested").default_display, None);
+    assert_eq!(field("literal_bool").default_display(), Some("true"));
+    assert_eq!(field("literal_number").default_display(), Some("-3"));
+    assert_eq!(field("literal_string").default_display(), Some("\"cache\""));
+    assert_eq!(field("constructed_list").default_display(), None);
+    assert_eq!(field("constructed_path").default_display(), None);
+    assert_eq!(field("enum_path").default_display(), None);
+    assert_eq!(field("constant").default_display(), None);
+    assert_eq!(field("nested").default_display(), None);
 
-    assert!(fields.iter().all(|field| field.optional));
+    assert!(fields.iter().all(|field| field.is_optional()));
 }
 
 #[test]
 fn rust_default_variant_is_not_scry_description_metadata() {
     let desc = RustDefaultEnum::describe();
-    let DescKind::Enum { variants } = desc.kind else {
-        panic!("expected an enum description");
-    };
-
-    assert!(variants.iter().all(|variant| !variant.is_default()));
+    assert!(matches!(desc.kind, DescKind::Enum { .. }));
+    assert!(desc.type_default.is_none());
 }
 
 #[test]
@@ -291,8 +288,13 @@ fn enum_default_marker_is_contextual_to_from_defaults_fields() {
     let field = |name: &str| fields.iter().find(|field| field.name == name).unwrap();
 
     assert_eq!(default_variant_name(&field("from_defaults").value).as_deref(), Some("summary"));
-    assert_eq!(default_variant_name(&field("required").value), None);
-    assert_eq!(default_variant_name(&field("explicit").value), None);
+    assert_eq!(default_variant_name(&field("required").value).as_deref(), Some("summary"));
+    assert_eq!(default_variant_name(&field("explicit").value).as_deref(), Some("summary"));
+    assert_eq!(field("from_defaults").fallback().unwrap().variant_name(), Some("summary"));
+    assert!(field("from_defaults").value.type_default.as_ref().unwrap().value.is_some());
+    assert!(field("from_defaults").fallback().unwrap().value.is_none());
+    assert!(field("required").fallback().is_none());
+    assert_eq!(field("explicit").fallback().unwrap().variant_name(), None);
 
     let render_field = |name: &str| scry::Desc::structure(vec![field(name).clone()]).display();
     let from_defaults = render_field("from_defaults");
@@ -307,8 +309,5 @@ fn enum_default_marker_is_contextual_to_from_defaults_fields() {
 }
 
 fn default_variant_name(desc: &scry::Desc) -> Option<String> {
-    desc.unit_enum_variants()?
-        .iter()
-        .find(|variant| variant.is_default())
-        .map(|variant| variant.name.clone())
+    desc.type_default.as_ref()?.variant_name().map(str::to_owned)
 }

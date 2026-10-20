@@ -4,6 +4,7 @@
 //! with human-readable help rendering and path traversal.
 
 use crate::key_path::{KeyPathError, Segment, TryIntoKeyPath};
+use crate::{KeyPath, Node, NodeError};
 
 // ---------------------------------------------------------------------------------------------- //
 // Core Types
@@ -19,6 +20,8 @@ pub struct Desc {
     ///
     /// Retained as metadata rather than included in help output.
     pub nullable: bool,
+    /// Advertises the type's Scry default independently of any enclosing field.
+    pub type_default: Option<DefaultDesc>,
 }
 
 /// The structural kind of a described value.
@@ -38,7 +41,7 @@ pub enum DescKind {
         fields: Vec<FieldDesc>,
     },
 
-    /// Enum with named variants.
+    /// String or single-key-map alternatives with actual configuration names.
     Enum {
         /// The enum's variants.
         variants: Vec<VariantDesc>,
@@ -70,13 +73,98 @@ pub struct FieldDesc {
     pub name: String,
     /// Doc comment for this field.
     pub doc: String,
-    /// True if the parent key may be omitted and a fallback policy applies.
-    pub optional: bool,
-    /// Human-facing display string for the default value, if any.
-    pub default_display: Option<String>,
+    /// The policy applied when the field's key is missing.
+    pub omission: Omission,
     /// Description of the field's value.
     pub value: Desc,
 }
+
+/// Describes the policy applied to a missing field key.
+#[derive(Debug, Clone, Default)]
+pub enum Omission {
+    /// Requires the key to be present, independently of null acceptance.
+    #[default]
+    Required,
+    /// Applies a declared fallback whose representation may be unavailable.
+    Fallback(DefaultDesc),
+}
+
+/// Describes a default without evaluating it during help or description construction.
+#[derive(Debug, Clone, Default)]
+pub struct DefaultDesc {
+    /// Static presentation information, independent of a concrete value.
+    pub summary: Option<DefaultSummary>,
+    /// Lazily supplies the default's configuration representation when known.
+    pub value: Option<DefaultProvider>,
+}
+
+impl DefaultDesc {
+    /// Describes a fallback whose configuration representation is unavailable.
+    pub fn unknown() -> Self {
+        Self::default()
+    }
+
+    /// Describes a default using static help text.
+    pub fn text(display: impl Into<String>) -> Self {
+        Self {
+            summary: Some(DefaultSummary::Text(display.into())),
+            value: None,
+        }
+    }
+
+    /// Identifies an enum alternative selected by a default policy.
+    pub fn variant(name: impl Into<String>) -> Self {
+        Self {
+            summary: Some(DefaultSummary::Variant(name.into())),
+            value: None,
+        }
+    }
+
+    /// Sets a lazy configuration-value provider.
+    pub fn with_value(mut self, provider: DefaultProvider) -> Self {
+        self.value = Some(provider);
+        self
+    }
+
+    /// Retains static help information without advertising an executable provider.
+    pub fn without_value(mut self) -> Self {
+        self.value = None;
+        self
+    }
+
+    /// Returns static help text without interpreting it as configuration data.
+    pub fn display_text(&self) -> Option<&str> {
+        match &self.summary {
+            Some(DefaultSummary::Text(text)) => Some(text),
+            _ => None,
+        }
+    }
+
+    /// Returns the exact enum alternative selected by this default policy.
+    pub fn variant_name(&self) -> Option<&str> {
+        match &self.summary {
+            Some(DefaultSummary::Variant(name)) => Some(name),
+            _ => None,
+        }
+    }
+
+    /// Evaluates the provider when a concrete configuration value is requested.
+    pub fn get_value(&self) -> Result<Option<Node>, NodeError> {
+        self.value.map_or(Ok(None), |provider| provider())
+    }
+}
+
+/// Supplies static help information about a default policy.
+#[derive(Debug, Clone)]
+pub enum DefaultSummary {
+    /// Shows literal help text without making it executable configuration.
+    Text(String),
+    /// Identifies an enum alternative by its exact configuration name.
+    Variant(String),
+}
+
+/// Lazily obtains a default's known configuration value, preserving unavailable results.
+pub type DefaultProvider = fn() -> Result<Option<Node>, NodeError>;
 
 /// Description of an enum variant.
 #[derive(Debug, Clone)]
@@ -93,15 +181,10 @@ pub struct VariantDesc {
 #[derive(Debug, Clone)]
 pub enum VariantRepr {
     /// Unit variant: written as a bare string in config (e.g., `"auto"`).
-    Unit {
-        /// True if this is the Scry default variant.
-        is_default: bool,
-    },
+    Unit,
 
     /// Payload variant: written as a map with one key (e.g., `{ file: "path" }`).
     Payload {
-        /// True if this is the Scry default variant.
-        is_default: bool,
         /// Description of the payload.
         payload: Desc,
     },
@@ -119,6 +202,7 @@ impl Desc {
                 hint: Some(hint.into()),
             },
             nullable: false,
+            type_default: None,
         }
     }
 
@@ -128,6 +212,7 @@ impl Desc {
             doc: String::new(),
             kind: DescKind::Struct { fields },
             nullable: false,
+            type_default: None,
         }
     }
 
@@ -137,6 +222,7 @@ impl Desc {
             doc: String::new(),
             kind: DescKind::Enum { variants },
             nullable: false,
+            type_default: None,
         }
     }
 
@@ -148,6 +234,7 @@ impl Desc {
                 item: Box::new(item),
             },
             nullable: false,
+            type_default: None,
         }
     }
 
@@ -157,6 +244,7 @@ impl Desc {
             doc: String::new(),
             kind: DescKind::Tuple { items },
             nullable: false,
+            type_default: None,
         }
     }
 
@@ -173,6 +261,47 @@ impl Desc {
     pub fn nullable(mut self) -> Self {
         self.nullable = true;
         self
+    }
+
+    /// Advertises the described type's default-construction metadata.
+    pub fn with_type_default(mut self, default: DefaultDesc) -> Self {
+        self.type_default = Some(default);
+        self
+    }
+
+    /// Clears default-construction metadata while preserving the accepted shape.
+    pub fn without_type_default(mut self) -> Self {
+        self.type_default = None;
+        self
+    }
+
+    /// Obtains the advertised type default's configuration value when available.
+    pub fn template_default(&self) -> Result<Option<Node>, NodeError> {
+        self.type_default.as_ref().map_or(Ok(None), DefaultDesc::get_value)
+    }
+
+    /// Resolves named-field fallbacks into a complete configuration map when possible.
+    ///
+    /// Aggregate providers opt into this operation explicitly. An immediate required field or
+    /// unavailable provider stops preparation before any default expressions are evaluated.
+    pub fn field_defaults(&self) -> Result<Option<Node>, NodeError> {
+        let DescKind::Struct { fields } = &self.kind else {
+            return Ok(None);
+        };
+        if fields.iter().any(|field| field.fallback().is_none_or(|default| default.value.is_none()))
+        {
+            return Ok(None);
+        }
+        let mut node = Node::empty_map();
+        for field in fields {
+            let key = KeyPath::from_keys([field.name.as_str()]);
+            let Some(value) = field.template_default().map_err(|error| error.prepend_path(&key))?
+            else {
+                return Ok(None);
+            };
+            node.set_node(key, value)?;
+        }
+        Ok(Some(node))
     }
 
     /// Returns a concise value hint for help output.
@@ -216,31 +345,12 @@ impl Desc {
     pub fn unit_enum_variants(&self) -> Option<&[VariantDesc]> {
         match &self.kind {
             DescKind::Enum { variants }
-                if variants
-                    .iter()
-                    .all(|variant| matches!(variant.repr, VariantRepr::Unit { .. })) =>
+                if variants.iter().all(|variant| matches!(variant.repr, VariantRepr::Unit)) =>
             {
                 Some(variants)
             }
             _ => None,
         }
-    }
-
-    /// Removes the default marker from a directly described enum.
-    ///
-    /// Struct fields use this when their missing-value policy does not select the enum's Scry
-    /// default. Nested field descriptions remain unchanged.
-    pub fn without_default_variant(mut self) -> Self {
-        if let DescKind::Enum { variants } = &mut self.kind {
-            for variant in variants {
-                match &mut variant.repr {
-                    VariantRepr::Unit { is_default } | VariantRepr::Payload { is_default, .. } => {
-                        *is_default = false
-                    }
-                }
-            }
-        }
-        self
     }
 }
 
@@ -250,8 +360,7 @@ impl FieldDesc {
         FieldDesc {
             name: name.into(),
             doc: String::new(),
-            optional: false,
-            default_display: None,
+            omission: Omission::Required,
             value,
         }
     }
@@ -262,39 +371,60 @@ impl FieldDesc {
         self
     }
 
-    /// Marks the field as optional.
+    /// Marks the field as omittable without replacing an existing fallback.
     pub fn optional(mut self) -> Self {
-        self.optional = true;
+        if matches!(self.omission, Omission::Required) {
+            self.omission = Omission::Fallback(DefaultDesc::unknown());
+        }
         self
     }
 
-    /// Sets the human-facing default value text.
-    pub fn with_default(mut self, display: impl Into<String>) -> Self {
-        self.default_display = Some(display.into());
-        self.optional = true; // A displayed default implies an omittable field.
+    /// Sets the field's missing-value fallback metadata.
+    pub fn with_fallback(mut self, default: DefaultDesc) -> Self {
+        self.omission = Omission::Fallback(default);
         self
+    }
+
+    /// Returns whether the key may be omitted.
+    pub fn is_optional(&self) -> bool {
+        matches!(self.omission, Omission::Fallback(_))
+    }
+
+    /// Returns the field's missing-value fallback metadata.
+    pub fn fallback(&self) -> Option<&DefaultDesc> {
+        match &self.omission {
+            Omission::Required => None,
+            Omission::Fallback(default) => Some(default),
+        }
+    }
+
+    /// Returns static default text without evaluating a provider.
+    pub fn default_display(&self) -> Option<&str> {
+        self.fallback().and_then(DefaultDesc::display_text)
+    }
+
+    /// Obtains the fallback's concrete configuration value when available.
+    pub fn template_default(&self) -> Result<Option<Node>, NodeError> {
+        self.fallback().map_or(Ok(None), DefaultDesc::get_value)
     }
 }
 
 impl VariantDesc {
     /// Creates a unit variant description.
-    pub fn unit(name: impl Into<String>, is_default: bool) -> Self {
+    pub fn unit(name: impl Into<String>) -> Self {
         VariantDesc {
             name: name.into(),
             doc: String::new(),
-            repr: VariantRepr::Unit { is_default },
+            repr: VariantRepr::Unit,
         }
     }
 
     /// Creates a payload variant description.
-    pub fn payload(name: impl Into<String>, is_default: bool, payload: Desc) -> Self {
+    pub fn payload(name: impl Into<String>, payload: Desc) -> Self {
         VariantDesc {
             name: name.into(),
             doc: String::new(),
-            repr: VariantRepr::Payload {
-                is_default,
-                payload,
-            },
+            repr: VariantRepr::Payload { payload },
         }
     }
 
@@ -302,14 +432,6 @@ impl VariantDesc {
     pub fn with_doc(mut self, doc: impl Into<String>) -> Self {
         self.doc = doc.into();
         self
-    }
-
-    /// Returns true if this is the Scry default variant.
-    pub fn is_default(&self) -> bool {
-        match &self.repr {
-            VariantRepr::Unit { is_default } => *is_default,
-            VariantRepr::Payload { is_default, .. } => *is_default,
-        }
     }
 }
 
@@ -416,6 +538,11 @@ impl Desc {
 
     /// Formats the description as a string with custom config.
     pub fn display_with(&self, config: &DisplayConfig) -> String {
+        self.display_in_context(config, self.type_default.as_ref())
+    }
+
+    /// Formats a value overview using its enclosing default policy.
+    fn display_in_context(&self, config: &DisplayConfig, default: Option<&DefaultDesc>) -> String {
         // First pass: collect all lines
         let mut lines = Vec::new();
         if matches!(self.kind, DescKind::Plain { .. }) {
@@ -427,46 +554,19 @@ impl Desc {
                 });
             }
         }
-        self.collect_lines(&mut lines, &[], config);
+        self.collect_lines(&mut lines, &[], default, config);
 
-        // Find max width of left sides (only for lines with descriptions)
-        let max_width = lines
-            .iter()
-            .filter(|line| !line.doc.is_empty())
-            .map(|line| line.left_side.chars().count())
-            .max()
-            .unwrap_or(0);
-
-        // Calculate comment column: max width + buffer, capped at max_comment_column
-        let comment_column = (max_width + config.comment_buffer).min(config.max_comment_column);
-
-        // Second pass: format output
-        let mut out = String::new();
-        for line in lines {
-            if line.doc.is_empty() {
-                out.push_str(&line.left_side);
-                out.push('\n');
-            } else {
-                let width = line.left_side.chars().count();
-                let padding = if width < comment_column {
-                    comment_column - width
-                } else {
-                    config.comment_buffer
-                };
-                out.push_str(&line.left_side);
-                for _ in 0..padding {
-                    out.push(' ');
-                }
-                out.push_str(config.symbols.comment);
-                out.push_str(&line.doc);
-                out.push('\n');
-            }
-        }
-        out
+        render_lines(lines, config)
     }
 
     /// Collects lines from the description tree.
-    fn collect_lines(&self, lines: &mut Vec<LineData>, ancestors: &[bool], config: &DisplayConfig) {
+    fn collect_lines(
+        &self,
+        lines: &mut Vec<LineData>,
+        ancestors: &[bool],
+        default: Option<&DefaultDesc>,
+        config: &DisplayConfig,
+    ) {
         match &self.kind {
             DescKind::Struct { fields, .. } => {
                 let count = fields.len();
@@ -479,7 +579,13 @@ impl Desc {
                 let count = variants.len();
                 for (i, variant) in variants.iter().enumerate() {
                     let is_last = i == count - 1;
-                    variant.collect_line(lines, ancestors, is_last, config);
+                    variant.collect_line(
+                        lines,
+                        ancestors,
+                        is_last,
+                        default.and_then(DefaultDesc::variant_name),
+                        config,
+                    );
                 }
             }
             DescKind::Tuple { items } => {
@@ -491,7 +597,7 @@ impl Desc {
             }
             DescKind::List { item } => {
                 // For list, show the item's children if it has any
-                item.collect_lines(lines, ancestors, config);
+                item.collect_lines(lines, ancestors, None, config);
             }
             DescKind::Plain { .. } => {
                 // Plain types have no children to render
@@ -539,7 +645,7 @@ fn collect_tuple_elem_line(
     if !item.is_leaf() && within_depth {
         let mut new_ancestors = ancestors.to_vec();
         new_ancestors.push(!is_last);
-        item.collect_lines(lines, &new_ancestors, config);
+        item.collect_lines(lines, &new_ancestors, None, config);
     }
 }
 
@@ -556,7 +662,7 @@ impl FieldDesc {
         let prefix = build_tree_prefix(ancestors, config);
 
         // Select the branch character based on optionality
-        let branch = if self.optional {
+        let branch = if self.is_optional() {
             config.symbols.optional
         } else {
             config.symbols.required
@@ -582,7 +688,7 @@ impl FieldDesc {
         if !self.value.is_leaf() && within_depth {
             let mut new_ancestors = ancestors.to_vec();
             new_ancestors.push(!is_last);
-            self.value.collect_lines(lines, &new_ancestors, config);
+            self.value.collect_lines(lines, &new_ancestors, self.fallback(), config);
         }
     }
 
@@ -597,7 +703,7 @@ impl FieldDesc {
         }
 
         // Add default value if present
-        if let Some(default_val) = &self.default_display {
+        if let Some(default_val) = self.default_display() {
             label.push(' ');
             label.push_str(config.symbols.default_value);
             label.push(' ');
@@ -615,13 +721,14 @@ impl VariantDesc {
         lines: &mut Vec<LineData>,
         ancestors: &[bool],
         is_last: bool,
+        default_variant: Option<&str>,
         config: &DisplayConfig,
     ) {
         // Build the tree prefix from ancestors
         let prefix = build_tree_prefix(ancestors, config);
 
         // Select the branch character based on default status
-        let branch = if self.is_default() {
+        let branch = if default_variant == Some(self.name.as_str()) {
             config.symbols.default_variant
         } else {
             config.symbols.variant
@@ -650,14 +757,14 @@ impl VariantDesc {
             if !payload.is_leaf() && within_depth {
                 let mut new_ancestors = ancestors.to_vec();
                 new_ancestors.push(!is_last);
-                payload.collect_lines(lines, &new_ancestors, config);
+                payload.collect_lines(lines, &new_ancestors, None, config);
             }
         }
     }
 
     fn build_label(&self) -> String {
         match &self.repr {
-            VariantRepr::Unit { .. } => self.name.clone(),
+            VariantRepr::Unit => self.name.clone(),
             VariantRepr::Payload { payload, .. } => {
                 let hint = payload.type_label();
                 if hint.is_empty() {
@@ -686,6 +793,44 @@ fn build_tree_prefix(ancestors: &[bool], config: &DisplayConfig) -> String {
     prefix
 }
 
+/// Formats collected help lines using a shared comment column.
+fn render_lines(lines: Vec<LineData>, config: &DisplayConfig) -> String {
+    // Find max width of left sides (only for lines with descriptions)
+    let max_width = lines
+        .iter()
+        .filter(|line| !line.doc.is_empty())
+        .map(|line| line.left_side.chars().count())
+        .max()
+        .unwrap_or(0);
+
+    // Calculate comment column: max width + buffer, capped at max_comment_column
+    let comment_column = (max_width + config.comment_buffer).min(config.max_comment_column);
+
+    // Second pass: format output
+    let mut out = String::new();
+    for line in lines {
+        if line.doc.is_empty() {
+            out.push_str(&line.left_side);
+            out.push('\n');
+        } else {
+            let width = line.left_side.chars().count();
+            let padding = if width < comment_column {
+                comment_column - width
+            } else {
+                config.comment_buffer
+            };
+            out.push_str(&line.left_side);
+            for _ in 0..padding {
+                out.push(' ');
+            }
+            out.push_str(config.symbols.comment);
+            out.push_str(&line.doc);
+            out.push('\n');
+        }
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------------------------- //
 // Path Traversal
 
@@ -695,7 +840,12 @@ pub enum EntryRef<'a> {
     /// A struct field.
     Field(&'a FieldDesc),
     /// An enum variant.
-    Variant(&'a VariantDesc),
+    Variant {
+        /// The enum alternative.
+        variant: &'a VariantDesc,
+        /// The default policy applicable at this use site.
+        default: Option<&'a DefaultDesc>,
+    },
     /// A tuple element.
     TupleElem {
         /// The element index.
@@ -706,38 +856,37 @@ pub enum EntryRef<'a> {
 }
 
 impl<'a> EntryRef<'a> {
-    /// Converts this entry reference to an owned Desc for display.
-    ///
-    /// For fields, creates a struct desc with that single field.
-    /// For variants, creates an enum desc with that single variant.
-    /// For tuple elements, creates a struct desc with a numeric field name.
-    pub fn to_desc(&self) -> Desc {
-        match self {
-            EntryRef::Field(field) => Desc::structure(vec![(*field).clone()]),
-            EntryRef::Variant(variant) => Desc::enumeration(vec![(*variant).clone()]),
-            EntryRef::TupleElem { index, value } => {
-                Desc::structure(vec![FieldDesc::new(index.to_string(), (*value).clone())])
-            }
-        }
-    }
-
     /// Returns the doc string for this entry.
     pub fn doc(&self) -> &str {
         match self {
             EntryRef::Field(field) => &field.doc,
-            EntryRef::Variant(variant) => &variant.doc,
+            EntryRef::Variant { variant, .. } => &variant.doc,
             EntryRef::TupleElem { value, .. } => &value.doc,
         }
     }
 
     /// Displays this entry using default configuration.
     pub fn display(&self) -> String {
-        self.to_desc().display()
+        self.display_with(&DisplayConfig::default())
     }
 
     /// Displays this entry using custom configuration.
     pub fn display_with(&self, config: &DisplayConfig) -> String {
-        self.to_desc().display_with(config)
+        let mut lines = Vec::new();
+        match self {
+            EntryRef::Field(field) => field.collect_line(&mut lines, &[], true, config),
+            EntryRef::Variant { variant, default } => variant.collect_line(
+                &mut lines,
+                &[],
+                true,
+                default.and_then(DefaultDesc::variant_name),
+                config,
+            ),
+            EntryRef::TupleElem { index, value } => {
+                collect_tuple_elem_line(*index, value, &mut lines, &[], true, config);
+            }
+        }
+        render_lines(lines, config)
     }
 }
 
@@ -761,16 +910,24 @@ pub struct UnknownPathError {
     /// The key that wasn't found.
     pub invalid_key: String,
     /// The description at the valid prefix for displaying available entries.
-    pub desc_at_prefix: Desc,
+    pub desc_at_prefix: Box<Desc>,
+    /// The default policy applicable at the valid prefix.
+    pub default_at_prefix: Option<DefaultDesc>,
 }
 
 impl UnknownPathError {
     /// Creates a new unknown path error.
-    fn new(prefix: &[&str], key: impl Into<String>, desc: Desc) -> Self {
+    fn new(
+        prefix: &[&str],
+        key: impl Into<String>,
+        desc: Desc,
+        default: Option<&DefaultDesc>,
+    ) -> Self {
         Self {
             valid_prefix: prefix.join("."),
             invalid_key: key.into(),
-            desc_at_prefix: desc,
+            desc_at_prefix: Box::new(desc),
+            default_at_prefix: default.cloned(),
         }
     }
 }
@@ -789,7 +946,12 @@ impl std::fmt::Display for UnknownPathError {
             } else {
                 format!(" at '{}'", self.valid_prefix)
             };
-            write!(f, "\n\nAvailable{}:\n{}", at_str, self.desc_at_prefix.display_with(&config))?;
+            write!(
+                f,
+                "\n\nAvailable{}:\n{}",
+                at_str,
+                self.desc_at_prefix.display_in_context(&config, self.default_at_prefix.as_ref())
+            )?;
         }
         Ok(())
     }
@@ -807,7 +969,7 @@ impl Desc {
     pub fn entry_at_path(&self, path: impl TryIntoKeyPath) -> Option<EntryRef<'_>> {
         let key_path = path.try_into_key_path().ok()?;
         let segments: Vec<_> = key_path.iter().collect();
-        self.entry_at_segments(&segments)
+        self.entry_at_segments(&segments, self.type_default.as_ref())
     }
 
     /// Validates a path against the description.
@@ -819,11 +981,15 @@ impl Desc {
     pub fn validate_path(&self, path: impl TryIntoKeyPath) -> Result<(), DescPathError> {
         let key_path = path.try_into_key_path()?;
         let segments: Vec<_> = key_path.iter().collect();
-        self.validate_segments(&segments, &[])
+        self.validate_segments(&segments, &[], self.type_default.as_ref())
     }
 
     /// Finds an entry using path segments.
-    fn entry_at_segments(&self, segments: &[&Segment]) -> Option<EntryRef<'_>> {
+    fn entry_at_segments<'a>(
+        &'a self,
+        segments: &[&Segment],
+        default: Option<&'a DefaultDesc>,
+    ) -> Option<EntryRef<'a>> {
         let first = segments.first()?;
 
         // Handle index segments specially for tuples
@@ -837,7 +1003,7 @@ impl Desc {
                             value: item,
                         })
                     } else {
-                        item.entry_at_segments(&segments[1..])
+                        item.entry_at_segments(&segments[1..], None)
                     }
                 }
                 DescKind::List { item } => {
@@ -848,7 +1014,7 @@ impl Desc {
                             value: item,
                         })
                     } else {
-                        item.entry_at_segments(&segments[1..])
+                        item.entry_at_segments(&segments[1..], None)
                     }
                 }
                 // Struct, Enum, Plain do not support index access.
@@ -867,20 +1033,20 @@ impl Desc {
                 if segments.len() == 1 {
                     Some(EntryRef::Field(field))
                 } else {
-                    field.value.entry_at_segments(&segments[1..])
+                    field.value.entry_at_segments(&segments[1..], field.fallback())
                 }
             }
             DescKind::Enum { variants } => {
                 let variant = variants.iter().find(|v| v.name == key)?;
                 if segments.len() == 1 {
-                    Some(EntryRef::Variant(variant))
+                    Some(EntryRef::Variant { variant, default })
                 } else {
                     // Can only traverse into payload variants
                     match &variant.repr {
                         VariantRepr::Payload { payload, .. } => {
-                            payload.entry_at_segments(&segments[1..])
+                            payload.entry_at_segments(&segments[1..], None)
                         }
-                        VariantRepr::Unit { .. } => None,
+                        VariantRepr::Unit => None,
                     }
                 }
             }
@@ -890,7 +1056,7 @@ impl Desc {
             }
             DescKind::List { item } => {
                 // For lists, apply the segment to the item description
-                item.entry_at_segments(segments)
+                item.entry_at_segments(segments, None)
             }
             DescKind::Plain { .. } => None,
         }
@@ -901,6 +1067,7 @@ impl Desc {
         &self,
         segments: &[&Segment],
         prefix: &[&str],
+        default: Option<&DefaultDesc>,
     ) -> Result<(), DescPathError> {
         let Some(first) = segments.first() else {
             return Ok(());
@@ -921,13 +1088,14 @@ impl Desc {
                             prefix,
                             format!("[{}] ({})", i, valid_range),
                             self.clone(),
+                            default,
                         )
                         .into());
                     }
                     if segments.len() > 1 {
                         // Continue validation into the tuple element
                         // (We don't add the index to prefix since it's already validated)
-                        items[*i].validate_segments(&segments[1..], prefix)
+                        items[*i].validate_segments(&segments[1..], prefix, None)
                     } else {
                         Ok(())
                     }
@@ -935,7 +1103,7 @@ impl Desc {
                 DescKind::List { item } => {
                     // Lists accept any index (bounds checked at runtime on actual data).
                     if segments.len() > 1 {
-                        item.validate_segments(&segments[1..], prefix)
+                        item.validate_segments(&segments[1..], prefix, None)
                     } else {
                         Ok(())
                     }
@@ -943,7 +1111,7 @@ impl Desc {
                 // Struct, Enum, Plain do not support index access.
                 _ => {
                     let msg = format!("[{}] (index access requires a list or tuple)", i);
-                    Err(UnknownPathError::new(prefix, msg, self.clone()).into())
+                    Err(UnknownPathError::new(prefix, msg, self.clone(), default).into())
                 }
             };
         }
@@ -961,12 +1129,12 @@ impl Desc {
                         if segments.len() > 1 {
                             let mut new_prefix = prefix.to_vec();
                             new_prefix.push(key);
-                            f.value.validate_segments(&segments[1..], &new_prefix)
+                            f.value.validate_segments(&segments[1..], &new_prefix, f.fallback())
                         } else {
                             Ok(())
                         }
                     }
-                    None => Err(UnknownPathError::new(prefix, key, self.clone()).into()),
+                    None => Err(UnknownPathError::new(prefix, key, self.clone(), default).into()),
                 }
             }
             DescKind::Enum { variants } => {
@@ -978,9 +1146,9 @@ impl Desc {
                                 VariantRepr::Payload { payload, .. } => {
                                     let mut new_prefix = prefix.to_vec();
                                     new_prefix.push(key);
-                                    payload.validate_segments(&segments[1..], &new_prefix)
+                                    payload.validate_segments(&segments[1..], &new_prefix, None)
                                 }
-                                VariantRepr::Unit { .. } => {
+                                VariantRepr::Unit => {
                                     // Unit variants cannot have deeper paths
                                     let mut new_prefix = prefix.to_vec();
                                     new_prefix.push(key);
@@ -995,6 +1163,7 @@ impl Desc {
                                         &new_prefix,
                                         invalid_key,
                                         Desc::default(),
+                                        None,
                                     )
                                     .into())
                                 }
@@ -1003,21 +1172,21 @@ impl Desc {
                             Ok(())
                         }
                     }
-                    None => Err(UnknownPathError::new(prefix, key, self.clone()).into()),
+                    None => Err(UnknownPathError::new(prefix, key, self.clone(), default).into()),
                 }
             }
             DescKind::Tuple { .. } => {
                 // Tuples require index access, not key access
                 let msg = format!("'{}' (tuple requires index access like [0])", key);
-                Err(UnknownPathError::new(prefix, msg, self.clone()).into())
+                Err(UnknownPathError::new(prefix, msg, self.clone(), default).into())
             }
             DescKind::List { item } => {
                 // Apply segment to item
-                item.validate_segments(segments, prefix)
+                item.validate_segments(segments, prefix, None)
             }
             DescKind::Plain { .. } => {
                 // Plain types can't have children
-                Err(UnknownPathError::new(prefix, key, self.clone()).into())
+                Err(UnknownPathError::new(prefix, key, self.clone(), default).into())
             }
         }
     }

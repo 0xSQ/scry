@@ -13,8 +13,17 @@ use crate::Node;
 ///
 /// Derives delegate to each complete field type. A field without a native implementation needs
 /// an explicit `#[scry(describe_with(...))]` hook or `#[scry(with(module))]` function adapter.
-/// Nullability describes present values, while [`crate::desc::FieldDesc::optional`] describes
+/// Nullability describes present values, while [`crate::desc::FieldDesc::omission`] describes
 /// whether a key may be omitted.
+///
+/// `Config`-derived descriptions also expose lazy template defaults for known built-in encodings.
+/// Calling [`Self::describe`] does not evaluate default expressions. Template generation requests
+/// those values separately through [`crate::desc::FieldDesc::template_default`]. A missing
+/// concrete value does not change the field's omission policy.
+/// Type-default metadata is separate from field omission. Transparent wrappers preserve the
+/// accepted shape without claiming that their default construction matches the inner type.
+/// Enum alternatives describe accepted string or single-key-map encodings. Custom readers with
+/// other encodings can describe an opaque value with an explanatory hint.
 ///
 /// Missing description support is a compile-time error, including inside containers:
 ///
@@ -103,31 +112,31 @@ impl_scry_desc_scalar!(
 
 impl<T: Describe + ?Sized> Describe for &T {
     fn describe() -> Desc {
-        T::describe()
+        T::describe().without_type_default()
     }
 }
 
 impl<T: Describe + ?Sized> Describe for &mut T {
     fn describe() -> Desc {
-        T::describe()
+        T::describe().without_type_default()
     }
 }
 
 impl<T: Describe + ?Sized> Describe for Box<T> {
     fn describe() -> Desc {
-        T::describe()
+        T::describe().without_type_default()
     }
 }
 
 impl<T: Describe + ?Sized> Describe for Rc<T> {
     fn describe() -> Desc {
-        T::describe()
+        T::describe().without_type_default()
     }
 }
 
 impl<T: Describe + ?Sized> Describe for Arc<T> {
     fn describe() -> Desc {
-        T::describe()
+        T::describe().without_type_default()
     }
 }
 
@@ -136,7 +145,7 @@ impl<T: Describe + ?Sized> Describe for Arc<T> {
 
 impl<T: Describe> Describe for Option<T> {
     fn describe() -> Desc {
-        T::describe().nullable()
+        T::describe().without_type_default().nullable()
     }
 }
 

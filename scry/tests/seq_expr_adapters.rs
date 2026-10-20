@@ -336,14 +336,14 @@ fn descriptions_expose_both_forms_without_claiming_an_array_shape() {
     }
     let description = Sweeps::describe();
     let values = field(&description, "iterations.values");
-    assert!(!values.optional);
+    assert!(!values.is_optional());
     assert!(!values.value.nullable);
     let optional = field(&description, "optional");
-    assert!(optional.optional);
+    assert!(optional.is_optional());
     assert!(optional.value.nullable);
     let fallback = field(&description, "fallback");
-    assert!(fallback.optional);
-    assert!(fallback.default_display.is_none());
+    assert!(fallback.is_optional());
+    assert!(fallback.default_display().is_none());
     description.validate_path(r#"["iterations.values"]"#).unwrap();
     assert!(description.validate_path(r#"["iterations.values"][0]"#).is_err());
 

@@ -8,7 +8,7 @@ use clap::{Arg, ArgAction, ArgMatches, Command};
 use heck::{ToKebabCase, ToShoutySnakeCase};
 
 use super::{edits, SetupError};
-use crate::desc::{EntryRef, VariantDesc, VariantRepr};
+use crate::desc::{DefaultDesc, EntryRef, VariantDesc};
 use crate::node::Node;
 use crate::{Desc, Describe, ToNode};
 
@@ -144,9 +144,11 @@ impl ExposeMap {
             // scalar replacement can use the target's unit-enum possible-values parser.
             if entry.variant.is_none() && entry.shape == ValueShape::Scalar && !entry.append {
                 if let Some(path) = entry.target_path() {
-                    if let Some(variants) = enum_variants_for_entry(desc, path) {
-                        let possible_values: Vec<PossibleValue> =
-                            variants.iter().map(possible_value_from_variant).collect();
+                    if let Some((variants, default)) = enum_variants_for_entry(desc, path) {
+                        let possible_values: Vec<PossibleValue> = variants
+                            .iter()
+                            .map(|variant| possible_value_from_variant(variant, default))
+                            .collect();
                         arg = arg.value_parser(possible_values);
                         arg = arg.ignore_case(true);
                     }
@@ -750,15 +752,21 @@ pub enum Long {
 
 // ---------------------------------------------------------------------------------------------- //
 
-fn enum_variants_for_entry<'a>(desc: &'a Desc, path: &str) -> Option<&'a [VariantDesc]> {
+fn enum_variants_for_entry<'a>(
+    desc: &'a Desc,
+    path: &str,
+) -> Option<(&'a [VariantDesc], Option<&'a str>)> {
     match desc.entry_at_path(path)? {
-        EntryRef::Field(field) => field.value.unit_enum_variants(),
-        EntryRef::TupleElem { value, .. } => value.unit_enum_variants(),
-        EntryRef::Variant(_) => None,
+        EntryRef::Field(field) => Some((
+            field.value.unit_enum_variants()?,
+            field.fallback().and_then(DefaultDesc::variant_name),
+        )),
+        EntryRef::TupleElem { value, .. } => Some((value.unit_enum_variants()?, None)),
+        EntryRef::Variant { .. } => None,
     }
 }
 
-fn possible_value_from_variant(variant: &VariantDesc) -> PossibleValue {
+fn possible_value_from_variant(variant: &VariantDesc, default: Option<&str>) -> PossibleValue {
     let (display_name, aliases) = cli_variant_value_names(&variant.name);
     let mut possible = PossibleValue::new(display_name);
 
@@ -766,7 +774,7 @@ fn possible_value_from_variant(variant: &VariantDesc) -> PossibleValue {
         possible = possible.aliases(aliases);
     }
 
-    if let Some(help) = variant_help_text(variant) {
+    if let Some(help) = variant_help_text(variant, default) {
         possible = possible.help(help);
     }
 
@@ -783,14 +791,68 @@ fn cli_variant_value_names(name: &str) -> (String, Vec<String>) {
     }
 }
 
-fn variant_help_text(variant: &VariantDesc) -> Option<String> {
+fn variant_help_text(variant: &VariantDesc, default: Option<&str>) -> Option<String> {
     let doc = variant.doc.lines().find(|line| !line.trim().is_empty()).map(str::trim);
-    let is_default = matches!(variant.repr, VariantRepr::Unit { is_default: true });
+    let is_default = default == Some(variant.name.as_str());
 
     match (doc, is_default) {
         (Some(doc), true) => Some(format!("{doc} [default]")),
         (Some(doc), false) => Some(doc.to_string()),
         (None, true) => Some("[default]".to_string()),
         (None, false) => None,
+    }
+}
+
+// ---------------------------------------------------------------------------------------------- //
+
+#[cfg(test)]
+mod tests {
+    use crate::desc::FieldDesc;
+
+    use super::*;
+
+    #[test]
+    fn possible_values_use_field_defaults_without_evaluating_them() {
+        let default = DefaultDesc::variant("safe_mode")
+            .with_value(|| panic!("CLI construction must not evaluate default providers"));
+        let mode = Desc::enumeration(vec![
+            VariantDesc::unit("safe_mode").with_doc("Uses conservative settings."),
+            VariantDesc::unit("manual"),
+        ])
+        .with_type_default(default.clone());
+        let description = Desc::structure(vec![
+            FieldDesc::new("required", mode.clone()),
+            FieldDesc::new("recursive", mode.clone()).with_fallback(default),
+            FieldDesc::new("explicit", mode.clone()).with_fallback(DefaultDesc::variant("manual")),
+            FieldDesc::new("pair", Desc::tuple(vec![mode])),
+        ]);
+        let mut exposed = ExposeMap::new();
+        exposed.option("required");
+        exposed.option("recursive");
+        exposed.option("explicit");
+        exposed.option("pair[0]").long("element");
+        let command = exposed.augment(Command::new("app"), &description);
+        let default_choices = |name: &str| {
+            command
+                .get_arguments()
+                .find(|argument| argument.get_id() == name)
+                .unwrap()
+                .get_value_parser()
+                .possible_values()
+                .unwrap()
+                .filter(|value| {
+                    value.get_help().is_some_and(|help| help.to_string().contains("[default]"))
+                })
+                .map(|value| value.get_name().to_owned())
+                .collect::<Vec<_>>()
+        };
+
+        assert!(default_choices("required").is_empty());
+        assert_eq!(default_choices("recursive"), ["safe-mode"]);
+        assert_eq!(default_choices("explicit"), ["manual"]);
+        assert!(default_choices("element").is_empty());
+        for spelling in ["safe-mode", "safe_mode", "SAFE_MODE"] {
+            assert!(command.clone().try_get_matches_from(["app", "--required", spelling]).is_ok());
+        }
     }
 }

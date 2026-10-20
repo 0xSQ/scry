@@ -46,20 +46,22 @@ impl Document {
     /// Present struct fields follow declaration order. Undescribed fields retain their supplied
     /// order. Missing fields and display descriptions of defaults never supply values.
     pub fn from_config<T: ToNode + Describe + ?Sized>(value: &T) -> Result<Self, NodeError> {
-        let mut node = value.to_node()?;
+        Ok(Self::from_description(value.to_node()?, &T::describe()))
+    }
+
+    pub(super) fn from_description(mut node: Node, description: &Desc) -> Self {
         let path = node.path.clone();
         anchor(&mut node, &path);
-        let description = T::describe();
         let header = (!description.doc.is_empty()).then(|| normalize_comment(&description.doc));
-        let mut annotations = decorate(&mut node, &description);
+        let mut annotations = decorate(&mut node, description);
         // The root description belongs to the header rather than the root value's leading text.
         annotations.comment = None;
-        Ok(Self {
+        Self {
             node,
             annotations,
             header,
             footer: None,
-        })
+        }
     }
 
     /// Constructs an ordered map through a closure.

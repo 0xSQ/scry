@@ -4,6 +4,7 @@ use std::fmt::Write as _;
 use std::io::{BufWriter, Stdout, Write};
 
 use crate::key_path::is_identifier;
+use crate::node::Format;
 use crate::node::{Kind, Node, NodeError, Value};
 use crate::{KeyPath, ToNode};
 
@@ -150,6 +151,18 @@ pub type RhaiWriterConfig = LiteralWriterConfig;
 pub type Json5WriterConfig = LiteralWriterConfig;
 
 // ---------------------------------------------------------------------------------------------- //
+
+pub(super) fn template_key(key: &str, format: Format) -> Result<String, NodeError> {
+    let syntax = match format {
+        Format::Rhai => Syntax::Rhai,
+        #[cfg(feature = "format-json5")]
+        Format::Json5 => Syntax::Json5,
+        _ => return Err(NodeError::new("Templates support Rhai and enabled JSON5 output.")),
+    };
+    let mut output = Vec::new();
+    Renderer::new(&mut output, &LiteralWriterConfig::default(), syntax).key(key)?;
+    Ok(String::from_utf8(output).expect("literal keys are valid UTF-8"))
+}
 
 struct Renderer<'a, W> {
     output: &'a mut W,

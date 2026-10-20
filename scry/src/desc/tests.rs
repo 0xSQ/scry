@@ -20,7 +20,7 @@ fn nullable_metadata_preserves_shapes_without_changing_help_labels_or_omission()
         assert!(desc.nullable);
         assert_eq!(desc.type_label(), expected);
         assert!(desc.is_leaf());
-        assert!(!FieldDesc::new("value", desc).optional);
+        assert!(!FieldDesc::new("value", desc).is_optional());
     }
     assert!(!Desc::default().nullable);
 }
@@ -32,7 +32,8 @@ fn help_rendering_keeps_useful_hints_children_and_defaults() {
             "comfy",
             Desc::structure(vec![
                 FieldDesc::new("url", Desc::plain("string").nullable()).optional(),
-                FieldDesc::new("keep", Desc::plain("bool")).with_default("false"),
+                FieldDesc::new("keep", Desc::plain("bool"))
+                    .with_fallback(DefaultDesc::text("false")),
             ])
             .nullable(),
         )
@@ -40,11 +41,10 @@ fn help_rendering_keeps_useful_hints_children_and_defaults() {
         FieldDesc::new(
             "resume",
             Desc::enumeration(vec![
-                VariantDesc::unit("latest", false),
-                VariantDesc::payload("directory", false, Desc::plain("path").nullable()),
+                VariantDesc::unit("latest"),
+                VariantDesc::payload("directory", Desc::plain("path").nullable()),
                 VariantDesc::payload(
                     "custom",
-                    false,
                     Desc::structure(vec![FieldDesc::new("count", Desc::plain("u32"))]).nullable(),
                 ),
             ])
@@ -116,30 +116,48 @@ fn test_simple_struct_rendering() {
 }
 
 #[test]
-fn without_default_variant_only_changes_a_direct_enum() {
-    let direct = Desc::enumeration(vec![
-        VariantDesc::unit("summary", true),
-        VariantDesc::unit("full", false),
-    ])
-    .without_default_variant();
-    assert!(direct.unit_enum_variants().unwrap().iter().all(|variant| !variant.is_default()));
+fn field_defaults_do_not_replace_the_values_intrinsic_default() {
+    let mode = Desc::enumeration(vec![VariantDesc::unit("summary"), VariantDesc::unit("full")])
+        .with_type_default(DefaultDesc::variant("summary"));
+    assert_eq!(mode.display(), "» summary\n› full\n");
 
-    let nested = Desc::list(Desc::enumeration(vec![
-        VariantDesc::unit("summary", true),
-        VariantDesc::unit("full", false),
-    ]))
-    .without_default_variant();
-    let DescKind::List { item } = nested.kind else {
-        panic!("expected a list description");
-    };
-    assert!(item.unit_enum_variants().unwrap()[0].is_default());
+    let desc = Desc::structure(vec![
+        FieldDesc::new("required", mode.clone()),
+        FieldDesc::new("fallback", mode).with_fallback(DefaultDesc::variant("full")),
+    ]);
+    assert_eq!(
+        desc.display(),
+        indoc! {"
+            ◆ required
+            ┊  › summary
+            ┊  › full
+            ◇ fallback
+               › summary
+               » full
+        "}
+    );
+    for name in ["required", "fallback"] {
+        let Some(EntryRef::Field(field)) = desc.entry_at_path(name) else {
+            panic!("expected field");
+        };
+        assert_eq!(field.value.type_default.as_ref().unwrap().variant_name(), Some("summary"));
+    }
+    assert_eq!(desc.entry_at_path("required.summary").unwrap().display(), "› summary\n");
+    assert_eq!(desc.entry_at_path("fallback.full").unwrap().display(), "» full\n");
+
+    let required_error = desc.validate_path("required.missing").unwrap_err().to_string();
+    assert!(required_error.contains("› summary"));
+    assert!(!required_error.contains('»'));
+    let fallback_error = desc.validate_path("fallback.missing").unwrap_err().to_string();
+    assert!(fallback_error.contains("» full"));
+    assert!(!fallback_error.contains("» summary"));
 }
 
 #[test]
 fn test_nested_struct_rendering() {
     let inner = Desc::structure(vec![
         FieldDesc::new("host", Desc::plain("string")),
-        FieldDesc::new("port", Desc::plain("u16")).with_default("8080"),
+        FieldDesc::new("port", Desc::plain("u16")).with_fallback(DefaultDesc::text("8080")),
     ]);
 
     let desc = Desc::structure(vec![
@@ -157,14 +175,14 @@ fn test_nested_struct_rendering() {
 #[test]
 fn test_enum_rendering() {
     let desc = Desc::enumeration(vec![
-        VariantDesc::unit("auto", true).with_doc("Automatic mode"),
-        VariantDesc::unit("manual", false),
+        VariantDesc::unit("auto").with_doc("Automatic mode"),
+        VariantDesc::unit("manual"),
         VariantDesc::payload(
             "custom",
-            false,
             Desc::structure(vec![FieldDesc::new("value", Desc::plain("u32"))]),
         ),
-    ]);
+    ])
+    .with_type_default(DefaultDesc::variant("auto"));
 
     let output = desc.display();
     assert!(output.contains("» auto"));
@@ -228,17 +246,17 @@ fn test_entry_at_path_struct() {
 #[test]
 fn test_entry_at_path_enum() {
     let desc = Desc::enumeration(vec![
-        VariantDesc::unit("auto", true),
+        VariantDesc::unit("auto"),
         VariantDesc::payload(
             "custom",
-            false,
             Desc::structure(vec![FieldDesc::new("value", Desc::plain("u32"))]),
         ),
-    ]);
+    ])
+    .with_type_default(DefaultDesc::variant("auto"));
 
     // Unit variant
     let entry = desc.entry_at_path("auto").unwrap();
-    assert!(matches!(entry, EntryRef::Variant(v) if v.name == "auto"));
+    assert!(matches!(entry, EntryRef::Variant { variant, .. } if variant.name == "auto"));
 
     // Payload variant's field
     let entry = desc.entry_at_path("custom.value").unwrap();
@@ -304,7 +322,7 @@ fn test_validate_path_nested_failure() {
 
 #[test]
 fn test_validate_path_unit_variant_blocks_deeper() {
-    let desc = Desc::enumeration(vec![VariantDesc::unit("auto", true)]);
+    let desc = Desc::enumeration(vec![VariantDesc::unit("auto")]);
 
     // Selecting unit variant is fine
     assert!(desc.validate_path("auto").is_ok());
@@ -400,20 +418,20 @@ fn depth_marks_tuple_elements_and_enum_payloads_at_their_displayed_levels() {
         FieldDesc::new(
             "mode",
             Desc::enumeration(vec![
-                VariantDesc::unit("auto", true),
-                VariantDesc::payload("file", false, Desc::plain("path")),
+                VariantDesc::unit("auto"),
+                VariantDesc::payload("file", Desc::plain("path")),
                 VariantDesc::payload(
                     "custom",
-                    false,
                     Desc::structure(vec![FieldDesc::new("count", Desc::plain("u32"))]),
                 ),
-                VariantDesc::payload("empty", false, Desc::structure(vec![])),
+                VariantDesc::payload("empty", Desc::structure(vec![])),
             ]),
-        ),
+        )
+        .with_fallback(DefaultDesc::variant("auto")),
     ]);
     assert_eq!(
         desc.display_with(&DisplayConfig::default().with_max_depth(1)),
-        "◆ pair: tuple …\n◆ mode …\n"
+        "◆ pair: tuple …\n◇ mode …\n"
     );
     assert_eq!(
         desc.display_with(&DisplayConfig::default().with_max_depth(2)),
@@ -422,7 +440,7 @@ fn depth_marks_tuple_elements_and_enum_payloads_at_their_displayed_levels() {
             ┊  ◆ 0: u32
             ┊  ◆ 1 …
             ┊  ◆ 2
-            ◆ mode
+            ◇ mode
                » auto
                › file: path
                › custom …

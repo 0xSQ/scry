@@ -126,7 +126,7 @@ fn a_generic_parameter_named_option_remains_a_required_field() {
     let DescKind::Struct { fields } = RequiredOption::<u16>::describe().kind else {
         panic!("expected fields");
     };
-    assert!(!fields[0].optional);
+    assert!(!fields[0].is_optional());
     assert!(!fields[0].value.nullable);
 }
 

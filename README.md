@@ -138,12 +138,6 @@ fn main() -> Result<(), SetupError> {
 }
 ```
 
-`Setup::standard` accepts a config file through `-C, --config-file` and uses `Node::parse_file` to load it. `Setup::new` starts with an empty map instead. Both constructors include configuration support through `--scry, -S`. The builder can customize the input source, loader, exposed arguments, and support switch.
-
-Applications can also opt into default config discovery. The
-[config file guide](docs/config-files.md) shows how to keep shared defaults in one directory,
-select local exceptions, and customize shared Rhai settings explicitly.
-
 The `into_bundle` method combines your setup with a target *payload* function and returns a `Bundle` - an object that pairs the generated clap command with its dispatch logic. Calling `run()` parses arguments and dispatches to the target function. Running it shows:
 
 ```
@@ -153,6 +147,8 @@ Environment: dev
 Retries: 3
 Sending notifications to: https://hooks.slack.com/myhook
 ```
+
+Applications can also opt into automatically loading configuration files from default locations. See the [config file guide](docs/config-files.md) for details.
 
 ### Configuration support
 
@@ -179,16 +175,17 @@ Inspects and adjusts this command's configuration.
 Usage: deploy --scry [OPTIONS] [COMMAND]
 
 Commands:
-  desc   Describes the configuration type without loading or executing.
-  get    Displays the raw edited configuration without decoding or executing.
-  check  Decodes the edited configuration without running the command payload.
+  desc      Describes the configuration type without loading or executing.
+  get       Displays the raw edited configuration without decoding or executing.
+  check     Decodes the edited configuration without running the command payload.
+  template  Generates a documented configuration scaffold without loading or executing.
 
 Edits:
       --set <KEY> <VALUE>  Sets a config value to a literal string before execution, get, or check (repeatable).
       --remove <KEY>       Removes a config value before execution, get, or check (repeatable).
 ```
 
-Use `-S desc --help`, `-S get --help`, or `-S check --help` for command-specific help. Support help and descriptions do not resolve or load the input source. `Support` lets an application customize the support switch's long name and short alias through `Setup::support`. Support commands and input edit options have fixed names.
+Use `-S COMMAND --help` for command-specific help.
 
 #### `desc`
 
@@ -243,7 +240,7 @@ environment "dev"
 notify.slack_url "https://hooks.slack.com/myhook"
 ```
 
-`get --as FORMAT` also supports writer formats such as `json` or `rhai`. TOML and YAML writers are optionally available via the `format-toml` and `format-yaml` features. The format choices are `tree`, `flat`, and formats from the default writer registry.
+`get --as FORMAT` also supports writer formats such as `json` or `rhai`. TOML and YAML writers are optionally available via the `format-toml` and `format-yaml` features.
 
 ```
 $ deploy -C deploy.json -S get --as json
@@ -270,6 +267,28 @@ $ deploy -C deploy.json -S get notify.slack_url
 
 `-S check` checks whether the edited configuration decodes successfully, without running the command payload.
 
+#### `template`
+
+`-S template` gives users a starting point for writing their config file, with comments drawn from
+the same type documentation as `desc`.
+
+For example, `deploy -S template --as json5 --mode ref` produces this excerpt for `Deploy`:
+
+```json5
+{
+    // Target server hostname. Required.
+    // "target": <string>,
+
+    // Deployment environment (e.g. "dev", "staging", "prod"). Required.
+    // "environment": <string>,
+
+    // Number of retry attempts on failure. Optional.
+    // "retries": 3, // type: u32
+}
+```
+
+Fill in and uncomment the required placeholders to make it usable. See [Writing Config Files](docs/writing-configs.md) for the full workflow.
+
 #### Editing Input
 
 `--set` edits a config value before execution. Values are literal strings, so `true`, `5`, and `null` are not parsed as config expressions. Typed conversion interprets those strings according to the target field:
@@ -290,7 +309,7 @@ $ deploy -C deploy.json -S --set retries 5 get retries
 "5"
 ```
 
-`--remove KEY` removes a value from the input. Typed conversion can then apply that field's missing-value fallback. Edits affect this invocation and never write the config file. `desc` cannot be combined with edits because descriptions do not load configuration.
+`--remove KEY` removes a value from the input.
 
 Typos produce helpful errors that reference the input description:
 

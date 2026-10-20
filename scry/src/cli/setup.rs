@@ -22,7 +22,7 @@ use super::bundle::Bundle;
 use crate::desc::{Desc, DescKind, DescPathError, DisplayConfig, VariantRepr};
 use crate::key_path::Segment;
 use crate::node::{Format, Kind, Node};
-use crate::writer::TreeConfig;
+use crate::writer::{format_template, TemplateMode, TreeConfig};
 use crate::{Describe, FromNode, KeyPath};
 
 pub use config_source::{
@@ -46,7 +46,7 @@ pub use support::Support;
 /// initial [`Node`], and exposed arguments edit it. [`Support`] configures the support switch
 /// for commands and edit options with fixed names.
 ///
-/// Each invocation first selects its action. Help and descriptions finish without loading
+/// Each invocation first selects its action. Help, descriptions, and templates finish without loading
 /// input. Other actions load the input and apply command-line edits, then either inspect the
 /// raw Node or decode it for checking or the payload function.
 ///
@@ -83,7 +83,7 @@ impl Setup {
     /// Creates a command that loads input through `-C` / `--config-file`.
     ///
     /// The source uses [`Node::parse_file`] and reports an error when an input action has no path.
-    /// Help and description actions do not need a config file.
+    /// Help, description, and template actions do not need a config file.
     pub fn standard(name: impl Into<String>) -> Self {
         Self::new(name)
             .config_source(|source| source.option("config-file", Some('C'), "Path to config file."))
@@ -116,7 +116,7 @@ impl Setup {
     /// Configures the support switch.
     ///
     /// The default flags are `--scry` and `-S`. Application arguments come before the flag.
-    /// The suffix accepts `--set`, `--remove`, `desc`, `get`, and `check`. Edits come before
+    /// The suffix accepts `--set`, `--remove`, `desc`, `get`, `check`, and `template`. Edits come before
     /// `get` or `check`, and an edit-only suffix runs the payload with the edited input.
     ///
     /// [`Support`] configures the long flag name and optional short alias. The operation names
@@ -252,6 +252,10 @@ impl Setup {
                 );
                 return Ok(None);
             }
+            Action::Template(request) => {
+                print!("{}", format_template::<T>(request.format.clone(), request.mode)?);
+                return Ok(None);
+            }
             Action::Execute | Action::Get(_) | Action::Check => {}
         }
 
@@ -321,6 +325,7 @@ enum Action {
     Describe(DescRequest),
     Get(GetRequest),
     Check,
+    Template(TemplateRequest),
     Help(clap::Error),
 }
 
@@ -341,6 +346,14 @@ struct GetRequest {
     path: String,
     /// The output format.
     format: GetFormat,
+}
+
+/// A fresh configuration template request.
+struct TemplateRequest {
+    /// The output language.
+    format: Format,
+    /// The field coverage and default presentation.
+    mode: TemplateMode,
 }
 
 /// Selects the output view for input inspection.
@@ -449,7 +462,7 @@ fn query_payload_description<'a>(desc: &'a Desc, key: &str) -> Option<&'a Desc> 
     };
     match &variants.iter().find(|variant| variant.name == key)?.repr {
         VariantRepr::Payload { payload, .. } => Some(payload),
-        VariantRepr::Unit { .. } => None,
+        VariantRepr::Unit => None,
     }
 }
 
