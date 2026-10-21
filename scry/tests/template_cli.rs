@@ -108,7 +108,7 @@ fn configured_support_names_also_offer_templates() {
 fn unloaded_setup() -> Setup {
     Setup::new("demo").config_source(|_| {
         ConfigSource::new()
-            .option("config-file", Some('C'), "Loads input.")
+            .option("config", Some('C'), "Loads input.")
             .discover(|_| -> Result<Option<PathBuf>, Infallible> {
                 panic!("template requests must not resolve a source");
             })

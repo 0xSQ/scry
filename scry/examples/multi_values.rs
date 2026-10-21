@@ -29,7 +29,7 @@ fn main() -> Result<(), SetupError> {
     Setup::standard("multi-values")
         .about("Collects arrays and appends values before querying or parsing config.")
         .config_source(|_| {
-            ConfigSource::new().option("config-file", Some('C'), "Config file.").or_empty()
+            ConfigSource::new().option("config", Some('C'), "Config file.").or_empty()
         })
         .expose(|e| {
             e.option("crop").array(4).value_names(["LEFT", "TOP", "RIGHT", "BOTTOM"]);

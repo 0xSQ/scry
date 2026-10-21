@@ -18,13 +18,9 @@ use rhai::{Dynamic, Engine, EvalAltResult, Module, ModuleResolver, ParseError, P
 /// # Example
 ///
 /// ```ignore
-/// use scry::rhai::RhaiEnv;
 /// use rhai::Engine;
 ///
-/// let mut env = RhaiEnv::new();
-/// if let Some(config) = RhaiEnv::load_app_config("myapp", "env")? {
-///     env.add_constant("env", config);
-/// }
+/// let env = scry::cli::setup::load_app_rhai_env("myapp")?;
 ///
 /// let mut engine = Engine::new();
 /// engine.set_module_resolver(env.module_resolver());
@@ -42,13 +38,15 @@ impl RhaiEnv {
         Self::default()
     }
 
-    /// Loads app config from `~/.config/{app_dir}/{filename}.rhai`.
+    /// Loads a named local Rhai file from `~/.config/{app_dir}/{filename}.rhai`.
     ///
     /// Returns `Ok(None)` if the config file doesn't exist.
     /// Returns an error if the file exists but fails to parse.
     ///
     /// The config file is evaluated with a fresh engine (no constants injected)
     /// to avoid circular dependencies.
+    /// This low-level helper does not resolve `root.*`. Application environments use
+    /// [`crate::cli::setup::load_app_rhai_env`] or [`crate::cli::setup::ApplicationConfig`].
     pub fn load_app_config(app_dir: &str, filename: &str) -> Result<Option<Dynamic>, RhaiError> {
         let home = dirs::home_dir().ok_or(RhaiError::NoHomeDir)?;
         let path = home.join(".config").join(app_dir).join(format!("{}.rhai", filename));
@@ -57,27 +55,9 @@ impl RhaiEnv {
             return Ok(None);
         }
 
-        // Use a minimal engine without constants to avoid recursion
+        // Uses a minimal engine without constants to avoid recursion.
         let engine = Engine::new();
-        let content = std::fs::read_to_string(&path).map_err(|e| RhaiError::ReadFile {
-            path: path.clone(),
-            source: e,
-        })?;
-        let mut ast = engine.compile(&content).map_err(|e| RhaiError::Compile {
-            path: path.clone(),
-            source: Box::new(ScriptError::from_parse(&path, &content, &e)),
-        })?;
-        ast.set_source(path.to_string_lossy().into_owned());
-
-        let mut scope = Scope::new();
-        let dynamic = engine.eval_ast_with_scope::<Dynamic>(&mut scope, &ast).map_err(|e| {
-            RhaiError::EvalScript {
-                path: path.clone(),
-                source: Box::new(ScriptError::from_eval(&path, &e)),
-            }
-        })?;
-
-        Ok(Some(dynamic))
+        Self::new().eval(&engine, &path).map(Some)
     }
 
     /// Adds a constant to inject into all scripts and imported modules.
@@ -88,9 +68,7 @@ impl RhaiEnv {
 
     /// Creates a module resolver with relative imports and constant injection.
     pub fn module_resolver(&self) -> RelativeModuleResolver {
-        RelativeModuleResolver {
-            constants: self.constants.clone(),
-        }
+        RelativeModuleResolver { env: self.clone() }
     }
 
     /// Creates a scope with all constants pre-injected.
@@ -102,7 +80,7 @@ impl RhaiEnv {
         scope
     }
 
-    /// Evaluates a Rhai script file and returns the final expression.
+    /// Evaluates a Rhai script file and returns its result.
     pub fn eval(&self, engine: &Engine, path: &Path) -> Result<Dynamic, RhaiError> {
         self.eval_with_scope(engine, path).map(|(value, _)| value)
     }
@@ -121,30 +99,20 @@ impl RhaiEnv {
         })
     }
 
-    /// Evaluates once and prefers a named binding over the final expression.
-    pub(crate) fn eval_var_or_value(
-        &self,
-        engine: &Engine,
-        path: &Path,
-        var_name: &str,
-    ) -> Result<Dynamic, RhaiError> {
-        let (value, scope) = self.eval_with_scope(engine, path)?;
-        Ok(scope.get_value::<Dynamic>(var_name).unwrap_or(value))
-    }
-
     fn eval_with_scope(
         &self,
         engine: &Engine,
         path: &Path,
     ) -> Result<(Dynamic, Scope<'static>), RhaiError> {
-        let content = std::fs::read_to_string(path).map_err(|e| RhaiError::ReadFile {
+        let path = canonical_script_path(path)?;
+        let content = std::fs::read_to_string(&path).map_err(|e| RhaiError::ReadFile {
             path: path.to_path_buf(),
             source: e,
         })?;
 
         let mut ast = engine.compile(&content).map_err(|e| RhaiError::Compile {
             path: path.to_path_buf(),
-            source: Box::new(ScriptError::from_parse(path, &content, &e)),
+            source: Box::new(ScriptError::from_parse(&path, &content, &e)),
         })?;
         ast.set_source(path.to_string_lossy().into_owned());
 
@@ -152,7 +120,7 @@ impl RhaiEnv {
         let value = engine.eval_ast_with_scope::<Dynamic>(&mut scope, &ast).map_err(|e| {
             RhaiError::EvalScript {
                 path: path.to_path_buf(),
-                source: Box::new(ScriptError::from_eval(path, &e)),
+                source: Box::new(ScriptError::from_eval(&path, &e)),
             }
         })?;
 
@@ -162,10 +130,10 @@ impl RhaiEnv {
 
 // ---------------------------------------------------------------------------------------------- //
 
-/// Module resolver that resolves imports relative to the importing file.
+/// Resolves imports relative to each importing file's canonical target.
 #[derive(Clone)]
 pub struct RelativeModuleResolver {
-    constants: IndexMap<String, Dynamic>,
+    env: RhaiEnv,
 }
 
 impl ModuleResolver for RelativeModuleResolver {
@@ -176,13 +144,20 @@ impl ModuleResolver for RelativeModuleResolver {
         path: &str,
         pos: Position,
     ) -> Result<Rc<Module>, Box<EvalAltResult>> {
-        // Determine base directory from the importing file's location
+        // Determines the base directory from the importing file's canonical location.
         let base_dir = source_path
             .map(|s| Path::new(s).parent().unwrap_or(Path::new(".")))
             .unwrap_or(Path::new("."));
 
-        // Join with the import path (if path is absolute, it replaces base_dir)
-        let target_path = base_dir.join(path);
+        // An absolute import path replaces the importing file's directory.
+        let requested_path = base_dir.join(path);
+        let target_path = canonical_script_path(&requested_path).map_err(|error| {
+            Box::new(EvalAltResult::ErrorInModule(
+                requested_path.display().to_string(),
+                Box::new(EvalAltResult::ErrorSystem(error.to_string(), Box::new(error))),
+                pos,
+            ))
+        })?;
 
         // Report the resolved path in errors so readers (and snippet rendering) can locate the
         // module file without re-deriving the import resolution.
@@ -193,14 +168,8 @@ impl ModuleResolver for RelativeModuleResolver {
             .compile_file(target_path.clone())
             .map_err(|e| Box::new(EvalAltResult::ErrorInModule(module_name.clone(), e, pos)))?;
 
-        // Create scope with constants injected
-        let mut scope = Scope::new();
-        for (name, value) in &self.constants {
-            scope.push_constant(name.clone(), value.clone());
-        }
-
         // Evaluate as a new module
-        Module::eval_ast_as_new(scope, &ast, engine)
+        Module::eval_ast_as_new(self.env.scope(), &ast, engine)
             .map(Rc::new)
             .map_err(|e| Box::new(EvalAltResult::ErrorInModule(module_name, e, pos)))
     }
@@ -238,6 +207,14 @@ pub fn eval_script_var(path: impl AsRef<Path>, var: &str) -> Result<Dynamic, Rha
 /// Errors that occur during Rhai script evaluation.
 #[derive(thiserror::Error, Debug)]
 pub enum RhaiError {
+    /// Failed to resolve the script's physical filesystem target.
+    #[error("failed to resolve Rhai script: {}", path.display())]
+    ResolveFile {
+        path: PathBuf,
+        #[source]
+        source: crate::util::PathError,
+    },
+
     /// Failed to read the script file.
     #[error("failed to read Rhai script: {}", path.display())]
     ReadFile {
@@ -425,6 +402,16 @@ fn innermost_location(script_path: &Path, err: &EvalAltResult) -> (PathBuf, Posi
     (script_path.to_path_buf(), err.position())
 }
 
+/// Resolves a script's physical target while retaining the requested path on failure.
+fn canonical_script_path(path: &Path) -> Result<PathBuf, RhaiError> {
+    use crate::util::PathExt;
+
+    path.canonicalize_path().map_err(|source| RhaiError::ResolveFile {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
 // ---------------------------------------------------------------------------------------------- //
 
 #[cfg(test)]
@@ -432,7 +419,80 @@ mod tests {
     use super::*;
 
     #[test]
-    fn binding_or_value_selection_evaluates_the_script_once() {
+    fn script_and_module_diagnostics_use_canonical_paths() {
+        use crate::util::PathExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir(directory.path().join("modules")).unwrap();
+        let main = directory.path().join("main.rhai");
+        let helper = directory.path().join("helper.rhai");
+        let requested = directory.path().join("modules/../main.rhai");
+        std::fs::write(&main, "import \"modules/../helper.rhai\" as helper; helper::value")
+            .unwrap();
+        std::fs::write(&helper, "export let value = missing_function();").unwrap();
+        let RhaiError::EvalScript { source, .. } = eval_script(&requested).unwrap_err() else {
+            panic!("expected an imported module evaluation failure");
+        };
+        assert_eq!(source.location.unwrap().path, Some(helper.canonicalize_path().unwrap()));
+
+        std::fs::write(&main, "#{ broken:").unwrap();
+        let RhaiError::Compile { source, .. } = eval_script(&requested).unwrap_err() else {
+            panic!("expected a main script compile failure");
+        };
+        assert_eq!(source.location.unwrap().path, Some(main.canonicalize_path().unwrap()));
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn file_links_and_imported_links_use_their_physical_siblings() {
+        let directory = tempfile::tempdir().unwrap();
+        let shared = directory.path().join("shared");
+        let external = directory.path().join("external");
+        let local = directory.path().join("local");
+        std::fs::create_dir_all(shared.join("modules")).unwrap();
+        std::fs::create_dir_all(&external).unwrap();
+        std::fs::create_dir_all(&local).unwrap();
+        let main = shared.join("main.rhai");
+        let helper = external.join("helper.rhai");
+        std::fs::write(&main, "import \"modules/linked.rhai\" as helper; helper::value").unwrap();
+        std::fs::write(
+            &helper,
+            "import \"constants.rhai\" as constants; export let value = constants::value;",
+        )
+        .unwrap();
+        std::fs::write(external.join("constants.rhai"), "export let value = 42;").unwrap();
+        let requested = local.join("config.rhai");
+        if !create_file_link(&main, &requested)
+            || !create_file_link(&helper, &shared.join("modules/linked.rhai"))
+        {
+            return;
+        }
+
+        let result = eval_script(&requested).unwrap();
+        assert_eq!(result.cast::<i64>(), 42);
+    }
+
+    #[cfg(any(unix, windows))]
+    fn create_file_link(target: &Path, link: &Path) -> bool {
+        #[cfg(unix)]
+        let result = std::os::unix::fs::symlink(target, link);
+        #[cfg(windows)]
+        let result = std::os::windows::fs::symlink_file(target, link);
+        match result {
+            Ok(()) => true,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::Unsupported
+                    || (cfg!(windows) && error.raw_os_error() == Some(1314)) =>
+            {
+                eprintln!("skipping file-link import coverage: {error}");
+                false
+            }
+            Err(error) => panic!("create temporary file link: {error}"),
+        }
+    }
+
+    #[test]
+    fn final_expression_evaluation_runs_the_script_once() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("env.rhai");
         let evaluations = Rc::new(std::cell::Cell::new(0_i64));
@@ -444,15 +504,12 @@ mod tests {
         });
 
         for script in [
-            "let env = #{ value: next_value() }; #{ other: 0 }",
+            "let values = #{ value: next_value() }; values",
             "#{ value: next_value() }",
         ] {
             std::fs::write(&path, script).unwrap();
             evaluations.set(0);
-            let value = RhaiEnv::new()
-                .eval_var_or_value(&engine, &path, "env")
-                .unwrap()
-                .cast::<rhai::Map>();
+            let value = RhaiEnv::new().eval(&engine, &path).unwrap().cast::<rhai::Map>();
             assert_eq!(value["value"].clone().cast::<i64>(), 1);
             assert_eq!(evaluations.get(), 1);
         }

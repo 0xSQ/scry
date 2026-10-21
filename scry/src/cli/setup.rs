@@ -5,11 +5,12 @@
 //!
 //! Use [`Setup::into_bundle`] or [`Setup::into_bundle_with_matches`] to create bundles.
 
+mod command_config;
+mod config_file;
 mod config_source;
 mod edits;
 mod error;
 mod expose_map;
-mod redirect;
 mod rhai_env;
 mod support;
 
@@ -18,13 +19,17 @@ use std::collections::HashSet;
 use clap::{Arg, ArgMatches, Command};
 use indexmap::IndexMap;
 
-use super::bundle::Bundle;
+use super::Bundle;
 use crate::desc::{Desc, DescKind, DescPathError, DisplayConfig, VariantRepr};
 use crate::key_path::Segment;
 use crate::node::{Format, Kind, Node};
 use crate::writer::{format_template, TemplateMode, TreeConfig};
 use crate::{Describe, FromNode, KeyPath};
 
+pub use command_config::{
+    ApplicationConfig, CommandConfigError, CommandConfigSource, LoadedCommandConfig,
+};
+pub use config_file::{ConfigFile, ConfigFileError};
 pub use config_source::{
     find_config, find_config_default, find_config_with_registry, home_config_dir,
     load_rhai_var_node, ConfigPathPolicy, ConfigSource, DiscoverFn, FindConfigError,
@@ -34,7 +39,6 @@ pub use error::SetupError;
 pub use expose_map::{
     Arity, ExposeEntry, ExposeKind, ExposeMap, FixedAssignment, Long, ValueShape,
 };
-pub use redirect::{require_command_config, resolve_command_config, RedirectError, RedirectSpec};
 pub use rhai_env::load_app_rhai_env;
 pub use support::Support;
 
@@ -50,8 +54,8 @@ pub use support::Support;
 /// input. Other actions load the input and apply command-line edits, then either inspect the
 /// raw Node or decode it for checking or the payload function.
 ///
-/// [`Setup::new`] starts with an empty Node. [`Setup::standard`] accepts a config file through
-/// `-C` / `--config-file`. Both include configuration support. Builder methods customize either
+/// [`Setup::new`] starts with an empty Node. [`Setup::standard`] accepts a config file or subtree
+/// through `-C` / `--config`. Both include configuration support. Builder methods customize either
 /// starting point before [`into_bundle`](Self::into_bundle) creates a command.
 ///
 /// Running the resulting bundle returns `Result<Option<R>, SetupError>`. `Some(R)` holds the
@@ -80,13 +84,15 @@ impl Setup {
         }
     }
 
-    /// Creates a command that loads input through `-C` / `--config-file`.
+    /// Creates a command that loads input through `-C` / `--config`.
     ///
     /// The source uses [`Node::parse_file`] and reports an error when an input action has no path.
+    /// An explicit `FILE::KEYPATH` selects a subtree of the returned value or document.
     /// Help, description, and template actions do not need a config file.
     pub fn standard(name: impl Into<String>) -> Self {
-        Self::new(name)
-            .config_source(|source| source.option("config-file", Some('C'), "Path to config file."))
+        Self::new(name).config_source(|source| {
+            source.option("config", Some('C'), "Loads a config file or a selected part of it.")
+        })
     }
 
     /// Sets the command description shown in --help.
@@ -188,10 +194,25 @@ impl Setup {
         T: FromNode + Describe + 'static,
         R: 'static,
     {
+        self.into_bundle_with_source(move |input, matches, _| func(input, matches))
+    }
+
+    /// Creates a bundle whose payload also receives the selected configuration's source metadata.
+    ///
+    /// Selection metadata is retained after the input subtree is anchored at the root and edited
+    /// by CLI arguments. Empty input has no source.
+    pub fn into_bundle_with_source<T, R>(
+        self,
+        func: impl FnOnce(T, &ArgMatches, Option<&CommandConfigSource>) -> R + 'static,
+    ) -> Bundle<Option<R>, SetupError>
+    where
+        T: FromNode + Describe + 'static,
+        R: 'static,
+    {
         let cmd = self.build_command(&T::describe());
-        Bundle::single_with_command(cmd, move |matches, command| {
-            match self.prepare_input::<T>(matches, command)? {
-                Some(input) => Ok(Some(func(input, matches))),
+        Bundle::single_with_commands(cmd, move |matches, commands| {
+            match self.prepare_input::<T>(matches, commands)? {
+                Some((input, source)) => Ok(Some(func(input, matches, source.as_ref()))),
                 None => Ok(None),
             }
         })
@@ -237,8 +258,9 @@ impl Setup {
     fn prepare_input<T: FromNode + Describe>(
         &self,
         matches: &ArgMatches,
-        command: &Command,
-    ) -> Result<Option<T>, SetupError> {
+        commands: &[&Command],
+    ) -> Result<Option<(T, Option<CommandConfigSource>)>, SetupError> {
+        let command = commands.last().expect("dispatch includes the selected command");
         let invocation = self.support.parse(matches, command)?;
         match &invocation.action {
             Action::Help(output) => {
@@ -259,7 +281,7 @@ impl Setup {
             Action::Execute | Action::Get(_) | Action::Check => {}
         }
 
-        let mut node = self.load_node(matches)?;
+        let (mut node, source) = self.load_node(matches, commands)?;
         self.expose_map.apply::<T>(&mut node, matches)?;
         edits::apply::<T>(&mut node, invocation.edits)?;
         if let Action::Get(request) = invocation.action {
@@ -274,23 +296,19 @@ impl Setup {
             println!("Configuration decoded successfully.");
             Ok(None)
         } else {
-            Ok(Some(input))
+            Ok(Some((input, source)))
         }
     }
 
-    fn load_node(&self, matches: &ArgMatches) -> Result<Node, SetupError> {
+    fn load_node(
+        &self,
+        matches: &ArgMatches,
+        commands: &[&Command],
+    ) -> Result<(Node, Option<CommandConfigSource>), SetupError> {
         let Some(source) = &self.config_source else {
-            return Ok(Node::empty_map());
+            return Ok((Node::empty_map(), None));
         };
-        match source.resolve_input(&self.command_name, matches)? {
-            ResolvedConfigInput::Path(path) => {
-                (source.loader)(&path).map_err(|error| SetupError::LoadConfigFile {
-                    path,
-                    source: error,
-                })
-            }
-            ResolvedConfigInput::Empty => Ok(Node::empty_map()),
-        }
+        source.load_input(&self.command_name, matches, commands)
     }
 }
 // ---------------------------------------------------------------------------------------------- //

@@ -25,7 +25,7 @@ fn main() -> Result<()> {
     Setup::new("support")
         .config_source(|_| {
             ConfigSource::new()
-                .option("config-file", Some('C'), "Loads an optional configuration file.")
+                .option("config", Some('C'), "Loads an optional configuration file.")
                 .or_empty()
         })
         .expose(|expose| {

@@ -767,7 +767,7 @@ mod setup_behavior {
         let args: Vec<_> = bundle.command().get_positionals().collect();
         assert_eq!(args.len(), 1);
         assert_eq!(args[0].get_id().as_str(), "FILE");
-        assert!(!bundle.command().get_arguments().any(|arg| arg.get_long() == Some("config-file")));
+        assert!(!bundle.command().get_arguments().any(|arg| arg.get_long() == Some("config")));
     }
 
     #[test]
@@ -823,13 +823,20 @@ mod setup_behavior {
         let bundle = Setup::standard("test").into_bundle(|_cfg: SimpleConfig| {});
 
         assert_eq!(bundle.command().get_positionals().count(), 0);
-        let argument = bundle
-            .command()
-            .get_arguments()
-            .find(|arg| arg.get_long() == Some("config-file"))
-            .unwrap();
+        let argument =
+            bundle.command().get_arguments().find(|arg| arg.get_long() == Some("config")).unwrap();
         assert_eq!(argument.get_short(), Some('C'));
         assert!(!argument.is_required_set());
+
+        let matches = bundle
+            .command()
+            .clone()
+            .try_get_matches_from(["test", "--config", "config.rhai::settings"])
+            .unwrap();
+        assert_eq!(
+            matches.get_one::<PathBuf>("config"),
+            Some(&PathBuf::from("config.rhai::settings"))
+        );
     }
 }
 

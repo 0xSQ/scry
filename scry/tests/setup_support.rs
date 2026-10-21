@@ -217,7 +217,7 @@ fn check_loading_failure_does_not_decode_or_call_the_payload() {
     let loader_calls = loads.clone();
     let error = Setup::new("test")
         .config_source(|_| {
-            ConfigSource::new().option("config-file", Some('C'), "Loads input.").loader(
+            ConfigSource::new().option("config", Some('C'), "Loads input.").loader(
                 move |_: &Path| -> Result<Node, std::io::Error> {
                     loader_calls.set(loader_calls.get() + 1);
                     Err(std::io::Error::other("source could not be loaded"))
@@ -335,7 +335,7 @@ fn edit_only_execution_still_requires_valid_typed_input() {
 #[test]
 fn edit_only_execution_still_requires_a_resolved_source() {
     let error = Setup::new("test")
-        .config_source(|_| ConfigSource::new().option("config-file", Some('C'), "Loads input."))
+        .config_source(|_| ConfigSource::new().option("config", Some('C'), "Loads input."))
         .into_bundle(|_: Input| panic!("missing source must not reach the payload"))
         .run_from(["test", "--scry", "--set", "value", "edited"])
         .unwrap_err();
@@ -447,7 +447,7 @@ fn invalid_support_requests_fail_before_source_preparation() {
         &["check", "--set", "value", "late"],
         &["get", "--set", "value", "late"],
         &["--scry", "get"],
-        &["--config-file", "late.json", "get"],
+        &["--config", "late.json", "get"],
     ];
     for suffix in suffixes {
         let mut args = vec!["test", "--scry"];
@@ -701,7 +701,7 @@ fn support_does_not_hide_incomplete_parent_argument_groups() {
 #[test]
 fn parent_help_keeps_the_support_switch_in_a_closing_configuration_support_section() {
     let bundle = Setup::new("test")
-        .config_source(|_| ConfigSource::new().option("config-file", Some('C'), "Loads input."))
+        .config_source(|_| ConfigSource::new().option("config", Some('C'), "Loads input."))
         .expose(|expose| {
             expose.option("value");
         })
@@ -720,7 +720,7 @@ fn parent_help_keeps_the_support_switch_in_a_closing_configuration_support_secti
         assert_eq!(help.matches("Configuration support:").count(), 1, "{help}");
         let (ordinary, support) = help.split_once("Configuration support:").unwrap();
         let (options, diagnostics) = ordinary.split_once("Diagnostics:").unwrap();
-        for flag in ["--config-file <FILE>", "--value", "--help"] {
+        for flag in ["--config <FILE[::KEY]>", "--value", "--help"] {
             assert!(options.contains(flag), "{help}");
             assert!(!support.contains(flag), "{help}");
         }
@@ -830,7 +830,7 @@ fn positional_source_requirements_are_checked_only_for_input_actions() {
 
 fn loaded_setup(json: &'static str, loads: Rc<Cell<usize>>) -> Setup {
     Setup::new("test").config_source(|_| {
-        ConfigSource::new().option("config-file", Some('C'), "Loads input.").loader(
+        ConfigSource::new().option("config", Some('C'), "Loads input.").loader(
             move |_: &Path| -> Result<Node, Infallible> {
                 loads.set(loads.get() + 1);
                 Ok(Node::parse_str(json, Format::Json).unwrap())
@@ -842,7 +842,7 @@ fn loaded_setup(json: &'static str, loads: Rc<Cell<usize>>) -> Setup {
 fn unloaded_setup() -> Setup {
     Setup::new("test").config_source(|_| {
         ConfigSource::new()
-            .option("config-file", Some('C'), "Loads input.")
+            .option("config", Some('C'), "Loads input.")
             .discover(|_| -> Result<Option<PathBuf>, Infallible> {
                 panic!("this request must not resolve a source");
             })

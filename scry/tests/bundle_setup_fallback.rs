@@ -183,21 +183,32 @@ fn extending_a_group_preserves_its_fallback() {
 
 #[test]
 fn single_handlers_can_consume_captures_and_handle_native_clap_subcommands() {
-    let message = String::from("handled");
-    let command = Command::new("parent").subcommand(Command::new("native").arg(Arg::new("input")));
-    let bundle = Bundle::single(command, move |matches| {
-        let (name, child_matches) = matches.subcommand().unwrap();
-        assert_eq!(name, "native");
-        assert_eq!(child_matches.get_one::<String>("input").map(String::as_str), Some("item"));
-        Ok::<_, Infallible>(message)
-    });
+    for child_name in ["native", "$self"] {
+        let message = String::from("handled");
+        let command =
+            Command::new("parent").subcommand(Command::new(child_name).arg(Arg::new("input")));
+        let bundle = Bundle::single(command, move |matches| {
+            let (name, child_matches) = matches.subcommand().unwrap();
+            assert_eq!(name, child_name);
+            assert_eq!(child_matches.get_one::<String>("input").map(String::as_str), Some("item"));
+            Ok::<_, Infallible>(message)
+        });
 
-    assert_eq!(bundle.run_from(["parent", "native", "item"]).unwrap(), "handled");
+        assert_eq!(bundle.run_from(["parent", child_name, "item"]).unwrap(), "handled");
+    }
+}
+
+#[test]
+fn plain_bundle_children_can_use_config_namespace_marker_names() {
+    let child = Bundle::single(Command::new("$self"), |_| Ok::<_, Infallible>("handled"));
+    let bundle = Bundle::group("parent", "Groups operations.", vec![child]);
+
+    assert_eq!(bundle.run_from(["parent", "$self"]).unwrap(), "handled");
 }
 
 fn parent_setup(loads: Rc<Cell<usize>>) -> Setup {
     Setup::new("parent").config_source(|_| {
-        ConfigSource::new().option("config-file", Some('C'), "Loads input.").loader(
+        ConfigSource::new().option("config", Some('C'), "Loads input.").loader(
             move |_: &Path| -> Result<Node, Infallible> {
                 loads.set(loads.get() + 1);
                 Ok(Node::parse_str(r#"{ "value": "loaded" }"#, Format::Json).unwrap())

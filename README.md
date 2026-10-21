@@ -153,15 +153,15 @@ Applications can also opt into automatically loading configuration files from de
 
 ### Configuration support
 
-Every `Setup` command provides configuration support through `--scry` or its short alias `-S`. The ordinary help lists config-file selection among the command options and the support switch in a closing `Configuration support` section:
+Every `Setup` command provides configuration support through `--scry` or its short alias `-S`. The ordinary help lists config selection among the command options and the support switch in a closing `Configuration support` section:
 
 ```
 $ deploy --help
 Usage: deploy [OPTIONS]
 
 Options:
-  -C, --config-file <FILE>  Path to config file.
-  -h, --help                Print help
+  -C, --config <FILE[::KEY]>  Loads a config file or a selected part of it.
+  -h, --help                  Print help
 
 Configuration support:
   -S, --scry [<ARGS>...]  Inspects and adjusts this command's configuration.
@@ -444,8 +444,8 @@ defaults::base + #{
 ## Further
 
 - **[Core Concepts](docs/concepts.md)** - Explains the basics: how the `Node` tree works, how to implement `FromNode` manually, etc.
-- **[Config File Locations](docs/config-files.md)** - Explains `Setup` discovery,
-  shared defaults, local exceptions, and Rhai wrappers.
+- **[Configuration Files](docs/config-files.md)** - Starts with one command's settings, then shows
+  how to group commands in a file, share values, and keep configs in another directory.
 - **[Writing Config Files](docs/writing-configs.md)** - Generates documented Rhai or JSON5 files from values and configuration metadata.
 - [`kit`](scry/src/kit.rs) provides reusable input shapes for designing command interfaces. Use these building blocks in your configuration types to give users convenient ways to express common inputs:
   - [`KeyValues<V>`](scry/src/kit/key_values.rs) accepts a map or a list of key-value pairs. The pair form preserves order and duplicate keys.

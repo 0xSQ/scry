@@ -18,13 +18,13 @@ impl<R: 'static, E: 'static> Bundle<R, E> {
         command: Command,
         handler: impl FnOnce(&ArgMatches) -> Result<R, E> + 'static,
     ) -> Self {
-        Self::single_with_command(command, move |matches, _| handler(matches))
+        Self::single_with_commands(command, move |matches, _| handler(matches))
     }
 
-    /// Creates a handler that also receives the parsed command's metadata.
-    pub(crate) fn single_with_command(
+    /// Creates a handler that receives the command chain from the root to the selected command.
+    pub(crate) fn single_with_commands(
         command: Command,
-        handler: impl FnOnce(&ArgMatches, &Command) -> Result<R, E> + 'static,
+        handler: impl FnOnce(&ArgMatches, &[&Command]) -> Result<R, E> + 'static,
     ) -> Self {
         Self {
             command,
@@ -80,7 +80,7 @@ impl<R: 'static, E: 'static> Bundle<R, E> {
     /// Parses the process arguments and runs the selected handler.
     pub fn run(mut self) -> Result<R, E> {
         let matches = self.command.get_matches_mut();
-        self.dispatcher.dispatch(&matches, &self.command)
+        self.dispatcher.dispatch(&matches, vec![&self.command])
     }
 
     /// Parses supplied arguments and runs the selected handler.
@@ -91,7 +91,7 @@ impl<R: 'static, E: 'static> Bundle<R, E> {
     {
         let matches =
             self.command.try_get_matches_from_mut(args).unwrap_or_else(|error| error.exit());
-        self.dispatcher.dispatch(&matches, &self.command)
+        self.dispatcher.dispatch(&matches, vec![&self.command])
     }
 
     /// Returns the underlying clap command for inspection.
@@ -108,7 +108,7 @@ struct Dispatcher<R, E> {
 }
 
 impl<R, E> Dispatcher<R, E> {
-    fn dispatch(self, matches: &ArgMatches, command: &Command) -> Result<R, E> {
+    fn dispatch(self, matches: &ArgMatches, mut commands: Vec<&Command>) -> Result<R, E> {
         if !self.children.is_empty() {
             if let Some((name, child_matches)) = matches.subcommand() {
                 let (_, child) = self
@@ -116,14 +116,21 @@ impl<R, E> Dispatcher<R, E> {
                     .into_iter()
                     .find(|(child_name, _)| child_name == name)
                     .expect("parsed subcommand must have a registered handler");
+                let command = *commands.last().expect("the command chain must include its root");
                 let child_command =
                     command.find_subcommand(name).expect("parsed subcommand must exist");
-                return child.dispatch(child_matches, child_command);
+                commands.push(child_command);
+                return child.dispatch(child_matches, commands);
             }
         }
         let handler = self.handler.expect("command without a handler requires a subcommand");
-        handler(matches, command)
+        handler(matches, &commands)
     }
 }
 
-type HandlerFn<R, E> = Box<dyn FnOnce(&ArgMatches, &Command) -> Result<R, E>>;
+type HandlerFn<R, E> = Box<dyn FnOnce(&ArgMatches, &[&Command]) -> Result<R, E>>;
+
+// ---------------------------------------------------------------------------------------------- //
+
+#[cfg(test)]
+mod tests;

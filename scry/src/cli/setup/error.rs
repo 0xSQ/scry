@@ -17,6 +17,31 @@ use crate::BoxedError;
 /// Aggregates all error types that can occur when running a setup-composed bundle.
 #[derive(thiserror::Error)]
 pub enum SetupError {
+    /// Conventional application config discovery or loading failed.
+    #[error(transparent)]
+    CommandConfig(#[from] super::CommandConfigError),
+
+    /// The explicit file and optional subtree selection are invalid.
+    #[error(transparent)]
+    ConfigFile(#[from] super::ConfigFileError),
+
+    /// Conventional application sources cannot also supply custom source closures.
+    #[error("application discovery cannot be combined with custom discover or loader closures. Configure ApplicationConfig instead")]
+    InvalidSourceConfiguration,
+
+    /// Conventional discovery needs the complete registered command tree.
+    #[error("application discovery requires command context. Use Setup or ApplicationConfig::load_command")]
+    ApplicationContextRequired,
+
+    /// None of the conventional candidates defines the requested command.
+    #[error(
+        "no configuration definition found for command '{command}' in application '{application}'"
+    )]
+    NoCommandConfig {
+        application: String,
+        command: String,
+    },
+
     /// The support arguments are invalid.
     #[error(transparent)]
     Support(#[from] clap::Error),

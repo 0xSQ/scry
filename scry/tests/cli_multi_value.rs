@@ -507,7 +507,7 @@ fn end_of_options_routes_hyphenated_values_to_positional_array() {
 fn positional_array_supports_a_named_config_source() {
     let result = Setup::new("test")
         .config_source(|_| {
-            ConfigSource::new().option("config-file", Some('C'), "Loads the config.").loader(
+            ConfigSource::new().option("config", Some('C'), "Loads the config.").loader(
                 |_: &Path| -> Result<Node, Infallible> {
                     Ok(Node::parse_str(r#"{ "values": ["loaded"] }"#, Format::Json).unwrap())
                 },

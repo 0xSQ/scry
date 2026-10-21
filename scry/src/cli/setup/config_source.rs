@@ -1,15 +1,18 @@
 //! Specifies where and how to load the initial config node.
 
 use std::fmt;
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use clap::{Arg, ArgMatches, Command};
 
 use super::error::SetupError;
+use super::{ApplicationConfig, CommandConfigSource, ConfigFile};
 use crate::node::{default_format_parser_registry, FormatParserRegistry, Node, NodeError};
 use crate::rhai::eval_script_var;
 use crate::util::PathExt;
-use crate::BoxedError;
+use crate::{BoxedError, KeyPath};
 
 // ---------------------------------------------------------------------------------------------- //
 
@@ -18,6 +21,7 @@ use crate::BoxedError;
 /// Accepts a config path through a positional argument, a named option, or discovery.
 /// Explicit paths take precedence over discovery. Path policies resolve competing explicit
 /// sources and missing input. The loader defaults to [`Node::parse_file`].
+/// Explicit values accept `FILE::KEYPATH` to select a subtree. Discovered paths are literal paths.
 ///
 /// # Example
 ///
@@ -26,29 +30,20 @@ use crate::BoxedError;
 ///
 /// let source = ConfigSource::new().option("config", Some('C'), "Path to config file.");
 /// ```
+#[derive(Default)]
 pub struct ConfigSource {
     /// Configuration for positional config path argument.
     positional: Option<PositionalConfig>,
     /// Configuration for named option config path argument (e.g., --config).
     option: Option<OptionConfig>,
+    /// Conventional command discovery, using the complete registered CLI tree.
+    application: Option<ApplicationConfig>,
     /// Discovery function called when no explicit config path is provided.
     discover: Option<Box<DiscoverFn>>,
     /// Policy for resolving config paths across multiple sources and missing paths.
     path_policy: ConfigPathPolicy,
-    /// Function that parses a file path into a Node.
-    pub(crate) loader: Box<NodeLoaderFn>,
-}
-
-impl Default for ConfigSource {
-    fn default() -> Self {
-        Self {
-            positional: None,
-            option: None,
-            discover: None,
-            path_policy: ConfigPathPolicy::default(),
-            loader: Box::new(|path| Node::parse_file(path).map_err(Into::into)),
-        }
-    }
+    /// Optional replacement for the standard file loader.
+    loader: Option<Box<NodeLoaderFn>>,
 }
 
 impl ConfigSource {
@@ -64,6 +59,7 @@ impl ConfigSource {
     ///
     /// The parser accepts an omitted path. Source resolution applies the missing-config policy
     /// when the invocation needs input.
+    /// An explicit value accepts a whole `FILE` or `FILE::KEYPATH`.
     pub fn positional(mut self, name: impl Into<String>, help: impl Into<String>) -> Self {
         self.positional = Some(PositionalConfig {
             name: name.into(),
@@ -73,6 +69,8 @@ impl ConfigSource {
     }
 
     /// Sets a named option argument for the config path (e.g., `--config`).
+    ///
+    /// An explicit value accepts a whole `FILE` or `FILE::KEYPATH`.
     pub fn option(
         mut self,
         long: impl Into<String>,
@@ -93,12 +91,27 @@ impl ConfigSource {
     /// fall through to the missing-config policy (error by default, or an empty node with
     /// [`or_empty`](Self::or_empty)). The error type can be any type that converts into a boxed
     /// error, including `anyhow::Error`, `std::io::Error`, or any `E: std::error::Error`.
+    ///
+    /// This hook owns its lookup policy, such as finding a project file from the current
+    /// directory. It receives a command name rather than the registered command tree. Use
+    /// [`application`](Self::application) for conventional nested command discovery instead.
+    /// These source modes cannot be combined.
     pub fn discover<F, E>(mut self, f: F) -> Self
     where
         F: Fn(&str) -> Result<Option<PathBuf>, E> + 'static,
         E: Into<BoxedError> + 'static,
     {
         self.discover = Some(Box::new(move |cmd| f(cmd).map_err(|e| e.into())));
+        self
+    }
+
+    /// Enables conventional discovery using the registered command tree and application name.
+    ///
+    /// Uses each ancestor command file and the application-wide file under one effective root.
+    /// Use [`ApplicationConfig`] to customize the root, formats, or Rhai engine. Custom `discover`
+    /// and `loader` closures are separate source modes and cannot be combined with this mode.
+    pub fn application(mut self, application: impl Into<ApplicationConfig>) -> Self {
+        self.application = Some(application.into());
         self
     }
 
@@ -127,17 +140,22 @@ impl ConfigSource {
 
     /// Sets the loader function that parses a file path into a Node.
     ///
-    /// If not called, defaults to `Node::parse_file`.
+    /// If not called, defaults to [`Node::parse_file`]. The loader receives the decoded file
+    /// path. An explicit `::KEYPATH` selection is applied to its result before CLI edits and
+    /// typed decoding. Custom loaders cannot be combined with [`application`](Self::application).
     pub fn loader<F, E>(mut self, f: F) -> Self
     where
         F: Fn(&Path) -> Result<Node, E> + 'static,
         E: Into<BoxedError> + 'static,
     {
-        self.loader = Box::new(move |p| f(p).map_err(|e| e.into()));
+        self.loader = Some(Box::new(move |p| f(p).map_err(|e| e.into())));
         self
     }
 
     /// Sets the loader to extract a named variable from a Rhai config file.
+    ///
+    /// Uses custom loader mode. Conventional application discovery selects returned values and
+    /// map members instead of exported variables, so it does not need this loader.
     pub fn rhai_var_loader(self, var_name: impl Into<String>) -> Self {
         let var_name = var_name.into();
         self.loader(move |path| load_rhai_var_node(path, &var_name))
@@ -152,6 +170,10 @@ impl ConfigSource {
     ///
     /// Both arguments are optional in the parser. Source resolution applies the missing-config
     /// policy when the invocation needs input.
+    ///
+    /// Raw argument values are stored as [`PathBuf`] values containing the original combined
+    /// `FILE::KEYPATH` argument. Use [`resolve_input`](Self::resolve_input) or the selected
+    /// [`CommandConfigSource`] to obtain the decoded filesystem path.
     #[must_use]
     pub fn augment(&self, mut cmd: Command) -> Command {
         if let Some(pos) = &self.positional {
@@ -165,7 +187,7 @@ impl ConfigSource {
         if let Some(opt) = &self.option {
             let mut arg = Arg::new(opt.long.clone())
                 .long(opt.long.clone())
-                .value_name("FILE")
+                .value_name("FILE[::KEY]")
                 .value_parser(clap::value_parser!(PathBuf))
                 .help(opt.help.clone());
 
@@ -185,15 +207,50 @@ impl ConfigSource {
     /// - `ErrorOnMultiple`: Error if both positional and option are provided.
     /// - `PreferPositional`: Use positional if provided, otherwise option, otherwise discovery.
     /// - `PreferOption`: Use option if provided, otherwise positional, otherwise discovery.
+    ///
+    /// Explicit values are parsed after choosing a source according to the policy. The returned
+    /// file retains its selection. Custom discovery returns literal paths with an empty selection.
+    /// Conventional application discovery needs a command tree and runs through [`super::Setup`]
+    /// or [`ApplicationConfig`].
     pub fn resolve_input(
         &self,
         cmd_name: &str,
         matches: &ArgMatches,
     ) -> Result<ResolvedConfigInput, SetupError> {
+        if let Some(file) = self.explicit_file(matches)? {
+            return Ok(ResolvedConfigInput::File(file));
+        }
+        if self.application.is_some() {
+            return Err(SetupError::ApplicationContextRequired);
+        }
+
+        // Try discovery. A `None` result falls through to the missing-config policy.
+        if let Some(discover) = &self.discover {
+            match discover(cmd_name) {
+                Ok(Some(path)) => {
+                    return Ok(ResolvedConfigInput::File(ConfigFile {
+                        path,
+                        selection: KeyPath::new(),
+                    }))
+                }
+                Ok(None) => {}
+                Err(source) => {
+                    return Err(SetupError::ConfigNotFound {
+                        cmd_name: cmd_name.to_string(),
+                        source,
+                    });
+                }
+            }
+        }
+
+        self.missing_input(cmd_name)
+    }
+
+    fn explicit_file(&self, matches: &ArgMatches) -> Result<Option<ConfigFile>, SetupError> {
         let positional_path =
-            self.positional.as_ref().and_then(|pos| matches.get_one::<PathBuf>(&pos.name)).cloned();
+            self.positional.as_ref().and_then(|pos| matches.get_one::<PathBuf>(&pos.name));
         let option_path =
-            self.option.as_ref().and_then(|opt| matches.get_one::<PathBuf>(&opt.long)).cloned();
+            self.option.as_ref().and_then(|opt| matches.get_one::<PathBuf>(&opt.long));
 
         let resolved = match self.path_policy.multiple {
             MultiSourcePolicy::ErrorOnMultiple => {
@@ -206,29 +263,73 @@ impl ConfigSource {
             MultiSourcePolicy::PreferOption => option_path.or(positional_path),
         };
 
-        if let Some(path) = resolved {
-            return Ok(ResolvedConfigInput::Path(path));
-        }
+        resolved
+            .map(|value| ConfigFile::parse(value.as_os_str()).map_err(SetupError::from))
+            .transpose()
+    }
 
-        // Try discovery. A `None` result falls through to the missing-config policy.
-        if let Some(discover) = &self.discover {
-            match discover(cmd_name) {
-                Ok(Some(path)) => return Ok(ResolvedConfigInput::Path(path)),
-                Ok(None) => {}
-                Err(source) => {
-                    return Err(SetupError::ConfigNotFound {
-                        cmd_name: cmd_name.to_string(),
-                        source,
-                    });
-                }
-            }
-        }
-
+    fn missing_input(&self, cmd_name: &str) -> Result<ResolvedConfigInput, SetupError> {
         match self.path_policy.missing {
             MissingConfigPolicy::Error => Err(SetupError::NoConfigFile {
                 cmd_name: cmd_name.to_string(),
             }),
             MissingConfigPolicy::EmptyNode => Ok(ResolvedConfigInput::Empty),
+        }
+    }
+
+    pub(super) fn load_input(
+        &self,
+        cmd_name: &str,
+        matches: &ArgMatches,
+        commands: &[&Command],
+    ) -> Result<(Node, Option<CommandConfigSource>), SetupError> {
+        if let Some(application) = &self.application {
+            if self.discover.is_some() || self.loader.is_some() {
+                return Err(SetupError::InvalidSourceConfiguration);
+            }
+            let root = commands.first().expect("dispatch includes the root command");
+            let path: Vec<_> =
+                commands.iter().skip(1).map(|command| command.get_name().to_owned()).collect();
+            let loaded = match self.explicit_file(matches)? {
+                Some(file) => Some(application.load_file(file.path, file.selection)?),
+                None => application.load_command(root, &path)?,
+            };
+            return match loaded {
+                Some(loaded) => Ok((loaded.node, Some(loaded.source))),
+                None if self.path_policy.missing == MissingConfigPolicy::EmptyNode => {
+                    Ok((Node::empty_map(), None))
+                }
+                None => Err(SetupError::NoCommandConfig {
+                    application: application.name().into(),
+                    command: super::command_config::command_name(root, &path),
+                }),
+            };
+        }
+        match self.resolve_input(cmd_name, matches)? {
+            ResolvedConfigInput::Empty => Ok((Node::empty_map(), None)),
+            ResolvedConfigInput::File(ConfigFile { path, selection }) => {
+                let Some(loader) = &self.loader else {
+                    let loaded = super::command_config::load_plain_file(path, selection)?;
+                    return Ok((loaded.node, Some(loaded.source)));
+                };
+                let node = loader(&path).map_err(|source| SetupError::LoadConfigFile {
+                    path: path.clone(),
+                    source,
+                })?;
+                let mut node = node.req_node(&selection)?.clone();
+                node.reanchor(KeyPath::new());
+                let metadata = path.extension().and_then(|ext| ext.to_str()).and_then(|ext| {
+                    let registry = default_format_parser_registry();
+                    let format = registry.parser_for_extension(ext)?.id();
+                    Some(CommandConfigSource {
+                        logical_path: path.clone(),
+                        physical_path: path.canonicalize_path().ok()?,
+                        selection,
+                        format,
+                    })
+                });
+                Ok((node, metadata))
+            }
         }
     }
 }
@@ -299,8 +400,8 @@ pub type NodeLoaderFn = dyn Fn(&Path) -> Result<Node, BoxedError>;
 /// The resolved config input for a command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolvedConfigInput {
-    /// Load the initial config node from this path.
-    Path(PathBuf),
+    /// Loads the initial config node from this file and selects its payload.
+    File(ConfigFile),
     /// Start from an empty config node.
     Empty,
 }
@@ -346,10 +447,27 @@ pub fn find_config(
     extensions: &[&str],
 ) -> Result<PathBuf, FindConfigError> {
     let mut matches: Vec<PathBuf> = Vec::new();
+    let entries = read_config_directory(dir)
+        .map_err(|source| FindConfigError::Io {
+            path: dir.to_path_buf(),
+            source,
+        })?
+        .unwrap_or_default();
     for ext in extensions {
-        let candidate = dir.join(format!("{}.{}", name, ext));
-        if candidate.is_file() {
-            matches.push(candidate);
+        for candidate in entries.iter().filter(|path| {
+            path.file_stem().is_some_and(|stem| stem == name)
+                && path
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|value| value.eq_ignore_ascii_case(ext))
+        }) {
+            let metadata = fs::metadata(candidate).map_err(|source| FindConfigError::Io {
+                path: candidate.clone(),
+                source,
+            })?;
+            if metadata.is_file() {
+                matches.push(candidate.clone());
+            }
         }
     }
 
@@ -365,6 +483,31 @@ pub fn find_config(
             paths: matches,
         }),
     }
+}
+
+/// Reads a config directory, allowing absence but preserving invalid paths and broken links.
+pub(super) fn read_config_directory(path: &Path) -> io::Result<Option<Vec<PathBuf>>> {
+    let entries = match fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            for ancestor in path.ancestors().filter(|path| !path.as_os_str().is_empty()) {
+                match fs::symlink_metadata(ancestor) {
+                    Ok(_) => {
+                        fs::read_dir(ancestor)?;
+                        break;
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error),
+                }
+            }
+            return Ok(None);
+        }
+        Err(error) => return Err(error),
+    };
+    let mut paths =
+        entries.map(|entry| entry.map(|entry| entry.path())).collect::<io::Result<Vec<_>>>()?;
+    paths.sort();
+    Ok(Some(paths))
 }
 
 /// Searches for a config file named `<name>.<ext>` using extensions from a format registry.
@@ -390,6 +533,11 @@ pub fn find_config_default(dir: &Path, name: &str) -> Result<PathBuf, FindConfig
 /// Errors from config file resolution.
 #[derive(Debug)]
 pub enum FindConfigError {
+    /// A candidate could not be inspected, including a broken filesystem link.
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     /// No matching config file was found.
     NotFound { name: String, dir: PathBuf },
     /// Multiple matching config files were found.
@@ -403,6 +551,9 @@ pub enum FindConfigError {
 impl fmt::Display for FindConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            FindConfigError::Io { path, source } => {
+                write!(f, "cannot inspect config file '{}': {source}", path.display())
+            }
             FindConfigError::NotFound { name, dir } => {
                 write!(f, "no '{}' config file found in '{}'", name, dir.display())
             }
@@ -417,7 +568,14 @@ impl fmt::Display for FindConfigError {
     }
 }
 
-impl std::error::Error for FindConfigError {}
+impl std::error::Error for FindConfigError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------------------------- //
 // Tests
@@ -492,7 +650,7 @@ mod tests {
         .unwrap();
 
         let source = ConfigSource::new().rhai_var_loader("convert");
-        let node = (source.loader)(&path).unwrap();
+        let node = source.loader.as_ref().unwrap()(&path).unwrap();
 
         assert_eq!(node.req::<String>("output").unwrap(), "out.webm");
     }

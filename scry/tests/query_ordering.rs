@@ -116,7 +116,7 @@ fn json_and_custom_loader_input_use_the_same_policy_without_changing_stored_orde
     // The loader returns an ordinary Node, without source-format metadata.
     let loaded = Setup::new("test")
         .config_source(|_| {
-            ConfigSource::new().option("config-file", Some('C'), "Loads input.").loader(
+            ConfigSource::new().option("config", Some('C'), "Loads input.").loader(
                 move |_: &Path| -> Result<Node, Infallible> {
                     Ok(Node::parse_str(source, Format::Json).unwrap())
                 },
