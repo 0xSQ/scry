@@ -9,6 +9,7 @@ use std::rc::Rc;
 use scry::clap::Command;
 use scry::cli::setup::{ApplicationConfig, CommandConfigError, LoadedCommandConfig, Setup};
 use scry::node::{default_format_parser_registry_builder, ConfigFormatParser, Format};
+use scry::util::PathExt;
 use scry::{Config, KeyPath, Node, NodeError};
 use tempfile::tempdir;
 
@@ -181,14 +182,16 @@ fn multiple_candidates_share_one_bootstrap_with_the_configured_environment() {
 }
 
 #[test]
-fn one_root_pointer_resolution_supplies_the_custom_environment_and_command() {
+fn one_source_resolution_uses_local_environment_and_only_delegated_commands() {
     let directory = tempdir().unwrap();
     let conventional = directory.path().join("conventional");
     let target = directory.path().join("target");
     fs::create_dir(&conventional).unwrap();
     fs::create_dir(&target).unwrap();
-    fs::write(conventional.join("root.pointer"), "../target").unwrap();
-    fs::write(target.join("machine.rhai"), "#{ value: 41 }").unwrap();
+    fs::write(conventional.join("source.pointer"), "../target").unwrap();
+    fs::write(conventional.join("machine.rhai"), "#{ value: 41 }").unwrap();
+    fs::write(conventional.join("render.rhai"), "throw \"local command is unused\";").unwrap();
+    fs::write(target.join("machine.rhai"), "#{ value: 99 }").unwrap();
     fs::write(target.join("render.rhai"), "#{ value: host.value }").unwrap();
     let calls = Rc::new(Cell::new(0));
     let registry =
@@ -196,16 +199,28 @@ fn one_root_pointer_resolution_supplies_the_custom_environment_and_command() {
     let application = custom_environment(&conventional).registry(registry);
     let loaded = invocation("render").load(&application).unwrap().unwrap();
     assert_eq!(loaded.node.req::<i64>("value").unwrap(), 41);
+    assert_eq!(
+        loaded.source.physical_path,
+        target.join("render.rhai").canonicalize_path().unwrap()
+    );
     assert_eq!(calls.get(), 1);
+
+    fs::remove_file(conventional.join("machine.rhai")).unwrap();
+    assert!(invocation("render").load(&application).is_err());
+    assert_eq!(calls.get(), 2);
 }
 
 #[test]
-fn explicit_file_loading_and_cli_selection_use_the_configured_environment() {
+fn direct_environment_and_explicit_rhai_selection_bypass_the_source_file() {
     let directory = tempdir().unwrap();
+    fs::write(directory.path().join("source.rhai"), "throw \"source is unused\";").unwrap();
     fs::write(directory.path().join("machine.rhai"), "#{ value: 43 }").unwrap();
     let path = directory.path().join("alternate.rhai");
     fs::write(&path, "#{ selected: #{ value: host.value } }").unwrap();
     let application = custom_environment(directory.path());
+    let environment = application.load_environment().unwrap();
+    let value = environment.scope().get_value::<rhai::Map>("host").unwrap();
+    assert_eq!(value["value"].clone().cast::<i64>(), 43);
     let loaded = application.load_file(&path, KeyPath::from_keys(["selected"])).unwrap();
     assert_eq!(loaded.node.req::<i64>("value").unwrap(), 43);
     let mut argument = path.as_os_str().to_owned();
@@ -235,7 +250,7 @@ fn legal_binding_identifiers_need_not_match_the_filename() {
 }
 
 #[test]
-fn invalid_environment_stems_fail_before_root_or_payload_loading() {
+fn invalid_environment_stems_fail_before_source_or_payload_loading() {
     for stem in [
         "",
         ".",
@@ -243,8 +258,8 @@ fn invalid_environment_stems_fail_before_root_or_payload_loading() {
         "foo.rhai",
         "nested/machine",
         "nested\\machine",
-        "root",
-        "ROOT",
+        "source",
+        "SOURCE",
         "atlas",
         "ATLAS",
         "machine:alternate",
@@ -273,7 +288,7 @@ fn invalid_environment_stems_fail_before_root_or_payload_loading() {
 }
 
 #[test]
-fn invalid_bindings_fail_before_root_or_payload_loading() {
+fn invalid_bindings_fail_before_source_or_payload_loading() {
     for binding in [
         "",
         "_",
@@ -330,7 +345,7 @@ fn assert_invalid_before_loading(configure: impl Fn(ApplicationConfig) -> Applic
     let target = directory.path().join("target");
     fs::create_dir(&conventional).unwrap();
     fs::create_dir(&target).unwrap();
-    fs::write(conventional.join("root.pointer"), "../target").unwrap();
+    fs::write(conventional.join("source.pointer"), "../target").unwrap();
     let input = directory.path().join("input.machine-data");
     fs::write(&input, "53").unwrap();
     let pointer_calls = Rc::new(Cell::new(0));
@@ -346,7 +361,7 @@ fn assert_invalid_before_loading(configure: impl Fn(ApplicationConfig) -> Applic
     assert!(application.load_environment().is_err());
     assert!(invocation("render").load(&application).is_err());
     assert!(application.load_file(&input, KeyPath::new()).is_err());
-    assert_eq!(pointer_calls.get(), 0, "invalid settings must not resolve root pointers");
+    assert_eq!(pointer_calls.get(), 0, "invalid settings must not resolve source files");
     assert_eq!(payload_calls.get(), 0, "invalid settings must not parse explicit data files");
 }
 

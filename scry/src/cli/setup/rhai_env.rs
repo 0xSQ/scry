@@ -14,14 +14,16 @@ use crate::{BoxedError, NodeError};
 
 /// Loads an application's optional `env.*` config as the Rhai constant `env`.
 ///
-/// Resolves an optional `root.*` once, then discovers only `env.*` in the effective root.
-/// If no file is found, returns an environment without an `env` constant. Discovery and
-/// loading errors are propagated. Application-wide command maps never supply the environment.
+/// Discovers `env.*` only in the original `~/.config/<app>/` application directory. A `source.*`
+/// pointer redirects command files, so it does not affect environment loading. If no environment
+/// file is found, returns an environment without an `env` constant. Discovery and loading errors
+/// are propagated. Application-wide command maps never supply the environment.
 ///
 /// A Rhai file supplies its final returned value. It is evaluated once with a plain engine and
 /// relative imports, without injected constants or application functions. Exported variables do
 /// not select the environment value. Rhai values are preserved directly. Other formats supply
-/// their root map. Local and shared environments are not merged.
+/// their root map. There is no fallback to an environment in a shared command directory.
+/// [`ApplicationConfig`] can customize the application directory, environment filename, and binding.
 ///
 /// The application evaluates its configs with the returned environment and installs
 /// [`RhaiEnv::module_resolver`] on its engine to inject the same constant into imported modules.

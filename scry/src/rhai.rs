@@ -45,7 +45,8 @@ impl RhaiEnv {
     ///
     /// The config file is evaluated with a fresh engine (no constants injected)
     /// to avoid circular dependencies.
-    /// This low-level helper does not resolve `root.*`. Application environments use
+    /// This low-level helper reads that local file directly, without following `source.*`.
+    /// Application environments also stay local and support all enabled config formats through
     /// [`crate::cli::setup::load_app_rhai_env`] or [`crate::cli::setup::ApplicationConfig`].
     pub fn load_app_config(app_dir: &str, filename: &str) -> Result<Option<Dynamic>, RhaiError> {
         let home = dirs::home_dir().ok_or(RhaiError::NoHomeDir)?;

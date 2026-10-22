@@ -7,9 +7,7 @@ use std::rc::Rc;
 use clap::Command;
 use rhai::{Dynamic, Engine};
 
-use super::config_source::{
-    find_config_with_registry, home_config_dir, read_config_directory, FindConfigError,
-};
+use super::config_source::{find_config_with_registry, home_config_dir, FindConfigError};
 use super::rhai_env::load_rhai_env_in;
 use crate::node::{default_format_parser_registry, Format, FormatParserRegistry, Kind};
 use crate::rhai::RhaiEnv;
@@ -44,9 +42,15 @@ use crate::{BoxedError, KeyPath, Node};
 /// ancestor. The child command name `$self` is reserved. Ordinary payload fields have no
 /// namespace meaning.
 ///
-/// The root-level stems `root`, the configured environment filename, and the application name
+/// The root-level stems `source`, the configured environment filename, and the application name
 /// are reserved, ignoring ASCII case. Commands with those names use the application-wide map or
 /// descendant files instead of a same-stem root file.
+///
+/// An optional `source.*` in the application directory contains only a `directory` field selecting
+/// the command directory. Without it, commands use the application directory. Delegation is one
+/// hop, with no local command overlay or fallback. The optional environment always stays in the
+/// application directory, independently of delegation. Environment and source filename stems
+/// remain reserved in both locations.
 ///
 /// # Rhai evaluation
 ///
@@ -87,7 +91,7 @@ impl ApplicationConfig {
     ///
     /// Uses the default parser registry and the optional `env.*` environment bound as `env`.
     /// The application name determines the directory and application-wide filename, independently
-    /// of the executable name. It must be one path component other than `root`, and must differ
+    /// of the executable name. It must be one path component other than `source`, and must differ
     /// from the configured environment filename stem, ignoring ASCII case.
     pub fn new(name: impl Into<String>) -> Self {
         Self {
@@ -100,11 +104,11 @@ impl ApplicationConfig {
         }
     }
 
-    /// Sets the initial directory, before resolving an optional `root.*` pointer.
+    /// Sets the application directory containing the source pointer and optional environment.
     ///
-    /// Replaces the conventional `~/.config/<name>/` location. An optional `root.*` pointer selects
-    /// the single directory used for command and environment discovery. No local overlay or
-    /// fallback to the initial directory is applied after a pointer selects another root.
+    /// Replaces the conventional `~/.config/<name>/` location. An optional `source.*` selects
+    /// another directory for command discovery only. The environment stays in this directory,
+    /// and command files in this directory are not consulted after delegation.
     pub fn directory(mut self, directory: impl Into<PathBuf>) -> Self {
         self.directory = Some(directory.into());
         self
@@ -115,7 +119,7 @@ impl ApplicationConfig {
     /// Defaults to `env`. The active registry selects the format, so `machine` discovers
     /// `machine.rhai`, `machine.json`, or another enabled extension. The stem is reserved for
     /// this bootstrap role. Renaming it frees `env.*` for ordinary command configuration.
-    /// It must be a portable filename stem without a path or extension, distinct from `root`
+    /// It must be a portable filename stem without a path or extension, distinct from `source`
     /// and the application name regardless of ASCII case. Validation happens when configuration
     /// is loaded.
     pub fn environment_file(mut self, stem: impl Into<String>) -> Self {
@@ -134,7 +138,7 @@ impl ApplicationConfig {
         self
     }
 
-    /// Sets the enabled input formats, including the root pointer and environment file.
+    /// Sets the enabled input formats, including the source pointer and environment file.
     ///
     /// Replaces the default registry. The logical filename's extension selects the parser before
     /// following filesystem links. Multiple supported extensions for one candidate stem remain
@@ -150,7 +154,7 @@ impl ApplicationConfig {
     /// resolver installed. The environment's constant is injected into evaluation scopes for
     /// each candidate and recursively imported modules. One engine is configured per command
     /// load and reused for all Rhai candidates, including non-owning ancestors.
-    /// Root pointers and environment bootstrap files never receive this configuration.
+    /// Source pointers and environment bootstrap files never receive this configuration.
     pub fn rhai_engine(mut self, configure: impl Fn(&mut Engine, &RhaiEnv) + 'static) -> Self {
         self.configure_engine = Rc::new(configure);
         self
@@ -161,11 +165,11 @@ impl ApplicationConfig {
         &self.name
     }
 
-    /// Loads the configured optional environment using the effective application root.
+    /// Loads the configured optional environment from the application directory.
     ///
     /// Searches the configured filename stem using the active registry. Missing files produce
     /// an environment without the configured binding. Competing extensions and invalid files
-    /// are errors. A root pointer replaces the environment location along with the command root.
+    /// are errors. This does not read `source.*` or look in a delegated command directory.
     ///
     /// Rhai supplies its final returned value, retaining raw values such as function pointers.
     /// An exported variable is used only if explicitly returned. Other formats supply their root
@@ -176,8 +180,7 @@ impl ApplicationConfig {
     /// engine and evaluate files through [`RhaiEnv::eval`].
     pub fn load_environment(&self) -> Result<RhaiEnv, CommandConfigError> {
         self.validate_settings()?;
-        let root = self.resolve_root()?;
-        self.environment_in(&root)
+        self.environment_in(&self.application_directory()?)
     }
 
     /// Loads the requested command and preserves its discovered source and selection.
@@ -204,7 +207,12 @@ impl ApplicationConfig {
         path: &[String],
     ) -> Result<Option<LoadedCommandConfig>, CommandConfigError> {
         self.validate(root, path)?;
-        let config_root = self.resolve_root()?;
+        let application_directory = self.application_directory()?;
+        let config_root = resolve_source_directory(&application_directory, &self.registry)
+            .map_err(|source| CommandConfigError::Load {
+                path: application_directory.clone(),
+                source,
+            })?;
         let mut definitions = Vec::new();
         let mut values = HashMap::new();
         let mut runtime = None;
@@ -229,7 +237,7 @@ impl ApplicationConfig {
                 Entry::Vacant(entry) => {
                     let value = if source.format == Format::Rhai {
                         if runtime.is_none() {
-                            let environment = self.environment_in(&config_root)?;
+                            let environment = self.environment_in(&application_directory)?;
                             let engine = self.engine(&environment);
                             runtime = Some((environment, engine));
                         }
@@ -275,9 +283,9 @@ impl ApplicationConfig {
     /// tree do not imply a selector. Explicit input bypasses conventional discovery, namespace
     /// validation, and duplicate checks. The selected node is reanchored at an empty [`KeyPath`].
     ///
-    /// An explicit non-Rhai file does not consult the ambient root or environment. Rhai input
-    /// resolves the root once to obtain its configured optional environment and uses the custom
-    /// command engine. Application settings are validated in either case.
+    /// Explicit input does not consult `source.*`. Rhai input uses the optional environment in
+    /// the application directory and the custom command engine. Other formats do not load the
+    /// environment. Application settings are validated in either case.
     ///
     /// This method accepts an already decoded filename and selection. Use
     /// [`ConfigFile::parse`](super::ConfigFile::parse) to parse the CLI's combined `FILE::KEYPATH`
@@ -290,8 +298,7 @@ impl ApplicationConfig {
         self.validate_settings()?;
         let source = file_source(path.into(), selection, &self.registry)?;
         let mut node = if source.format == Format::Rhai {
-            let root = self.resolve_root()?;
-            self.eval(&source, &root)?
+            self.eval(&source, &self.application_directory()?)?
         } else {
             self.parse(&source)?.req_node(&source.selection)?.clone()
         };
@@ -299,32 +306,34 @@ impl ApplicationConfig {
         Ok(LoadedCommandConfig { node, source })
     }
 
-    fn resolve_root(&self) -> Result<PathBuf, CommandConfigError> {
-        let directory = self
-            .directory
+    fn application_directory(&self) -> Result<PathBuf, CommandConfigError> {
+        self.directory
             .clone()
             .or_else(|| home_config_dir(&self.name))
-            .ok_or(CommandConfigError::NoHomeDir)?;
-        resolve_root_directory(&directory, &self.registry).map_err(|source| {
-            CommandConfigError::Load {
-                path: directory,
-                source,
-            }
-        })
+            .ok_or(CommandConfigError::NoHomeDir)
     }
 
-    fn eval(&self, source: &CommandConfigSource, root: &Path) -> Result<Node, CommandConfigError> {
-        let env = self.environment_in(root)?;
+    fn eval(
+        &self,
+        source: &CommandConfigSource,
+        directory: &Path,
+    ) -> Result<Node, CommandConfigError> {
+        let env = self.environment_in(directory)?;
         let engine = self.engine(&env);
         ConfigValue::Rhai(eval_rhai(source, &env, &engine)?).into_node(source)
     }
 
-    fn environment_in(&self, root: &Path) -> Result<RhaiEnv, CommandConfigError> {
-        load_rhai_env_in(root, &self.registry, &self.environment_file, &self.environment_binding)
-            .map_err(|error| CommandConfigError::Load {
-                path: root.join(format!("{}.*", self.environment_file)),
-                source: error,
-            })
+    fn environment_in(&self, directory: &Path) -> Result<RhaiEnv, CommandConfigError> {
+        load_rhai_env_in(
+            directory,
+            &self.registry,
+            &self.environment_file,
+            &self.environment_binding,
+        )
+        .map_err(|error| CommandConfigError::Load {
+            path: directory.join(format!("{}.*", self.environment_file)),
+            source: error,
+        })
     }
 
     fn engine(&self, env: &RhaiEnv) -> Engine {
@@ -346,7 +355,7 @@ impl ApplicationConfig {
     }
 
     fn reserved_stem(&self, name: &str) -> bool {
-        ["root", &self.environment_file, &self.name]
+        ["source", &self.environment_file, &self.name]
             .iter()
             .any(|stem| name.eq_ignore_ascii_case(stem))
     }
@@ -363,7 +372,7 @@ impl ApplicationConfig {
     }
 
     fn validate_settings(&self) -> Result<(), CommandConfigError> {
-        if !valid_component(&self.name) || self.name.eq_ignore_ascii_case("root") {
+        if !valid_component(&self.name) || self.name.eq_ignore_ascii_case("source") {
             return Err(CommandConfigError::InvalidApplicationName {
                 name: self.name.clone(),
             });
@@ -374,12 +383,12 @@ impl ApplicationConfig {
                 message: "expected a portable filename stem without a path or extension".into(),
             });
         }
-        if self.environment_file.eq_ignore_ascii_case("root")
+        if self.environment_file.eq_ignore_ascii_case("source")
             || self.environment_file.eq_ignore_ascii_case(&self.name)
         {
             return Err(CommandConfigError::InvalidEnvironmentFile {
                 stem: self.environment_file.clone(),
-                message: "the environment filename must differ from 'root' and the application-wide filename".into(),
+                message: "the environment filename must differ from 'source' and the application-wide filename".into(),
             });
         }
         if !valid_environment_binding(&self.environment_binding) {
@@ -391,32 +400,24 @@ impl ApplicationConfig {
     }
 }
 
-/// Returns the supplied directory or the destination of its sole `root.*` file.
+/// Returns the supplied directory or the command directory selected by its `source.*` file.
 ///
 /// The pointer contains only `directory`. Relative paths use the pointer's physical parent,
 /// `~/` expands the home directory, and the destination cannot contain another pointer.
-fn resolve_root_directory(
+fn resolve_source_directory(
     directory: &Path,
     registry: &FormatParserRegistry,
 ) -> Result<PathBuf, BoxedError> {
-    let pointer = match find_config_with_registry(directory, "root", registry) {
+    let pointer = match find_config_with_registry(directory, "source", registry) {
         Ok(path) => path,
         Err(FindConfigError::NotFound { .. }) => return Ok(directory.to_path_buf()),
         Err(error) => return Err(error.into()),
     };
-    if read_config_directory(directory)?.unwrap_or_default().len() != 1 {
-        return Err(format!(
-            "root pointer '{}' must be the only directory entry",
-            pointer.display()
-        )
-        .into());
-    }
-
     let node = Node::parse_file_with_registry(&pointer, registry)?;
     node.ensure_only_keys(&["directory"])?;
     let target = node.req::<String>("directory")?;
     if target.is_empty() {
-        return Err("root pointer directory must not be empty".into());
+        return Err("source pointer directory must not be empty".into());
     }
     let pointer = pointer.canonicalize_path()?;
     let target =
@@ -426,10 +427,10 @@ fn resolve_root_directory(
             pointer.parent().expect("canonical files have a parent").join(target)
         };
     target.require_dir()?;
-    match find_config_with_registry(&target, "root", registry) {
+    match find_config_with_registry(&target, "source", registry) {
         Err(FindConfigError::NotFound { .. }) => Ok(target),
         Ok(_) | Err(FindConfigError::Ambiguous { .. }) => {
-            Err("root pointers cannot be chained".into())
+            Err("source pointers cannot be chained".into())
         }
         Err(error) => Err(error.into()),
     }
@@ -485,7 +486,7 @@ pub enum CommandConfigError {
     #[error("cannot determine the home directory")]
     NoHomeDir,
     #[error(
-        "invalid application config name '{name}': expected one path component other than 'root'"
+        "invalid application config name '{name}': expected one path component other than 'source'"
     )]
     InvalidApplicationName { name: String },
     #[error("invalid environment filename stem '{stem}': {message}")]
@@ -843,10 +844,13 @@ mod tests {
         let temporary = tempdir().unwrap();
         let registry = default_format_parser_registry();
         let missing = temporary.path().join("missing/nested");
-        assert_eq!(resolve_root_directory(&missing, &registry).unwrap(), missing);
+        assert_eq!(resolve_source_directory(&missing, &registry).unwrap(), missing);
         fs::write(temporary.path().join("atlas.rhai"), "throw \"not a pointer\";").unwrap();
-        assert_eq!(resolve_root_directory(temporary.path(), &registry).unwrap(), temporary.path());
-        assert!(resolve_root_directory(&temporary.path().join("atlas.rhai"), &registry).is_err());
+        assert_eq!(
+            resolve_source_directory(temporary.path(), &registry).unwrap(),
+            temporary.path()
+        );
+        assert!(resolve_source_directory(&temporary.path().join("atlas.rhai"), &registry).is_err());
     }
 
     #[test]
@@ -867,21 +871,21 @@ mod tests {
         ] {
             let directory = temporary.path().join(extension);
             fs::create_dir(&directory).unwrap();
-            fs::write(directory.join(format!("root.{extension}")), source).unwrap();
+            fs::write(directory.join(format!("source.{extension}")), source).unwrap();
             let selected =
-                resolve_root_directory(&directory, &default_format_parser_registry()).unwrap();
+                resolve_source_directory(&directory, &default_format_parser_registry()).unwrap();
             assert_eq!(selected.canonicalize_path().unwrap(), target.canonicalize_path().unwrap());
         }
     }
 
     #[test]
-    fn pointers_require_a_valid_target_a_sole_entry_and_one_hop() {
+    fn pointers_require_a_valid_target_and_one_hop() {
         let temporary = tempdir().unwrap();
         let directory = temporary.path().join("config");
         let target = temporary.path().join("target");
         fs::create_dir(&directory).unwrap();
         fs::create_dir(&target).unwrap();
-        let pointer = directory.join("root.rhai");
+        let pointer = directory.join("source.rhai");
         let registry = default_format_parser_registry();
         for source in [
             "invalid syntax !",
@@ -890,22 +894,15 @@ mod tests {
             "#{ directory: 3 }",
             "#{ directory: \"../target\", extra: true }",
             "#{ directory: \"../missing\" }",
-            "#{ directory: \"root.rhai\" }",
+            "#{ directory: \"source.rhai\" }",
             "#{ directory: \".\" }",
         ] {
             fs::write(&pointer, source).unwrap();
-            assert!(resolve_root_directory(&directory, &registry).is_err(), "{source}");
+            assert!(resolve_source_directory(&directory, &registry).is_err(), "{source}");
         }
         fs::write(&pointer, "#{ directory: \"../target\" }").unwrap();
-        let sibling = directory.join(".hidden");
-        fs::write(&sibling, "contents").unwrap();
-        assert!(resolve_root_directory(&directory, &registry).is_err());
-        fs::remove_file(&sibling).unwrap();
-        fs::create_dir(&sibling).unwrap();
-        assert!(resolve_root_directory(&directory, &registry).is_err());
-        fs::remove_dir(&sibling).unwrap();
-        fs::write(target.join("root.rhai"), "#{ directory: \"..\" }").unwrap();
-        assert!(resolve_root_directory(&directory, &registry).is_err());
+        fs::write(target.join("source.rhai"), "#{ directory: \"..\" }").unwrap();
+        assert!(resolve_source_directory(&directory, &registry).is_err());
     }
 
     #[cfg(unix)]
@@ -924,9 +921,9 @@ mod tests {
             "import \"helpers.rhai\" as helpers; #{ directory: helpers::directory }",
         )
         .unwrap();
-        std::os::unix::fs::symlink(&pointer, directory.join("root.rhai")).unwrap();
+        std::os::unix::fs::symlink(&pointer, directory.join("source.rhai")).unwrap();
         let selected =
-            resolve_root_directory(&directory, &default_format_parser_registry()).unwrap();
+            resolve_source_directory(&directory, &default_format_parser_registry()).unwrap();
         assert_eq!(selected.canonicalize_path().unwrap(), target.canonicalize_path().unwrap());
     }
 }

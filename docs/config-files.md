@@ -143,7 +143,8 @@ atlas catalog -C experiment.rhai
 
 This uses the whole value from `experiment.rhai`. Its filename does not have to match the command.
 Give a path relative to your current directory, or an absolute path. The usual command files are
-not consulted for this invocation.
+not consulted for this invocation. An explicit path also bypasses the `source.*` pointer described
+below. Rhai files still receive the application's local environment.
 
 If the file holds settings for several commands, add `::` followed by the part you want:
 
@@ -219,35 +220,60 @@ The application can choose a different environment filename or variable name, as
 
 ## Keep your configs somewhere else
 
-You may want your configs in a version-controlled directory or another shared location. A
-filesystem link from `~/.config/atlas/` to that directory works. You can also link individual
-files or command directories.
+You may want to share command configs through a version-controlled directory while keeping
+machine-specific values local. Put a `source.rhai` beside your local `env.rhai`:
 
-For a simple alternative to linking the whole directory, put a `root.rhai` in
-`~/.config/atlas/`:
+```text
+~/.config/atlas/
+    env.rhai
+    source.rhai
+
+~/configs/atlas/
+    catalog.rhai
+    archive/
+        create.rhai
+        prune.rhai
+```
+
+The local `source.rhai` contains:
 
 ```rhai
 #{ directory: "~/configs/atlas" }
 ```
 
-Scry then looks in `~/configs/atlas/` for everything, including the optional environment file:
+Scry now looks in `~/configs/atlas/` for command configs, using the same files, directories, and
+command maps shown earlier. It continues loading the optional environment from
+`~/.config/atlas/env.*`. For example, local `env.rhai` can contain:
 
-```text
-~/configs/atlas/
-    env.rhai
-    catalog.rhai
-    archive.rhai
+```rhai
+#{ archive_retention_days: 30 }
 ```
 
-`root.rhai` must be the only entry in the original `~/.config/atlas/` directory. Move the other
-files to the destination. The pointer replaces the directory as a whole, so there is only one
-place to look for settings. The destination must already exist and cannot contain another root
-pointer.
+The shared `archive/prune.rhai` can use that machine's value:
 
-The pointer can use any enabled format. For example, `root.json` can contain
-`{ "directory": "~/configs/atlas" }`. A path starting with `~/` refers to your home directory.
-A relative path is resolved beside the pointer file. If that file is itself a link, the path is
-relative to its physical location.
+```rhai
+#{ keep_days: env.archive_retention_days }
+```
+
+The pointer selects one command directory. Local command files are not an overlay or fallback,
+so move any command settings you want to keep into the destination. An environment file there
+does not replace or supplement the local environment. The destination must already exist and
+cannot contain another `source.*` pointer.
+
+The pointer must return a map with exactly one field, `directory`, containing the target path.
+It can use any enabled format. For example, `source.json` can contain
+`{ "directory": "~/configs/atlas" }`. Choose one pointer file. Keeping both `source.rhai` and
+`source.json` is an error. A Rhai pointer runs without the environment or application-specific
+functions.
+
+A path starting with `~/` refers to your home directory. A relative path is resolved beside the
+pointer's physical file, including when the pointer is a filesystem link. Relative imports in
+Rhai command files likewise use each importing file's physical location.
+
+You can still link individual files or command directories through the filesystem. Linking the
+whole application directory shares the environment too. The `source.*` pointer keeps the
+environment in the original application directory instead. The old `root.*` pointer convention
+is not supported.
 
 ## Adding this to your CLI
 
@@ -300,8 +326,12 @@ let catalog = Setup::standard("catalog")
 Command scripts would then use `host.archive_retention_days`. The environment file's returned
 value stays the same. Renaming the file also frees `env.rhai` for a command called `env`.
 With the default names, that command's settings can instead live under an `env` key in
-`atlas.rhai`. The names `root.*`, the environment filename, and the application-wide filename
-have special roles at the top of the config directory.
+`atlas.rhai`. The stems `source`, the configured environment filename, and the application name
+are reserved for root-level command files, including in a directory selected by `source.*`.
+Use application-wide map entries or descendant files for commands with those names.
+
+An application's `.directory(...)` override changes the original application directory. Both
+`source.*` and the optional environment are found there, even when command files are elsewhere.
 
 The [complete example](../scry/examples/command_configs.rs) uses these custom environment names
 and adds the archive commands, a custom Rhai function, and reporting of the selected config file.

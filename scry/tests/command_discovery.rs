@@ -637,9 +637,9 @@ fn nested_bundle_groups_and_executable_parents_select_their_own_payloads() {
 }
 
 #[test]
-fn descriptions_and_templates_skip_config_root_and_namespace_validation() {
+fn descriptions_and_templates_skip_command_source_and_namespace_validation() {
     let directory = tempdir().unwrap();
-    fs::write(directory.path().join("root.rhai"), "throw \"root is unused\";").unwrap();
+    fs::write(directory.path().join("source.rhai"), "throw \"source is unused\";").unwrap();
     for action in ["desc", "template"] {
         let application = ApplicationConfig::new("atlas").directory(directory.path());
         let bundle = Setup::standard("render")
@@ -659,11 +659,11 @@ fn descriptions_and_templates_skip_config_root_and_namespace_validation() {
 
 #[cfg(feature = "format-json")]
 #[test]
-fn explicit_data_files_bypass_a_broken_ambient_root() {
+fn explicit_data_files_bypass_a_broken_command_source() {
     let directory = tempdir().unwrap();
     let conventional = directory.path().join("config");
     fs::create_dir(&conventional).unwrap();
-    fs::write(conventional.join("root.rhai"), "throw \"root is unused\";").unwrap();
+    fs::write(conventional.join("source.rhai"), "throw \"source is unused\";").unwrap();
     let path = directory.path().join("input.json");
     fs::write(&path, r#"{ "outer": { "value": 29 } }"#).unwrap();
     let application = ApplicationConfig::new("atlas").directory(conventional);
@@ -682,6 +682,80 @@ fn explicit_data_files_bypass_a_broken_ambient_root() {
     assert_eq!(value, 29);
     assert_eq!(source.logical_path, path);
     assert_eq!(source.selection, KeyPath::from_keys(["outer"]));
+}
+
+#[test]
+fn delegated_discovery_does_not_fall_back_to_local_commands() {
+    let directory = tempdir().unwrap();
+    let application_dir = directory.path().join("config");
+    let command_dir = directory.path().join("commands");
+    fs::create_dir(&application_dir).unwrap();
+    fs::create_dir(&command_dir).unwrap();
+    fs::write(application_dir.join("source.rhai"), "#{ directory: \"../commands\" }").unwrap();
+    fs::write(application_dir.join("render.rhai"), "throw \"local command must not load\";")
+        .unwrap();
+    fs::write(application_dir.join("atlas.rhai"), "throw \"local namespace must not load\";")
+        .unwrap();
+    let application = ApplicationConfig::new("atlas").directory(&application_dir);
+    assert!(leaf_invocation("render").load(&application).unwrap().is_none());
+}
+
+#[test]
+fn delegated_reserved_commands_use_the_app_map_and_root_uses_an_ordinary_file() {
+    let directory = tempdir().unwrap();
+    let application_dir = directory.path().join("config");
+    let command_dir = directory.path().join("commands");
+    fs::create_dir(&application_dir).unwrap();
+    fs::create_dir(&command_dir).unwrap();
+    fs::write(application_dir.join("source.rhai"), "#{ directory: \"../commands\" }").unwrap();
+    fs::write(
+        command_dir.join("atlas.rhai"),
+        "#{ source: #{ value: 73 }, env: #{ value: 79 }, atlas: #{ value: 83 } }",
+    )
+    .unwrap();
+    fs::write(
+        command_dir.join("env.rhai"),
+        "throw \"reserved environment stem is not a command file\";",
+    )
+    .unwrap();
+    fs::write(command_dir.join("root.rhai"), "#{ value: 89 }").unwrap();
+    let application = ApplicationConfig::new("atlas").directory(&application_dir);
+    let root = Command::new("atlas").subcommand_required(true).subcommands([
+        Command::new("source"),
+        Command::new("env"),
+        Command::new("atlas"),
+        Command::new("root"),
+    ]);
+    for (command, expected) in [("source", 73), ("env", 79), ("atlas", 83), ("root", 89)] {
+        let loaded = Invocation::new(root.clone(), &[command]).load(&application).unwrap().unwrap();
+        assert_eq!(loaded.node.req::<i64>("value").unwrap(), expected, "{command}");
+    }
+    assert!(matches!(
+        ApplicationConfig::new("source").directory(&application_dir).load_environment(),
+        Err(CommandConfigError::InvalidApplicationName { .. })
+    ));
+    ApplicationConfig::new("root").directory(&application_dir).load_environment().unwrap();
+}
+
+#[test]
+fn delegated_source_subcommands_can_use_nested_files() {
+    let directory = tempdir().unwrap();
+    let application_dir = directory.path().join("config");
+    let command_dir = directory.path().join("commands");
+    fs::create_dir(&application_dir).unwrap();
+    fs::create_dir_all(command_dir.join("source")).unwrap();
+    fs::write(application_dir.join("source.rhai"), "#{ directory: \"../commands\" }").unwrap();
+    fs::write(command_dir.join("source/run.rhai"), "#{ value: 97 }").unwrap();
+    let application = ApplicationConfig::new("atlas").directory(&application_dir);
+    let root = Command::new("atlas").subcommand_required(true).subcommand(
+        Command::new("source").subcommand_required(true).subcommand(Command::new("run")),
+    );
+    let loaded = Invocation::new(root, &["source", "run"]).load(&application).unwrap().unwrap();
+    assert_eq!(loaded.node.req::<i64>("value").unwrap(), 97);
+    assert_eq!(
+        loaded.source.physical_path,
+        command_dir.join("source/run.rhai").canonicalize_path().unwrap()
+    );
 }
 
 #[cfg(any(unix, windows))]

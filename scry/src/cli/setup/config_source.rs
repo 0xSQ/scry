@@ -107,9 +107,12 @@ impl ConfigSource {
 
     /// Enables conventional discovery using the registered command tree and application name.
     ///
-    /// Uses each ancestor command file and the application-wide file under one effective root.
-    /// Use [`ApplicationConfig`] to customize the root, formats, or Rhai engine. Custom `discover`
-    /// and `loader` closures are separate source modes and cannot be combined with this mode.
+    /// Uses each ancestor command file and the application-wide file under one command directory.
+    /// An optional `source.*` redirects that directory while the environment stays in the original
+    /// application directory. Explicit files bypass the pointer and retain the local environment
+    /// for Rhai evaluation. Use [`ApplicationConfig`] to customize the directory, formats, or Rhai
+    /// engine. Custom `discover` and `loader` closures are separate source modes and cannot be
+    /// combined with this mode.
     pub fn application(mut self, application: impl Into<ApplicationConfig>) -> Self {
         self.application = Some(application.into());
         self
