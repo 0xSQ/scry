@@ -1,5 +1,8 @@
 //! Provides `Bundle` for pairing clap commands with handlers.
 
+use std::error::Error;
+use std::fmt;
+
 use clap::{ArgMatches, Command};
 
 // ---------------------------------------------------------------------------------------------- //
@@ -78,25 +81,92 @@ impl<R: 'static, E: 'static> Bundle<R, E> {
     }
 
     /// Parses the process arguments and runs the selected handler.
-    pub fn run(mut self) -> Result<R, E> {
-        let matches = self.command.get_matches_mut();
-        self.dispatcher.dispatch(&matches, vec![&self.command])
+    ///
+    /// Prints help, version output, or a parse error and exits with Clap's status when parsing
+    /// stops execution. Handler errors are returned unchanged. The caller can use
+    /// [`Self::try_run`] to handle parser outcomes without exiting.
+    pub fn run(self) -> Result<R, E> {
+        self.run_from(std::env::args_os())
     }
 
     /// Parses supplied arguments and runs the selected handler.
-    pub fn run_from<I, S>(mut self, args: I) -> Result<R, E>
+    ///
+    /// Prints help, version output, or a parse error and exits with Clap's status when parsing
+    /// stops execution. Handler errors are returned unchanged. The caller can use
+    /// [`Self::try_run_from`] to handle parser outcomes without exiting.
+    pub fn run_from<I, S>(self, args: I) -> Result<R, E>
     where
         I: IntoIterator<Item = S>,
         S: Into<std::ffi::OsString> + Clone,
     {
-        let matches =
-            self.command.try_get_matches_from_mut(args).unwrap_or_else(|error| error.exit());
-        self.dispatcher.dispatch(&matches, vec![&self.command])
+        match self.try_run_from(args) {
+            Ok(value) => Ok(value),
+            Err(RunError::Parse(error)) => error.exit(),
+            Err(RunError::Handler(error)) => Err(error),
+        }
+    }
+
+    /// Parses the process arguments and runs the selected handler without exiting on parser outcomes.
+    ///
+    /// Behaves like [`Self::try_run_from`] using the current process's native arguments.
+    pub fn try_run(self) -> Result<R, RunError<E>> {
+        self.try_run_from(std::env::args_os())
+    }
+
+    /// Parses supplied arguments and runs the selected handler without exiting on parser outcomes.
+    ///
+    /// Returns Clap's help, version, and invalid-input outcomes as [`RunError::Parse`]. The caller
+    /// chooses whether to print them or exit, using their original exit status and output stream.
+    /// Handler errors become [`RunError::Handler`] without changing the handler's return value.
+    ///
+    /// This does not capture output or prevent handlers from exiting or panicking. Configuration
+    /// support actions keep their existing behavior, including printing help and other results.
+    pub fn try_run_from<I, S>(mut self, args: I) -> Result<R, RunError<E>>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<std::ffi::OsString> + Clone,
+    {
+        let matches = self.command.try_get_matches_from_mut(args).map_err(RunError::Parse)?;
+        self.dispatcher.dispatch(&matches, vec![&self.command]).map_err(RunError::Handler)
     }
 
     /// Returns the underlying clap command for inspection.
     pub fn command(&self) -> &Command {
         &self.command
+    }
+}
+
+/// A parser outcome or an error returned by a bundle's selected handler.
+///
+/// Parsing includes successful help and version requests. Match [`Self::Parse`] to inspect the
+/// original Clap error's kind, exit status, output stream, and rendered text.
+///
+/// The handler error type is unrestricted. `Display` delegates to the wrapped value, and
+/// `Error::source` transparently forwards the wrapped error's source. Match either variant to
+/// recover the wrapped error itself.
+#[derive(Debug)]
+pub enum RunError<E> {
+    /// Retains a Clap parser outcome without printing or exiting.
+    Parse(clap::Error),
+    /// Retains the selected handler's error without requiring a conversion.
+    Handler(E),
+}
+
+impl<E: fmt::Display> fmt::Display for RunError<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Parse(error) => error.fmt(formatter),
+            Self::Handler(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl<E: Error + 'static> Error for RunError<E> {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Parse(error) => error.source(),
+            Self::Handler(error) => error.source(),
+        }
     }
 }
 
