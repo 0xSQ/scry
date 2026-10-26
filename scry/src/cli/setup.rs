@@ -289,9 +289,20 @@ impl Setup {
             return Ok(None);
         }
 
-        let input = T::from_node(&node).map_err(|error| SetupError::EvaluateInputConfig {
-            source: Box::new(error),
-        })?;
+        let input = match T::from_node(&node) {
+            Ok(input) => input,
+            Err(error) => {
+                return Err(SetupError::EvaluateInputConfig {
+                    command: commands
+                        .iter()
+                        .map(|command| command.get_name())
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                    config_source: source.map(Box::new),
+                    source: Box::new(error),
+                });
+            }
+        };
         if matches!(invocation.action, Action::Check) {
             println!("Configuration decoded successfully.");
             Ok(None)

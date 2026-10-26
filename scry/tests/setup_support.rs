@@ -184,7 +184,7 @@ fn check_and_execution_report_the_same_decode_failures_without_calling_payload()
                 .into_bundle(|_: CountedCheckInput| panic!("invalid input must not execute"))
                 .run_from(arguments)
                 .unwrap_err();
-            let SetupError::EvaluateInputConfig { source } = error else {
+            let SetupError::EvaluateInputConfig { source, .. } = error else {
                 panic!("unexpected error: {error}");
             };
 

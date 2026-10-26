@@ -4,6 +4,7 @@ use std::error::Error;
 use std::fmt;
 use std::path::PathBuf;
 
+use super::CommandConfigSource;
 use crate::desc::DescPathError;
 use crate::key_path::KeyPathError;
 use crate::node::NodeError;
@@ -66,8 +67,16 @@ pub enum SetupError {
     },
 
     /// Failed to evaluate the input configuration into the target type.
-    #[error("failed to evaluate input configuration")]
+    #[error(
+        "failed to evaluate input configuration for command '{command}'{}",
+        format_config_selection(.config_source.as_deref())
+    )]
     EvaluateInputConfig {
+        /// Registered command names from the root to the selected command.
+        command: String,
+        /// Selected input before CLI edits, rather than the origin of the failing value.
+        config_source: Option<Box<CommandConfigSource>>,
+        /// Original typed-conversion error and its logical field path.
         #[source]
         source: BoxedError,
     },
@@ -117,6 +126,20 @@ pub enum SetupError {
     /// Parsed CLI values do not carry the positions needed for ordered overrides.
     #[error("invalid parsed values for argument '{argument}': {message}")]
     InvalidCliMatches { argument: String, message: String },
+}
+
+fn format_config_selection(source: Option<&CommandConfigSource>) -> String {
+    match source {
+        Some(source) if source.selection.is_empty() => {
+            format!(" (selected from '{}')", source.logical_path.display())
+        }
+        Some(source) => format!(
+            " (selected from '{}' at '{}')",
+            source.logical_path.display(),
+            source.selection
+        ),
+        None => String::new(),
+    }
 }
 
 impl fmt::Debug for SetupError {

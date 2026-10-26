@@ -464,7 +464,9 @@ pub struct LoadedCommandConfig {
 ///
 /// Describes the original source before payload reanchoring or CLI edits. Both conventional and
 /// explicit loading preserve this metadata. [`Setup::into_bundle_with_source`](super::Setup::into_bundle_with_source)
-/// exposes it to CLI payload handlers. An empty-map fallback has no file source.
+/// exposes it to CLI payload handlers, and [`super::SetupError::EvaluateInputConfig`] retains it
+/// when typed conversion fails. It identifies the selected input, not the origin of edited values.
+/// An empty-map fallback has no file source.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandConfigSource {
     /// Discovered placement or decoded explicit filename, retaining filesystem links.
