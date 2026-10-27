@@ -448,7 +448,7 @@ defaults::base + #{
   how to group commands in a file, share values, and keep configs in another directory.
 - **[Writing Config Files](docs/writing-configs.md)** - Generates documented Rhai or JSON5 files from values and configuration metadata.
 - [`kit`](scry/src/kit.rs) provides reusable input shapes for designing command interfaces. Use these building blocks in your configuration types to give users convenient ways to express common inputs:
-  - [`KeyValues<V>`](scry/src/kit/key_values.rs) accepts a map or a list of key-value pairs. The pair form preserves order and duplicate keys.
+  - [`KeyValues<V>`](scry/src/kit/key_values.rs) accepts a map or a list of key-value pairs with unique string keys. The pair form preserves explicit entry order.
   - [`OneOrMany<T>`](scry/src/kit/one_or_many.rs) accepts one value or an array, keeping common single-item inputs brief.
   - [`Files`](scry/docs/kit/files.md) selects files by path or pattern, with optional filtering and sorting.
   - [`SeqExpr`](scry/docs/kit/sequence-expressions.md) expresses numeric sequences and index selections compactly, such as `0..20:2` for every other item among the first twenty.

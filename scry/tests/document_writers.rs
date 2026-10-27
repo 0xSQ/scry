@@ -11,7 +11,7 @@ use scry::{Config, Node, NodeError, ToNode};
 // ---------------------------------------------------------------------------------------------- //
 
 #[test]
-fn associative_settings_preserve_entry_order_and_duplicate_keys() -> Result<(), NodeError> {
+fn associative_settings_preserve_entry_order() -> Result<(), NodeError> {
     #[derive(Debug, PartialEq, Config, ToNode)]
     struct Settings {
         /// Ordered named weights.
@@ -19,11 +19,12 @@ fn associative_settings_preserve_entry_order_and_duplicate_keys() -> Result<(), 
     }
 
     let settings = Settings {
-        weights: KeyValues::new(vec![
+        weights: KeyValues::try_from(vec![
             ("zeta".to_owned(), 7),
             ("alpha".to_owned(), 9),
-            ("zeta".to_owned(), 11),
-        ]),
+            ("beta".to_owned(), 11),
+        ])
+        .unwrap(),
     };
     let document = Document::from_config(&settings)?;
     let output = render_rhai(&document)?;

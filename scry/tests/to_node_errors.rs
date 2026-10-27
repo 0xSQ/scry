@@ -69,12 +69,13 @@ fn transparent_wrappers_preserve_child_paths() {
 }
 
 #[test]
-fn key_values_uses_pair_positions_even_with_duplicate_keys() {
+fn key_values_uses_pair_positions_for_named_entries() {
     let relative = KeyPath::from_keys(["detail"]);
-    let values = KeyValues::new(vec![
-        ("same.key".to_string(), None),
-        ("same.key".to_string(), Some(FailingValue::new(relative.clone()))),
-    ]);
+    let values = KeyValues::try_from(vec![
+        ("first.key".to_string(), None),
+        ("second.key".to_string(), Some(FailingValue::new(relative.clone()))),
+    ])
+    .unwrap();
 
     assert_path(values.to_node(), KeyPath::from_index(1).push_index(1).join(&relative));
 }
@@ -126,13 +127,14 @@ fn successful_kit_wrappers_keep_their_canonical_array_shapes() {
     assert_eq!(single.req::<u8>("[0]").unwrap(), 7);
     assert!(OneOrMany::<u8>::default().to_node().unwrap().as_vec().unwrap().is_empty());
 
-    let pairs = KeyValues::new(vec![("same".to_string(), 3u8), ("same".to_string(), 5u8)])
+    let pairs = KeyValues::try_from(vec![("zeta".to_string(), 3u8), ("alpha".to_string(), 5u8)])
+        .unwrap()
         .to_node()
         .unwrap();
     assert_eq!(pairs.as_vec().unwrap().len(), 2);
-    for (index, expected) in [3u8, 5].into_iter().enumerate() {
+    for (index, (key, expected)) in [("zeta", 3u8), ("alpha", 5)].into_iter().enumerate() {
         assert_eq!(pairs.req_node(KeyPath::from_index(index)).unwrap().as_vec().unwrap().len(), 2);
-        assert_eq!(pairs.req::<String>(KeyPath::from_index(index).push_index(0)).unwrap(), "same");
+        assert_eq!(pairs.req::<String>(KeyPath::from_index(index).push_index(0)).unwrap(), key);
         assert_eq!(pairs.req::<u8>(KeyPath::from_index(index).push_index(1)).unwrap(), expected);
     }
 }

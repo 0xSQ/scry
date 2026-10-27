@@ -139,12 +139,12 @@ fn complete_field_types_infer_nested_kit_reader_and_borrowed_writer_closures() {
     )
     .unwrap();
     let value: AddressBook = source.as_type().unwrap();
-    assert_eq!(value.groups.0[0].0, "local");
-    assert_eq!(value.groups.0[0].1.len(), 2);
-    assert!(value.groups.0[1].1.is_empty());
+    assert_eq!(value.groups.entries()[0].0, "local");
+    assert_eq!(value.groups.get("local").unwrap().len(), 2);
+    assert!(value.groups.get("empty").unwrap().is_empty());
     source.ensure_no_unknown_keys().unwrap();
     let output = value.to_node().unwrap();
-    assert_eq!(output.as_type::<AddressBook>().unwrap().groups.0, value.groups.0);
+    assert_eq!(output.as_type::<AddressBook>().unwrap().groups, value.groups);
     assert!(AddressBook::describe().validate_path("groups").is_ok());
 
     let source = Node::parse_str(

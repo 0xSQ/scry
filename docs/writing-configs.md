@@ -116,8 +116,9 @@ application must also supply `background`. To leave that choice to the user, gen
 template from the type instead.
 
 Use `scry::kit::KeyValues<T>` for associative configuration fields. It already supports
-reading, writing, and descriptions. Its canonical list-of-pairs output preserves entry
-order and duplicate keys. Use `Document::map` when constructing a literal object instead.
+reading, writing, and descriptions. It enforces unique string keys, and its canonical
+list-of-pairs output preserves entry order. Use `Document::map` when constructing a
+literal object instead.
 
 Custom types can supply `#[scry(to_node_with(write_value))]` on a field, alongside matching
 read and description hooks. For example, a GUI color can serialize as a hex string through

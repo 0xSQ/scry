@@ -219,12 +219,12 @@ mod tests {
     #[test]
     fn native_maps_are_single_items_and_arrays_preserve_each_map() {
         for (source, expected) in [
-            ("#{ key: 42 }", vec![KeyValues::new(vec![("key".to_string(), 42)])]),
+            ("#{ key: 42 }", vec![KeyValues::try_from(vec![("key".to_string(), 42)]).unwrap()]),
             (
                 "[#{ a: 1 }, #{ b: 2 }]",
                 vec![
-                    KeyValues::new(vec![("a".to_string(), 1)]),
-                    KeyValues::new(vec![("b".to_string(), 2)]),
+                    KeyValues::try_from(vec![("a".to_string(), 1)]).unwrap(),
+                    KeyValues::try_from(vec![("b".to_string(), 2)]).unwrap(),
                 ],
             ),
         ] {

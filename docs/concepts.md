@@ -662,7 +662,8 @@ and input consumption with custom compositions.
 
 Optional helpers consume null as `None` and write `None` as explicit null. Arrays and tuples
 check exact lengths before reading their children. Fixed-array descriptions currently use the
-same list shape as vectors. KeyValues accepts maps or exact pairs and writes ordered pairs.
+same list shape as vectors. KeyValues accepts maps or exact pairs with unique string keys and
+writes ordered pairs.
 OneOrMany treats every array as an outer list, so a singleton array-valued element needs an
 additional array layer.
 

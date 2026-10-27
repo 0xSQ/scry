@@ -196,13 +196,13 @@ fn input_shape_mismatches_are_located_without_running_callbacks() {
 }
 
 #[test]
-fn key_values_preserve_duplicate_pairs_and_validate_pair_shape_before_values() {
-    let input = node(r#"[["same", "127.0.0.1"], ["same", "::1"]]"#);
+fn key_values_preserve_pair_order_and_validate_pair_shape_before_values() {
+    let input = node(r#"[["zeta", "127.0.0.1"], ["alpha", "::1"]]"#);
     let values = key_values::read_with(&input, read_address).unwrap();
-    assert_eq!(values.keys().collect::<Vec<_>>(), ["same", "same"]);
+    assert_eq!(values.keys().collect::<Vec<_>>(), ["zeta", "alpha"]);
     input.ensure_no_unknown_keys().unwrap();
     let output = key_values::write_with(&values, write_address).unwrap();
-    assert_eq!(output.req::<String>("[1][0]").unwrap(), "same");
+    assert_eq!(output.req::<String>("[1][0]").unwrap(), "alpha");
     assert_eq!(output.req::<String>("[1][1]").unwrap(), "::1");
 
     for source in [r#"["invalid pair"]"#, r#"[["key only"]]"#] {
@@ -261,7 +261,8 @@ fn writers_borrow_non_clone_values_and_preserve_state_without_reading_back() {
 
 #[test]
 fn writer_failures_compose_actual_output_positions_once_and_stop_later_calls() {
-    let values = KeyValues::new(vec![("same".to_string(), 1u8), ("same".to_string(), 2)]);
+    let values =
+        KeyValues::try_from(vec![("first".to_string(), 1u8), ("second".to_string(), 2)]).unwrap();
     let calls = Cell::new(0);
     let error = key_values::write_with(&values, |value| {
         calls.set(calls.get() + 1);
