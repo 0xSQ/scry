@@ -81,13 +81,12 @@ The native types implement `FromStr`, so they can also be used independently of 
 ```rust
 use scry::kit::color::{Rgb8, Rgba8};
 
-let background: Rgb8 = " TeAl ".parse()?;
+let background: Rgb8 = " TeAl ".parse().expect("the CSS color name is valid");
 assert_eq!(background.into_array(), [0, 128, 128]);
 
-let overlay: Rgba8 = "#2080e080".parse()?;
+let overlay: Rgba8 = "#2080e080".parse().expect("the hex color is valid");
 assert_eq!(overlay.alpha(), 128);
 assert_eq!(overlay.into_array(), [32, 128, 224, 128]);
-# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 `new` constructs a value from byte channels. Arrays and tuples convert infallibly in either
@@ -100,15 +99,14 @@ use scry::kit::color::{Rgb8, Rgba8};
 let rgb = Rgb8::new(32, 128, 224);
 let rgba = Rgba8::from(rgb);
 assert_eq!(rgba.into_array(), [32, 128, 224, 255]);
-assert_eq!(Rgb8::try_from(rgba)?, rgb);
+assert_eq!(Rgb8::try_from(rgba).expect("alpha 255 is opaque"), rgb);
 
 let translucent = Rgba8::from((32, 128, 224, 128));
-let error = Rgb8::try_from(translucent).unwrap_err();
+let error = Rgb8::try_from(translucent).expect_err("alpha 128 is not opaque");
 assert_eq!(error.alpha(), 128);
 
 let channels: (u8, u8, u8) = rgb.into();
 assert_eq!(channels, (32, 128, 224));
-# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 `as_array` borrows the channels. `red`, `green`, and `blue` return individual channels, and
@@ -132,11 +130,10 @@ struct Accent {
     color: Rgb8,
 }
 
-let config: Accent = scry::from_defaults()?;
+let config: Accent = scry::from_defaults().expect("the color has a declared default");
 assert_eq!(config.color, named::TEAL);
 assert_eq!(named::RED.into_array(), [255, 0, 0]);
 assert_eq!(Rgba8::from(named::TEAL).into_array(), [0, 128, 128, 255]);
-# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 Converting a named constant into `Rgba8` adds alpha 255. The transparent keyword remains a
@@ -161,20 +158,22 @@ struct Appearance {
     outline: Option<Rgba8>,
 }
 
-let input = r##"#{ selection: "#2080e080", accents: ["teal", [255, 128, 0]] }"##;
-let node = Node::parse_str(input, Format::Rhai)?;
-let config: Appearance = node.as_type()?;
-node.ensure_no_unknown_keys()?;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let input = r##"#{ selection: "#2080e080", accents: ["teal", [255, 128, 0]] }"##;
+    let node = Node::parse_str(input, Format::Rhai)?;
+    let config: Appearance = node.as_type()?;
+    node.ensure_no_unknown_keys()?;
 
-assert_eq!(config.background.into_array(), [24, 24, 28]);
-assert_eq!(config.selection.alpha(), 128);
-assert_eq!(config.accents[0].into_array(), [0, 128, 128]);
-assert_eq!(config.outline, None);
+    assert_eq!(config.background.into_array(), [24, 24, 28]);
+    assert_eq!(config.selection.alpha(), 128);
+    assert_eq!(config.accents[0].into_array(), [0, 128, 128]);
+    assert_eq!(config.outline, None);
 
-let output = config.to_node()?;
-assert_eq!(output.req::<String>("background")?, "#18181c");
-assert_eq!(output.req::<String>("selection")?, "#2080e080");
-# Ok::<(), Box<dyn std::error::Error>>(())
+    let output = config.to_node()?;
+    assert_eq!(output.req::<String>("background")?, "#18181c");
+    assert_eq!(output.req::<String>("selection")?, "#2080e080");
+    Ok(())
+}
 ```
 
 Missing fields follow the enclosing struct's declared policy. Missing `background` uses its
@@ -202,12 +201,14 @@ struct Appearance {
     selection: (u8, u8, u8, u8),
 }
 
-let input = r##"#{ background: "teal", selection: "#2080e080" }"##;
-let config: Appearance = Node::parse_str(input, Format::Rhai)?.as_type()?;
-assert_eq!(config.background, [0, 128, 128]);
-assert_eq!(config.selection, (32, 128, 224, 128));
-assert_eq!(config.to_node()?.req::<String>("background")?, "#008080");
-# Ok::<(), Box<dyn std::error::Error>>(())
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let input = r##"#{ background: "teal", selection: "#2080e080" }"##;
+    let config: Appearance = Node::parse_str(input, Format::Rhai)?.as_type()?;
+    assert_eq!(config.background, [0, 128, 128]);
+    assert_eq!(config.selection, (32, 128, 224, 128));
+    assert_eq!(config.to_node()?.req::<String>("background")?, "#008080");
+    Ok(())
+}
 ```
 
 | Adapter | Destination |
@@ -267,13 +268,13 @@ mod renderer_color {
     }
 }
 
-# fn main() -> Result<(), Box<dyn std::error::Error>> {
-let input = r##"#{ selection: "#2080e080" }"##;
-let config: Appearance = Node::parse_str(input, Format::Rhai)?.as_type()?;
-assert_eq!(config.selection, RendererColor([32, 128, 224, 128]));
-assert_eq!(config.to_node()?.req::<String>("selection")?, "#2080e080");
-# Ok(())
-# }
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let input = r##"#{ selection: "#2080e080" }"##;
+    let config: Appearance = Node::parse_str(input, Format::Rhai)?.as_type()?;
+    assert_eq!(config.selection, RendererColor([32, 128, 224, 128]));
+    assert_eq!(config.to_node()?.req::<String>("selection")?, "#2080e080");
+    Ok(())
+}
 ```
 
 Replace the channel construction with the destination library's conversion. The application
@@ -291,9 +292,9 @@ translucent or fully transparent colors write as `#rrggbbaa`:
 use scry::kit::color::{named, Rgba8};
 
 assert_eq!(Rgba8::from(named::TEAL).to_string(), "#008080");
-assert_eq!("#28e8".parse::<Rgba8>()?.to_string(), "#2288ee88");
+let color: Rgba8 = "#28e8".parse().expect("the short hex color is valid");
+assert_eq!(color.to_string(), "#2288ee88");
 assert_eq!(Rgba8::new(255, 0, 0, 0).to_string(), "#ff000000");
-# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 Parsing stores the resolved color rather than the original name, spacing, or input shape.
