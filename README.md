@@ -452,6 +452,7 @@ defaults::base + #{
   - [`OneOrMany<T>`](scry/src/kit/one_or_many.rs) accepts one value or an array, keeping common single-item inputs brief.
   - [`Files`](scry/docs/kit/files.md) selects files by path or pattern, with optional filtering and sorting.
   - [`SeqExpr`](scry/docs/kit/sequence-expressions.md) expresses numeric sequences and index selections compactly, such as `0..20:2` for every other item among the first twenty.
+  - [Colors](scry/docs/kit/colors.md) accepts CSS names, hex codes, and RGB/RGBA channels through native `Rgb8`/`Rgba8` values or standard array and tuple adapters.
 
 See the [examples](scry/examples) directory for complete working code.
 

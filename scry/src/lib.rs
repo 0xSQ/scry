@@ -35,7 +35,8 @@
 //!   clap commands with config loading, overrides, and inspection options.
 //! - [`writer`] - Document construction and Rhai, JSON5, flat, and tree output.
 //! - [`rhai`] - Rhai script evaluation environment.
-//! - [`kit`] - Reusable config building blocks (file lists, one-or-many collections).
+//! - [`kit`] - Reusable config building blocks (file selections, numeric sequences, colors, and
+//!   collections).
 //! - [`util`] - General utilities (path extensions, etc.).
 //!
 //! # Further Reading

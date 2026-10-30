@@ -1,5 +1,6 @@
 //! Reusable building blocks for configuration and CLI tools.
 
+pub mod color;
 pub mod files;
 pub mod key_values;
 pub mod one_or_many;
