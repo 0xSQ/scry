@@ -4,7 +4,10 @@ use std::path::PathBuf;
 
 use scry::desc::{DefaultDesc, FieldDesc};
 use scry::node::Format;
-use scry::writer::{format_template, TemplateMode};
+use scry::writer::{
+    format_template, format_template_with_config, TemplateConfig, TemplateMode, TemplateSpacing,
+    TemplateTypeHints,
+};
 use scry::{Config, Desc, Describe, Node, NodeError, ToNode};
 
 // ---------------------------------------------------------------------------------------------- //
@@ -34,18 +37,17 @@ struct Thumbnail {
 }
 
 #[test]
-fn compact_field_metadata_distinguishes_real_defaults_from_typed_holes() -> Result<(), NodeError> {
+fn field_metadata_precedes_defaults_and_typed_holes() -> Result<(), NodeError> {
     for format in formats() {
         let text = format_template::<Settings>(format.clone(), TemplateMode::Ref)?;
-        assert_line(&text, "// Names the source image. Required.");
+        assert_line(&text, "// Names the source image. Type: path. Required.");
         assert_entry(&text, &format, "input", "<path>,", true);
-        assert_line(&text, "// Controls the detection threshold. Optional.");
-        assert_entry(&text, &format, "threshold", "4, // type: u8", true);
-        assert_line(&text, "// Optional.");
-        assert_entry(&text, &format, "verbose", "false, // type: bool", true);
-        assert!(!text.contains("Type:"), "{text}");
-        assert!(!text.contains("<path>, // type:"), "{text}");
-        assert!(!text.contains("type: object"), "{text}");
+        assert_line(&text, "// Controls the detection threshold. Type: u8. Optional.");
+        assert_entry(&text, &format, "threshold", "4,", true);
+        assert_line(&text, "// Type: bool. Optional.");
+        assert_entry(&text, &format, "verbose", "false,", true);
+        assert!(!text.contains("// type:"), "{text}");
+        assert!(!text.contains("Type: object"), "{text}");
         let node = Node::parse_str(&text, format)?;
         assert!(node.as_map()?.is_empty());
     }
@@ -61,10 +63,10 @@ fn disabled_nested_objects_keep_one_comment_marker_at_each_natural_indentation(
             &text,
             "// Enables an additional thumbnail export. Optional. Omitted by default.",
         );
-        assert_line(&text, "// Names the thumbnail destination. Required.");
+        assert_line(&text, "// Names the thumbnail destination. Type: path. Required.");
         assert_entry(&text, &format, "path", "<path>,", true);
-        assert_line(&text, "// Limits the longest side in pixels. Optional.");
-        assert_entry(&text, &format, "size", "256, // type: u32", true);
+        assert_line(&text, "// Limits the longest side in pixels. Type: u32. Optional.");
+        assert_entry(&text, &format, "size", "256,", true);
         let path_entry = format!("// {}: <path>,", entry_key(&format, "path"));
         let path_line = text.lines().find(|line| line.trim_start() == path_entry).unwrap();
         assert!(path_line.starts_with(&format!("        {path_entry}")), "{text}");
@@ -79,7 +81,7 @@ fn disabled_nested_objects_keep_one_comment_marker_at_each_natural_indentation(
 }
 
 #[test]
-fn multiline_docs_append_policy_to_the_last_nonempty_line() -> Result<(), NodeError> {
+fn multiline_docs_append_type_and_policy_to_the_last_nonempty_line() -> Result<(), NodeError> {
     struct MultilineDocs;
     impl Describe for MultilineDocs {
         fn describe() -> Desc {
@@ -94,9 +96,9 @@ fn multiline_docs_append_policy_to_the_last_nonempty_line() -> Result<(), NodeEr
     for format in formats() {
         let text = format_template::<MultilineDocs>(format.clone(), TemplateMode::Ref)?;
         assert_line(&text, "// First paragraph.");
-        assert_line(&text, "// Final line. Required.");
-        assert_line(&text, "// Uses a custom expression. Required.");
-        assert_entry(&text, &format, "custom", "<value>, // type: duration expression", true);
+        assert_line(&text, "// Final line. Type: string. Required.");
+        assert_line(&text, "// Uses a custom expression. Type: duration expression. Required.");
+        assert_entry(&text, &format, "custom", "<value>,", true);
         assert!(!text.contains('\r') && !text.contains('\u{2028}'), "{text}");
         Node::parse_str(&text, format)?;
     }
@@ -138,10 +140,18 @@ fn actual_nested_defaults_receive_metadata_without_being_replaced_by_child_defau
             let text = format_template::<NestedDefaults>(format.clone(), mode)?;
             assert_line(&text, "// Configures the primary service. Optional.");
             assert_line(&text, "// Lists the replica services. Optional.");
-            assert_eq!(text.matches("Names the service. Required.").count(), 2, "{text}");
-            assert_eq!(text.matches("Selects the service port. Optional.").count(), 2, "{text}");
-            assert_entry(&text, &format, "port", "9090, // type: u16", mode == TemplateMode::Ref);
-            assert_entry(&text, &format, "port", "9191, // type: u16", mode == TemplateMode::Ref);
+            assert_eq!(
+                text.matches("Names the service. Type: string. Required.").count(),
+                2,
+                "{text}"
+            );
+            assert_eq!(
+                text.matches("Selects the service port. Type: u16. Optional.").count(),
+                2,
+                "{text}"
+            );
+            assert_entry(&text, &format, "port", "9090,", mode == TemplateMode::Ref);
+            assert_entry(&text, &format, "port", "9191,", mode == TemplateMode::Ref);
             assert!(!text.contains("8080"), "{text}");
             let node = Node::parse_str(&text, format.clone())?;
             if mode == TemplateMode::Explicit {
@@ -231,18 +241,14 @@ fn multiline_type_hints_stay_on_one_line_and_url_values_keep_their_slashes() -> 
     for format in formats() {
         for mode in [TemplateMode::Ref, TemplateMode::Explicit] {
             let text = format_template::<HintsAndUrls>(format.clone(), mode)?;
-            assert_entry(
-                &text,
-                &format,
-                "duration",
-                "<value>, // type: duration expression seconds",
-                true,
-            );
+            assert_line(&text, "// Type: duration expression seconds. Required.");
+            assert_entry(&text, &format, "duration", "<value>,", true);
+            assert_line(&text, "// Type: string. Optional.");
             assert_entry(
                 &text,
                 &format,
                 "url",
-                "\"https://example.org/a//b\", // type: string",
+                "\"https://example.org/a//b\",",
                 mode == TemplateMode::Ref,
             );
             let node = Node::parse_str(&text, format.clone())?;
@@ -271,7 +277,8 @@ fn list_and_tuple_placeholders_can_be_enabled_without_repairing_punctuation(
     }
     for format in formats() {
         let text = format_template::<Containers>(format.clone(), TemplateMode::Ref)?;
-        assert_entry(&text, &format, "list", "[ // type: list<u8>", true);
+        assert_line(&text, "// Type: list<u8>. Required.");
+        assert_entry(&text, &format, "list", "[", true);
         assert_line(&text, "// <u8>,");
         assert_line(&text, "// <string>,");
         let edited = text
@@ -350,13 +357,8 @@ fn real_scalar_collections_stay_compact_with_one_field_type_annotation() -> Resu
     for format in formats() {
         for mode in [TemplateMode::Ref, TemplateMode::Explicit] {
             let text = format_template::<CompactDefaults>(format.clone(), mode)?;
-            assert_entry(
-                &text,
-                &format,
-                "values",
-                "[1, 2], // type: list<u8>",
-                mode == TemplateMode::Ref,
-            );
+            assert_line(&text, "// Type: list<u8>. Optional.");
+            assert_entry(&text, &format, "values", "[1, 2],", mode == TemplateMode::Ref);
             assert_entry(&text, &format, "pair", "[7, \"seven\"],", mode == TemplateMode::Ref);
             let node = Node::parse_str(&text, format.clone())?;
             if mode == TemplateMode::Explicit {
@@ -364,6 +366,129 @@ fn real_scalar_collections_stay_compact_with_one_field_type_annotation() -> Resu
                 assert_eq!(node.req::<(u8, String)>("pair")?, (7, "seven".to_owned()));
             } else {
                 assert!(node.as_map()?.is_empty());
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn formatting_options_cover_shapes_and_nested_defaults_without_changing_values(
+) -> Result<(), NodeError> {
+    struct Presentation;
+    impl Describe for Presentation {
+        fn describe() -> Desc {
+            let service = Desc::structure(vec![
+                FieldDesc::new("port", Desc::plain("u16")).with_doc("Selects the port."),
+                FieldDesc::new("codes", Desc::list(Desc::plain("u8")))
+                    .with_doc("Selects the codes."),
+            ]);
+            Desc::structure(vec![
+                FieldDesc::new("name", Desc::plain("string")).with_doc("Names the output."),
+                FieldDesc::new("scale", Desc::plain("f64"))
+                    .with_doc("Scales the output.")
+                    .with_fallback(
+                        DefaultDesc::unknown().with_value(|| 1.5f64.to_node().map(Some)),
+                    ),
+                FieldDesc::new("service", service.clone()).with_fallback(
+                    DefaultDesc::unknown().with_value(|| {
+                        Node::parse_str("#{ port: 9090, codes: [1, 2] }", Format::Rhai).map(Some)
+                    }),
+                ),
+                FieldDesc::new("replicas", Desc::list(service.clone())).with_fallback(
+                    DefaultDesc::unknown().with_value(|| {
+                        Node::parse_str("[#{ port: 9191, codes: [3, 4] }]", Format::Rhai).map(Some)
+                    }),
+                ),
+                FieldDesc::new("preview", service).with_fallback(
+                    DefaultDesc::unknown().with_value(|| Option::<u8>::None.to_node().map(Some)),
+                ),
+            ])
+        }
+    }
+
+    for format in formats() {
+        for mode in [TemplateMode::Min, TemplateMode::Ref, TemplateMode::Explicit] {
+            let baseline = format_template::<Presentation>(format.clone(), mode)?;
+            let baseline =
+                Node::parse_str(&baseline, format.clone())?.to_string_as(Format::Rhai)?;
+            for spacing in [TemplateSpacing::Blank, TemplateSpacing::Compact] {
+                for type_hints in [
+                    TemplateTypeHints::Above,
+                    TemplateTypeHints::Inline,
+                    TemplateTypeHints::None,
+                ] {
+                    let config = TemplateConfig {
+                        mode,
+                        spacing,
+                        type_hints,
+                    };
+                    let text =
+                        format_template_with_config::<Presentation>(format.clone(), &config)?;
+                    let node = Node::parse_str(&text, format.clone())?;
+                    assert_eq!(node.to_string_as(Format::Rhai)?, baseline, "{config:?}\n{text}");
+                    assert_entry(&text, &format, "name", "<string>,", true);
+                    assert_line(
+                        &text,
+                        if type_hints == TemplateTypeHints::Above {
+                            "// Names the output. Type: string. Required."
+                        } else {
+                            "// Names the output. Required."
+                        },
+                    );
+                    if type_hints != TemplateTypeHints::Above {
+                        assert!(!text.contains("Type:"), "{text}");
+                    }
+                    if type_hints != TemplateTypeHints::Inline {
+                        assert!(!text.contains("// type:"), "{text}");
+                    }
+                    let lines: Vec<_> = text.lines().collect();
+                    for (index, line) in lines.iter().enumerate() {
+                        if line.contains("Scales the output.")
+                            || line.contains("Selects the codes.")
+                        {
+                            assert_eq!(
+                                lines[index - 1].is_empty(),
+                                spacing == TemplateSpacing::Blank,
+                                "{config:?}\n{text}",
+                            );
+                        }
+                    }
+                    if spacing == TemplateSpacing::Compact {
+                        assert!(!text.contains("\n\n"), "{text}");
+                    }
+                    if mode != TemplateMode::Min {
+                        let suffix = if type_hints == TemplateTypeHints::Inline {
+                            " // type: list<u8>"
+                        } else {
+                            ""
+                        };
+                        assert_entry(
+                            &text,
+                            &format,
+                            "codes",
+                            &format!("[1, 2],{suffix}"),
+                            mode == TemplateMode::Ref,
+                        );
+                        assert_entry(
+                            &text,
+                            &format,
+                            "codes",
+                            &format!("[3, 4],{suffix}"),
+                            mode == TemplateMode::Ref,
+                        );
+                        let occurrences = if mode == TemplateMode::Ref { 3 } else { 2 };
+                        assert_eq!(
+                            text.matches("list<u8>").count(),
+                            if type_hints == TemplateTypeHints::None {
+                                0
+                            } else {
+                                occurrences
+                            },
+                            "{text}",
+                        );
+                    }
+                }
             }
         }
     }

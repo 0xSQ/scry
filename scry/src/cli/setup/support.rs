@@ -11,7 +11,7 @@ use super::edits;
 use super::{Action, DescRequest, GetFormat, GetRequest, Invocation, SetupError, TemplateRequest};
 use crate::desc::DisplayConfig;
 use crate::node::Format;
-use crate::writer::{TemplateMode, TreeConfig};
+use crate::writer::{TemplateConfig, TemplateMode, TemplateSpacing, TemplateTypeHints, TreeConfig};
 
 // ---------------------------------------------------------------------------------------------- //
 
@@ -185,9 +185,22 @@ impl Support {
                     Some("explicit") => TemplateMode::Explicit,
                     _ => TemplateMode::Min,
                 };
+                let spacing = match request.get_one::<String>("spacing").map(String::as_str) {
+                    Some("compact") => TemplateSpacing::Compact,
+                    _ => TemplateSpacing::Blank,
+                };
+                let type_hints = match request.get_one::<String>("type-hints").map(String::as_str) {
+                    Some("inline") => TemplateTypeHints::Inline,
+                    Some("none") => TemplateTypeHints::None,
+                    _ => TemplateTypeHints::Above,
+                };
                 Action::Template(TemplateRequest {
                     format: format.parse().expect("template formats are valid identifiers"),
-                    mode,
+                    config: TemplateConfig {
+                        mode,
+                        spacing,
+                        type_hints,
+                    },
                 })
             }
             None => Action::Execute,
@@ -325,6 +338,22 @@ impl Support {
                     .default_value("min")
                     .value_parser(["min", "ref", "explicit"])
                     .help("Selects min (required fields), ref (commented defaults), or explicit (active defaults)."),
+            )
+            .arg(
+                Arg::new("spacing")
+                    .long("spacing")
+                    .value_name("STYLE")
+                    .default_value("blank")
+                    .value_parser(["blank", "compact"])
+                    .help("Separates field blocks with blank lines or keeps them compact."),
+            )
+            .arg(
+                Arg::new("type-hints")
+                    .long("type-hints")
+                    .value_name("STYLE")
+                    .default_value("above")
+                    .value_parser(["above", "inline", "none"])
+                    .help("Places type hints above entries, inline after values, or omits them."),
             )
             .after_help(
                 "Templates use the configuration type's descriptions and declared defaults.\n\
@@ -641,7 +670,43 @@ mod tests {
                     panic!("expected template outcome");
                 };
                 assert_eq!(request.format, Format::Rhai);
-                assert_eq!(request.mode, expected);
+                assert_eq!(request.config.mode, expected);
+                assert_eq!(request.config.spacing, TemplateSpacing::Blank);
+                assert_eq!(request.config.type_hints, TemplateTypeHints::Above);
+            }
+        }
+    }
+
+    #[test]
+    fn template_formatting_options_are_independent_of_the_preset() {
+        for mode in ["min", "ref", "explicit"] {
+            for (spacing, expected_spacing) in [
+                ("blank", TemplateSpacing::Blank),
+                ("compact", TemplateSpacing::Compact),
+            ] {
+                for (type_hints, expected_type_hints) in [
+                    ("above", TemplateTypeHints::Above),
+                    ("inline", TemplateTypeHints::Inline),
+                    ("none", TemplateTypeHints::None),
+                ] {
+                    let Action::Template(request) = plan(&[
+                        "demo",
+                        "-S",
+                        "template",
+                        "--mode",
+                        mode,
+                        "--spacing",
+                        spacing,
+                        "--type-hints",
+                        type_hints,
+                    ])
+                    .action
+                    else {
+                        panic!("expected template outcome");
+                    };
+                    assert_eq!(request.config.spacing, expected_spacing);
+                    assert_eq!(request.config.type_hints, expected_type_hints);
+                }
             }
         }
     }
@@ -659,6 +724,18 @@ mod tests {
                 error(&["demo", "-S", "template", "--mode", mode]).kind(),
                 ErrorKind::InvalidValue
             );
+        }
+        for (option, values) in [
+            ("--spacing", ["spaced", "none", "unknown"]),
+            ("--type-hints", ["before", "off", "unknown"]),
+        ] {
+            for value in values {
+                assert_eq!(
+                    error(&["demo", "-S", "template", option, value]).kind(),
+                    ErrorKind::InvalidValue
+                );
+            }
+            assert_eq!(error(&["demo", "-S", "template", option]).kind(), ErrorKind::InvalidValue);
         }
     }
 
@@ -690,12 +767,31 @@ mod tests {
         let mut command = support.augment(
             Command::new("demo")
                 .arg(Arg::new("application_mode").long("mode"))
-                .arg(Arg::new("application_as").long("as")),
+                .arg(Arg::new("application_as").long("as"))
+                .arg(Arg::new("application_spacing").long("spacing"))
+                .arg(Arg::new("application_type_hints").long("type-hints")),
         );
         let matches = command
             .try_get_matches_from_mut([
-                "demo", "--mode", "custom", "--as", "svg", "-S", "template", "--as", "rhai",
-                "--mode", "min",
+                "demo",
+                "--mode",
+                "custom",
+                "--as",
+                "svg",
+                "--spacing",
+                "application",
+                "--type-hints",
+                "custom",
+                "-S",
+                "template",
+                "--as",
+                "rhai",
+                "--mode",
+                "min",
+                "--spacing",
+                "compact",
+                "--type-hints",
+                "inline",
             ])
             .unwrap();
         assert_eq!(
@@ -703,11 +799,21 @@ mod tests {
             Some("custom")
         );
         assert_eq!(matches.get_one::<String>("application_as").map(String::as_str), Some("svg"));
+        assert_eq!(
+            matches.get_one::<String>("application_spacing").map(String::as_str),
+            Some("application")
+        );
+        assert_eq!(
+            matches.get_one::<String>("application_type_hints").map(String::as_str),
+            Some("custom")
+        );
         let Action::Template(request) = support.parse(&matches, &command).unwrap().action else {
             panic!("expected template outcome");
         };
         assert_eq!(request.format, Format::Rhai);
-        assert_eq!(request.mode, TemplateMode::Min);
+        assert_eq!(request.config.mode, TemplateMode::Min);
+        assert_eq!(request.config.spacing, TemplateSpacing::Compact);
+        assert_eq!(request.config.type_hints, TemplateTypeHints::Inline);
     }
 
     #[test]
@@ -719,6 +825,12 @@ mod tests {
         assert!(help.contains("Usage: demo operation --scry template [OPTIONS]"));
         assert!(help.contains("[default: rhai]"));
         assert!(help.contains("[default: min]"));
+        assert!(help.contains("--spacing <STYLE>"));
+        assert!(help.contains("[default: blank]"));
+        assert!(help.contains("--type-hints <STYLE>"));
+        assert!(help.contains("[default: above]"));
+        assert!(help.contains("blank, compact"));
+        assert!(help.contains("above, inline, none"));
     }
 
     #[test]

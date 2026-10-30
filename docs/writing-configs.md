@@ -149,16 +149,16 @@ For the type above, this produces:
 // Fill required placeholders and uncomment their entries.
 // Commented optional entries may be enabled when needed.
 {
-    // Canvas color behind transparent pixels. Required.
+    // Canvas color behind transparent pixels. Type: string. Required.
     // "background": <string>,
 
-    // Multiplier per zoom step. Optional.
-    // "zoom_factor": 1.2, // type: f64
+    // Multiplier per zoom step. Type: f64. Optional.
+    // "zoom_factor": 1.2,
 
-    // Budget for retained image data, in MiB. Optional.
-    // "cache_size_mib": 512, // type: usize
+    // Budget for retained image data, in MiB. Type: usize. Optional.
+    // "cache_size_mib": 512,
 
-    // Directory for copied images. Optional. Omitted by default.
+    // Directory for copied images. Type: path. Optional. Omitted by default.
     // "target_dir": <path>,
 }
 ```
@@ -167,7 +167,8 @@ Unlike `from_config`, this starts from the type's defaults and leaves unknown va
 commented placeholders. Replace `<string>` with a quoted color such as `"#1c1c1e"` and
 uncomment the `background` entry. The other keys may stay commented to use their fallbacks.
 `Optional.` means the key may be omitted, whether it has a default or accepts an absent value.
-Concrete scalar defaults have an inline type label. Typed placeholders explain themselves.
+Type hints follow the description in the comment above the entry. A blank line separates
+each field, including fields inside nested default objects.
 
 ### Choosing how much to include
 
@@ -196,8 +197,42 @@ viewer -S template --as json5 --mode explicit > preferences.json5
 
 The last command saves a file for editing. The command itself does not install the file or
 choose where the application will look for it. See [Config File Locations](config-files.md)
-for file selection and discovery. For a runnable example with required fields, nested
-objects, and optional features, try
+for file selection and discovery.
+
+### Choosing the presentation
+
+Presentation options apply independently of the template mode:
+
+| Option | Values |
+| --- | --- |
+| `--spacing` | `blank` (default) separates fields with an empty line. `compact` omits those lines. |
+| `--type-hints` | `above` (default) appends `Type: ...` to the preceding comment. `inline` uses trailing `// type: ...` comments. `none` omits type labels. |
+
+Typed placeholders such as `<string>` retain their type in every presentation. With `inline`,
+they do not repeat the same type in a trailing comment.
+
+```sh
+viewer -S template --mode ref --spacing compact --type-hints inline
+```
+
+The library exposes the same choices through `format_template_with_config`:
+
+```rust
+use scry::node::Format;
+use scry::writer::{
+    format_template_with_config, TemplateConfig, TemplateMode, TemplateSpacing,
+    TemplateTypeHints,
+};
+
+let config = TemplateConfig {
+    mode: TemplateMode::Ref,
+    spacing: TemplateSpacing::Compact,
+    type_hints: TemplateTypeHints::Inline,
+};
+let text = format_template_with_config::<Preferences>(Format::Json5, &config)?;
+```
+
+For a runnable example with required fields, nested objects, and optional features, try
 [`config_template`](../scry/examples/config_template.rs):
 
 ```sh

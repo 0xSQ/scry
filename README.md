@@ -277,14 +277,14 @@ For example, `deploy -S template --as json5 --mode ref` produces this excerpt fo
 
 ```json5
 {
-    // Target server hostname. Required.
+    // Target server hostname. Type: string. Required.
     // "target": <string>,
 
-    // Deployment environment (e.g. "dev", "staging", "prod"). Required.
+    // Deployment environment (e.g. "dev", "staging", "prod"). Type: string. Required.
     // "environment": <string>,
 
-    // Number of retry attempts on failure. Optional.
-    // "retries": 3, // type: u32
+    // Number of retry attempts on failure. Type: u32. Optional.
+    // "retries": 3,
 }
 ```
 

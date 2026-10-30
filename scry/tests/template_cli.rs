@@ -72,12 +72,41 @@ fn template_help_does_not_require_a_format_or_source() {
 }
 
 #[test]
+fn template_formatting_options_skip_loading_decoding_and_payload() {
+    for spacing in ["blank", "compact"] {
+        for type_hints in ["above", "inline", "none"] {
+            let result = unloaded_setup()
+                .into_bundle(|_: DecodeTrap| panic!("templates must not run the payload"))
+                .run_from([
+                    "demo",
+                    "-C",
+                    "missing-config.rhai",
+                    "-S",
+                    "template",
+                    "--mode",
+                    "ref",
+                    "--spacing",
+                    spacing,
+                    "--type-hints",
+                    type_hints,
+                ])
+                .unwrap();
+            assert!(result.is_none());
+        }
+    }
+}
+
+#[test]
 fn template_parse_failures_skip_source_preparation() {
     for (suffix, kind) in [
         (vec!["template", "--as"], ErrorKind::InvalidValue),
         (vec!["template", "--as", "json"], ErrorKind::InvalidValue),
         (vec!["template", "--mode", "minimal"], ErrorKind::InvalidValue),
         (vec!["template", "--mode", "reference"], ErrorKind::InvalidValue),
+        (vec!["template", "--spacing"], ErrorKind::InvalidValue),
+        (vec!["template", "--spacing", "spaced"], ErrorKind::InvalidValue),
+        (vec!["template", "--type-hints"], ErrorKind::InvalidValue),
+        (vec!["template", "--type-hints", "off"], ErrorKind::InvalidValue),
         (vec!["--set", "value", "edited", "template"], ErrorKind::ArgumentConflict),
         (vec!["--remove", "value", "template"], ErrorKind::ArgumentConflict),
     ] {

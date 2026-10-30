@@ -19,7 +19,10 @@ pub use flat::{FlatConfig, FlatWriter};
 #[cfg(feature = "format-json5")]
 pub use literal::{Json5Writer, Json5WriterConfig};
 pub use literal::{LiteralWriterConfig, RhaiWriter, RhaiWriterConfig, StdoutRhaiWriter};
-pub use template::{format_template, TemplateMode};
+pub use template::{
+    format_template, format_template_with_config, TemplateConfig, TemplateMode, TemplateSpacing,
+    TemplateTypeHints,
+};
 pub use tree::{Color, TreeConfig, TreeWriter};
 
 use crate::key_path::quote_string;

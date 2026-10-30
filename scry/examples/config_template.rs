@@ -2,6 +2,7 @@
 //!
 //! Run with `cargo run --example config_template -- -S template`.
 //! Compare `--mode ref` and `--mode explicit`, or select `--as json5` when enabled.
+//! Adjust presentation with `--spacing compact`, `--type-hints inline`, or `--type-hints none`.
 
 #![allow(dead_code)]
 

@@ -10,6 +10,17 @@ use super::RhaiWriter;
 
 // ---------------------------------------------------------------------------------------------- //
 
+/// Controls the coverage and formatting of a configuration template.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TemplateConfig {
+    /// The fields to include and whether their defaults are active.
+    pub mode: TemplateMode,
+    /// The spacing between documented fields.
+    pub spacing: TemplateSpacing,
+    /// The placement of field type hints.
+    pub type_hints: TemplateTypeHints,
+}
+
 /// Selects the coverage and default presentation of a configuration template.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum TemplateMode {
@@ -22,13 +33,53 @@ pub enum TemplateMode {
     Explicit,
 }
 
+/// Selects the spacing between configuration fields.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TemplateSpacing {
+    /// Separates fields and their documentation with a blank line.
+    #[default]
+    Blank,
+    /// Places fields and their documentation on consecutive lines.
+    Compact,
+}
+
+/// Selects where configuration field type hints appear.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TemplateTypeHints {
+    /// Appends the type to the documentation above each field.
+    #[default]
+    Above,
+    /// Appends the type to the entry unless its placeholder already names the type.
+    Inline,
+    /// Omits type annotations while retaining typed placeholders.
+    None,
+}
+
 /// Generates a documented configuration scaffold without constructing a complete value.
 ///
 /// Unknown values remain commented placeholders. The output has valid language syntax but may
 /// require editing before it decodes or runs. Only described root objects are supported.
+/// Fields are separated by blank lines, with type hints appended to their documentation.
 pub fn format_template<T: Describe>(
     format: Format,
     mode: TemplateMode,
+) -> Result<String, NodeError> {
+    format_template_with_config::<T>(
+        format,
+        &TemplateConfig {
+            mode,
+            ..Default::default()
+        },
+    )
+}
+
+/// Generates a configuration scaffold with explicit coverage and formatting options.
+///
+/// Like [`format_template`], this requires a described root object and leaves unknown values
+/// as commented placeholders. Formatting options do not change the generated values.
+pub fn format_template_with_config<T: Describe>(
+    format: Format,
+    config: &TemplateConfig,
 ) -> Result<String, NodeError> {
     // Validate the format even when the description contains no literal values or keys.
     template_key("", format.clone())?;
@@ -38,22 +89,22 @@ pub fn format_template<T: Describe>(
             "Configuration templates currently require a described root object.",
         ));
     };
-    let generator = Generator { format, mode };
+    let generator = Generator { format, config };
     let mut lines = comments(&description.doc);
     lines.extend(comments("Fill required placeholders and uncomment their entries."));
-    if mode == TemplateMode::Ref {
+    if config.mode == TemplateMode::Ref {
         lines.extend(comments("Commented optional entries may be enabled when needed."));
     }
     lines.extend(generator.object(fields, 0, &KeyPath::new())?);
     Ok(format!("{}\n", lines.join("\n")))
 }
 
-struct Generator {
+struct Generator<'a> {
     format: Format,
-    mode: TemplateMode,
+    config: &'a TemplateConfig,
 }
 
-impl Generator {
+impl Generator<'_> {
     const MAX_DEPTH: usize = 8;
 
     fn object(
@@ -73,7 +124,7 @@ impl Generator {
             if block.is_empty() {
                 continue;
             }
-            if lines.len() > 1 {
+            if self.config.spacing == TemplateSpacing::Blank && lines.len() > 1 {
                 lines.push(String::new());
             }
             lines.extend(indent(block));
@@ -92,7 +143,7 @@ impl Generator {
         depth: usize,
         path: &KeyPath,
     ) -> Result<Vec<String>, NodeError> {
-        if self.mode == TemplateMode::Min && field.is_optional() {
+        if self.config.mode == TemplateMode::Min && field.is_optional() {
             return Ok(Vec::new());
         }
         let default = if field.is_optional() {
@@ -105,7 +156,7 @@ impl Generator {
             Some(node) => {
                 let absent =
                     matches!(&node.kind, Kind::Leaf(leaf) if matches!(leaf.value, Value::Null));
-                if absent && self.mode == TemplateMode::Ref {
+                if absent && self.config.mode == TemplateMode::Ref {
                     note = Some("Omitted by default.");
                     (self.shape(&field.value, depth, path)?, false)
                 } else {
@@ -120,7 +171,7 @@ impl Generator {
                         self.literal(node, &field.value)
                             .map_err(|error| error.prepend_path(path))?
                     };
-                    (value, self.mode == TemplateMode::Explicit)
+                    (value, self.config.mode == TemplateMode::Explicit)
                 }
             }
             None => {
@@ -139,7 +190,11 @@ impl Generator {
         }
         let mut entry = value;
         let key = template_key(&field.name, self.format.clone())?;
-        let hint = inline_type(&field.value, &entry[0]);
+        let hint = if self.config.type_hints == TemplateTypeHints::Inline {
+            inline_type(&field.value, &entry[0])
+        } else {
+            None
+        };
         entry[0] = format!("{key}: {}", entry[0]);
         entry.last_mut().expect("a value contains at least one line").push(',');
         if let Some(hint) = hint {
@@ -258,10 +313,12 @@ impl Generator {
         match (&node.kind, &desc.kind) {
             (Kind::Map(entries), DescKind::Struct { fields }) => {
                 for (index, (key, child)) in entries.iter().enumerate() {
+                    let child_annotations = &mut annotations.children[index];
+                    child_annotations.blank_before =
+                        self.config.spacing == TemplateSpacing::Blank && index > 0;
                     if let Some(field) = fields.iter().find(|field| &field.name == key) {
-                        let child_annotations = &mut annotations.children[index];
                         child_annotations.comment = Some(self.field_documentation(field, None)?);
-                        if child.kind.is_leaf() {
+                        if self.config.type_hints == TemplateTypeHints::Inline {
                             child_annotations.end_comment =
                                 type_hint(&field.value).map(|hint| format!("type: {hint}"));
                         }
@@ -313,15 +370,22 @@ impl Generator {
         } else {
             "Required."
         };
+        let mut metadata = String::new();
+        if self.config.type_hints == TemplateTypeHints::Above {
+            if let Some(hint) = type_hint(&field.value) {
+                metadata.push_str(&format!("Type: {hint}. "));
+            }
+        }
+        metadata.push_str(policy);
         if let Some(last) = lines.last_mut() {
             *last = last.trim_end().to_owned();
             if !last.ends_with(['.', '!', '?']) {
                 last.push('.');
             }
             last.push(' ');
-            last.push_str(policy);
+            last.push_str(&metadata);
         } else {
-            lines.push(policy.to_owned());
+            lines.push(metadata);
         }
         if let Some(note) = note {
             let last = lines.last_mut().expect("the field has an omission policy");

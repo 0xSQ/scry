@@ -23,7 +23,7 @@ use super::Bundle;
 use crate::desc::{Desc, DescKind, DescPathError, DisplayConfig, VariantRepr};
 use crate::key_path::Segment;
 use crate::node::{Format, Kind, Node};
-use crate::writer::{format_template, TemplateMode, TreeConfig};
+use crate::writer::{format_template_with_config, TemplateConfig, TreeConfig};
 use crate::{Describe, FromNode, KeyPath};
 
 pub use command_config::{
@@ -275,7 +275,10 @@ impl Setup {
                 return Ok(None);
             }
             Action::Template(request) => {
-                print!("{}", format_template::<T>(request.format.clone(), request.mode)?);
+                print!(
+                    "{}",
+                    format_template_with_config::<T>(request.format.clone(), &request.config)?
+                );
                 return Ok(None);
             }
             Action::Execute | Action::Get(_) | Action::Check => {}
@@ -380,8 +383,8 @@ struct GetRequest {
 struct TemplateRequest {
     /// The output language.
     format: Format,
-    /// The field coverage and default presentation.
-    mode: TemplateMode,
+    /// The field coverage, defaults, and formatting.
+    config: TemplateConfig,
 }
 
 /// Selects the output view for input inspection.
