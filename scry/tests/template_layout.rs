@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use scry::desc::{DefaultDesc, FieldDesc};
+use scry::desc::{DefaultDesc, FieldDesc, VariantDesc};
 use scry::node::Format;
 use scry::writer::{
     format_template, format_template_with_config, TemplateConfig, TemplateMode, TemplateSpacing,
@@ -277,7 +277,7 @@ fn list_and_tuple_placeholders_can_be_enabled_without_repairing_punctuation(
     }
     for format in formats() {
         let text = format_template::<Containers>(format.clone(), TemplateMode::Ref)?;
-        assert_line(&text, "// Type: list<u8>. Required.");
+        assert_line(&text, "// Type: list[u8]. Required.");
         assert_entry(&text, &format, "list", "[", true);
         assert_line(&text, "// <u8>,");
         assert_line(&text, "// <string>,");
@@ -304,6 +304,50 @@ fn list_and_tuple_placeholders_can_be_enabled_without_repairing_punctuation(
         let node = Node::parse_str(&edited, format)?;
         assert_eq!(node.req::<Vec<u8>>("list")?, [7]);
         assert_eq!(node.req::<(u8, String)>("tuple")?, (7, "seven".to_owned()));
+    }
+    Ok(())
+}
+
+#[test]
+fn nested_list_hints_share_notation_and_keep_enum_placeholders() -> Result<(), NodeError> {
+    struct Collections;
+    impl Describe for Collections {
+        fn describe() -> Desc {
+            let choice =
+                Desc::enumeration(vec![VariantDesc::unit("first"), VariantDesc::unit("second")]);
+            Desc::structure(vec![
+                FieldDesc::new("matrix", Desc::list(Desc::list(Desc::plain("u32"))))
+                    .with_doc("Numeric matrix."),
+                FieldDesc::new("choices", Desc::list(Desc::list(choice.clone())))
+                    .with_doc("Choice matrix."),
+                FieldDesc::new("choice", choice).with_doc("Selects a choice."),
+            ])
+        }
+    }
+    for format in formats() {
+        for type_hints in [TemplateTypeHints::Above, TemplateTypeHints::Inline] {
+            let text = format_template_with_config::<Collections>(
+                format.clone(),
+                &TemplateConfig {
+                    mode: TemplateMode::Ref,
+                    type_hints,
+                    ..Default::default()
+                },
+            )?;
+            if type_hints == TemplateTypeHints::Above {
+                assert_line(&text, "// Numeric matrix. Type: list[list[u32]]. Required.");
+                assert_line(&text, "// Choice matrix. Type: list[list[string]]. Required.");
+                assert_line(&text, "// Selects a choice. Type: string. Required.");
+            } else {
+                assert_line(&text, "// Numeric matrix. Required.");
+                assert_line(&text, "// Choice matrix. Required.");
+                assert_entry(&text, &format, "matrix", "[ // type: list[list[u32]]", true);
+                assert_entry(&text, &format, "choices", "[ // type: list[list[string]]", true);
+            }
+            assert_entry(&text, &format, "choice", "<string>,", true);
+            assert_line(&text, "// Choices: \"first\", \"second\".");
+            Node::parse_str(&text, format.clone())?;
+        }
     }
     Ok(())
 }
@@ -357,7 +401,7 @@ fn real_scalar_collections_stay_compact_with_one_field_type_annotation() -> Resu
     for format in formats() {
         for mode in [TemplateMode::Ref, TemplateMode::Explicit] {
             let text = format_template::<CompactDefaults>(format.clone(), mode)?;
-            assert_line(&text, "// Type: list<u8>. Optional.");
+            assert_line(&text, "// Type: list[u8]. Optional.");
             assert_entry(&text, &format, "values", "[1, 2],", mode == TemplateMode::Ref);
             assert_entry(&text, &format, "pair", "[7, \"seven\"],", mode == TemplateMode::Ref);
             let node = Node::parse_str(&text, format.clone())?;
@@ -459,7 +503,7 @@ fn formatting_options_cover_shapes_and_nested_defaults_without_changing_values(
                     }
                     if mode != TemplateMode::Min {
                         let suffix = if type_hints == TemplateTypeHints::Inline {
-                            " // type: list<u8>"
+                            " // type: list[u8]"
                         } else {
                             ""
                         };
@@ -479,7 +523,7 @@ fn formatting_options_cover_shapes_and_nested_defaults_without_changing_values(
                         );
                         let occurrences = if mode == TemplateMode::Ref { 3 } else { 2 };
                         assert_eq!(
-                            text.matches("list<u8>").count(),
+                            text.matches("list[u8]").count(),
                             if type_hints == TemplateTypeHints::None {
                                 0
                             } else {

@@ -1,6 +1,6 @@
 //! Documented configuration scaffolds generated from type descriptions.
 
-use crate::desc::{DescKind, FieldDesc, VariantRepr};
+use crate::desc::{DescKind, FieldDesc, TypeLabelStyle, VariantRepr};
 use crate::node::{Format, Kind, Value};
 use crate::{Desc, Describe, KeyPath, Node, NodeError, ToNode};
 
@@ -319,8 +319,10 @@ impl Generator<'_> {
                     if let Some(field) = fields.iter().find(|field| &field.name == key) {
                         child_annotations.comment = Some(self.field_documentation(field, None)?);
                         if self.config.type_hints == TemplateTypeHints::Inline {
-                            child_annotations.end_comment =
-                                type_hint(&field.value).map(|hint| format!("type: {hint}"));
+                            child_annotations.end_comment = field
+                                .value
+                                .type_label_with(TypeLabelStyle::Template)
+                                .map(|hint| format!("type: {hint}"));
                         }
                         self.annotate_literal(child, child_annotations, &field.value)?;
                     }
@@ -372,7 +374,7 @@ impl Generator<'_> {
         };
         let mut metadata = String::new();
         if self.config.type_hints == TemplateTypeHints::Above {
-            if let Some(hint) = type_hint(&field.value) {
+            if let Some(hint) = field.value.type_label_with(TypeLabelStyle::Template) {
                 metadata.push_str(&format!("Type: {hint}. "));
             }
         }
@@ -419,23 +421,11 @@ impl Generator<'_> {
 }
 
 fn inline_type(desc: &Desc, first_line: &str) -> Option<String> {
-    let hint = type_hint(desc)?;
+    let hint = desc.type_label_with(TypeLabelStyle::Template)?;
     if first_line == format!("<{hint}>") {
         None
     } else {
         Some(hint)
-    }
-}
-
-fn type_hint(desc: &Desc) -> Option<String> {
-    match &desc.kind {
-        DescKind::Plain { hint } => hint
-            .as_ref()
-            .map(|hint| hint.split_whitespace().collect::<Vec<_>>().join(" "))
-            .filter(|hint| !hint.is_empty()),
-        DescKind::List { item } => type_hint(item).map(|hint| format!("list<{hint}>")),
-        DescKind::Enum { .. } if desc.unit_enum_variants().is_some() => Some("string".to_owned()),
-        _ => None,
     }
 }
 

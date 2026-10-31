@@ -314,19 +314,36 @@ impl Desc {
     /// Nullability is omitted at every level. This label is a reading aid, rather than a complete
     /// account of accepted values. Exact null acceptance remains available in [`Self::nullable`].
     pub fn type_label(&self) -> String {
+        self.type_label_with(TypeLabelStyle::Description).unwrap_or_default()
+    }
+
+    /// Formats a type label with the selected presentation rules at every nesting level.
+    pub(crate) fn type_label_with(&self, style: TypeLabelStyle) -> Option<String> {
         match &self.kind {
-            DescKind::Plain { hint } => hint.clone().unwrap_or_default(),
-            DescKind::Struct { .. } => String::new(),
-            DescKind::Enum { .. } => String::new(),
-            DescKind::Tuple { .. } => "tuple".to_string(),
-            DescKind::List { item } => {
-                let inner = item.type_label();
-                if inner.is_empty() {
-                    "list".to_string()
-                } else {
-                    format!("list[{}]", inner)
-                }
+            DescKind::Plain { hint } => {
+                let hint = hint.as_ref()?;
+                let label = match style {
+                    TypeLabelStyle::Description => hint.clone(),
+                    TypeLabelStyle::Template => {
+                        hint.split_whitespace().collect::<Vec<_>>().join(" ")
+                    }
+                };
+                (!label.is_empty()).then_some(label)
             }
+            DescKind::List { item } => match item.type_label_with(style) {
+                Some(inner) => Some(format!("list[{inner}]")),
+                None if style == TypeLabelStyle::Description => Some("list".to_owned()),
+                None => None,
+            },
+            DescKind::Tuple { .. } if style == TypeLabelStyle::Description => {
+                Some("tuple".to_owned())
+            }
+            DescKind::Enum { .. }
+                if style == TypeLabelStyle::Template && self.unit_enum_variants().is_some() =>
+            {
+                Some("string".to_owned())
+            }
+            _ => None,
         }
     }
 
@@ -519,6 +536,15 @@ impl DisplayConfig {
         self.max_depth = Some(max_depth);
         self
     }
+}
+
+/// Selects type-label policies without changing the shared list notation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TypeLabelStyle {
+    /// Retains structural labels and the original custom hints for description trees.
+    Description,
+    /// Uses single-line value hints and omits shapes expanded by the template.
+    Template,
 }
 
 // ---------------------------------------------------------------------------------------------- //

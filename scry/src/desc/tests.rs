@@ -208,11 +208,43 @@ fn test_list_rendering() {
 }
 
 #[test]
-fn test_type_label() {
-    assert_eq!(Desc::plain("u32").type_label(), "u32");
-    assert_eq!(Desc::default().type_label(), "");
-    assert_eq!(Desc::list(Desc::plain("string")).type_label(), "list[string]");
-    assert_eq!(Desc::list(Desc::default()).type_label(), "list");
+fn type_label_styles_preserve_their_policies_through_nested_lists() {
+    let choices = Desc::enumeration(vec![VariantDesc::unit("first"), VariantDesc::unit("second")]);
+    let payload = Desc::enumeration(vec![VariantDesc::payload("value", Desc::plain("u32"))]);
+    let cases = [
+        (Desc::plain("u32"), "u32", Some("u32")),
+        (Desc::default(), "", None),
+        (Desc::plain(""), "", None),
+        (Desc::plain(" \n\t "), " \n\t ", None),
+        (Desc::structure(vec![]), "", None),
+        (Desc::enumeration(vec![]), "", Some("string")),
+        (choices.clone(), "", Some("string")),
+        (payload.clone(), "", None),
+        (Desc::tuple(vec![Desc::plain("u32")]), "tuple", None),
+        (Desc::list(Desc::plain("string")), "list[string]", Some("list[string]")),
+        (
+            Desc::list(Desc::list(Desc::plain("u32").nullable()).nullable()),
+            "list[list[u32]]",
+            Some("list[list[u32]]"),
+        ),
+        (Desc::list(Desc::default()), "list", None),
+        (Desc::list(Desc::plain("")), "list", None),
+        (Desc::list(Desc::plain(" \t ")), "list[ \t ]", None),
+        (Desc::list(Desc::list(Desc::default())), "list[list]", None),
+        (Desc::list(Desc::structure(vec![])), "list", None),
+        (Desc::list(payload), "list", None),
+        (Desc::list(Desc::tuple(vec![])), "list[tuple]", None),
+        (Desc::list(Desc::list(choices)), "list[list]", Some("list[list[string]]")),
+        (
+            Desc::list(Desc::plain(" duration\r\nexpression\u{2028} ")),
+            "list[ duration\r\nexpression\u{2028} ]",
+            Some("list[duration expression]"),
+        ),
+    ];
+    for (desc, description, template) in cases {
+        assert_eq!(desc.type_label(), description, "{desc:?}");
+        assert_eq!(desc.type_label_with(TypeLabelStyle::Template).as_deref(), template, "{desc:?}");
+    }
 }
 
 // Path traversal tests
