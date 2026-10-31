@@ -53,8 +53,8 @@ pub struct Files {
 ///
 /// Can be specified as a string (shorthand for a single `from.root` entry) or a map with
 /// optional `from`, `where`, and `sort` fields. If `from` is omitted, the caller-provided
-/// `base_dir` is used as the implicit root. Natural sorting is used unless `sort` selects
-/// lexicographic ordering.
+/// `base_dir` is used as the implicit root. Natural sorting with dot priority is used by default.
+/// The `sort` field accepts a mode string or a map with `mode` and optional natural `dot_priority`.
 #[derive(Debug, Clone, Default, ToNode)]
 pub struct SourceSpec {
     /// Discovery rules: where to walk and what to skip.
@@ -365,7 +365,7 @@ impl FromNode for SourceSpec {
                     prune: OneOrMany::default(),
                 }),
                 where_: None,
-                sort: PathSort::Natural,
+                sort: PathSort::default(),
             });
         }
 
@@ -397,21 +397,47 @@ impl Describe for SourceSpec {
 impl ToNode for PathSort {
     fn to_node(&self) -> Result<Node, NodeError> {
         match self {
-            PathSort::Natural => "natural",
-            PathSort::Lexicographic => "lexicographic",
+            PathSort::Natural { dot_priority: true } => "natural".to_node(),
+            PathSort::Natural {
+                dot_priority: false,
+            } => {
+                let mut node = Node::empty_map();
+                node.set_value("mode", "natural")?;
+                node.set_value("dot_priority", false)?;
+                Ok(node)
+            }
+            PathSort::Lexicographic => "lexicographic".to_node(),
         }
-        .to_node()
     }
 }
 
 impl FromNode for PathSort {
     fn from_node(node: &Node) -> Result<Self, NodeError> {
-        let s: String = node.as_type()?;
-        match s.as_str() {
-            "natural" => Ok(PathSort::Natural),
-            "lexicographic" => Ok(PathSort::Lexicographic),
+        let mode_node = if node.kind.is_map() {
+            node.req_node("mode")?
+        } else {
+            node
+        };
+        let mode: String = mode_node.as_type()?;
+        match mode.as_str() {
+            "natural" => {
+                let dot_priority = if node.kind.is_map() {
+                    let dot_priority = node.opt("dot_priority")?.unwrap_or(true);
+                    node.ensure_only_keys(&["mode", "dot_priority"])?;
+                    dot_priority
+                } else {
+                    true
+                };
+                Ok(PathSort::Natural { dot_priority })
+            }
+            "lexicographic" => {
+                if node.kind.is_map() {
+                    node.ensure_only_keys(&["mode"])?;
+                }
+                Ok(PathSort::Lexicographic)
+            }
             _ => Err(NodeError::invalid_value(
-                &node.path,
+                &mode_node.path,
                 "expected \"natural\" or \"lexicographic\"",
             )),
         }
@@ -420,7 +446,11 @@ impl FromNode for PathSort {
 
 impl Describe for PathSort {
     fn describe() -> Desc {
-        Desc::plain("path ordering mode")
+        Desc::plain("path ordering mode").with_doc(
+            "Accepts \"natural\", \"lexicographic\", or a map with a required mode. \
+             Natural mode accepts dot_priority, which defaults to true. \
+             Lexicographic mode accepts no dot_priority option.",
+        )
     }
 }
 

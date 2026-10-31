@@ -1,8 +1,10 @@
 //! Reusable path ordering.
 //!
-//! [`PathSort::Natural`] compares paired runs of ASCII digits by numeric magnitude, while
-//! [`PathSort::Lexicographic`] treats digits as ordinary text. The difference is easiest to see
-//! in paths containing numbers:
+//! [`PathSort::Natural`] compares paired runs of ASCII digits by numeric magnitude. Its
+//! `dot_priority` option puts dots before other scalars within a normal path component. The
+//! default enables this option, so `image37.png < image37-variant.png`. Disabling it retains
+//! ordinary scalar ordering outside digit runs. [`PathSort::Lexicographic`] treats digits and
+//! dots as ordinary text. The numeric difference is easiest to see in paths containing numbers:
 //!
 //! | Input paths               | Natural order             | Lexicographic order       |
 //! | ------------------------- | ------------------------- | ------------------------- |
@@ -23,7 +25,7 @@
 //! ];
 //!
 //! let mut natural = paths.clone();
-//! PathSort::Natural.sort(&mut natural);
+//! PathSort::default().sort(&mut natural);
 //! assert_eq!(
 //!     natural,
 //!     vec![
@@ -45,8 +47,16 @@
 //! );
 //! ```
 //!
-//! Only ASCII digit runs receive numeric treatment. Both modes remain case-sensitive and
-//! locale-independent.
+//! Dot priority applies to leading, intermediate, repeated, and trailing dots. Exhaustion still
+//! sorts first, so `a < a.png`. Dots do not identify extensions or filename stems, and
+//! `a.b.png < a.png` remains intentional. The same policy applies to file and directory names.
+//!
+//! Only ASCII digit runs receive numeric treatment. Equal numeric runs defer to the rest of the
+//! component, so `a1w < a01x`. If complete scans tie, exact component spelling breaks the tie
+//! before child components are compared, so `a001 < a01 < a1` and `d01/z < d1/a`.
+//!
+//! Both modes remain case-sensitive and locale-independent. Other Unicode scalars compare
+//! exactly, without normalization. Structural path components retain Rust's standard ordering.
 
 use std::cmp::Ordering;
 use std::path::{Component, Path};
@@ -61,12 +71,22 @@ use std::path::{Component, Path};
 ///
 /// Non-Unicode paths form a separate partition after all Unicode paths. Two non-Unicode paths use
 /// Rust's native [`Path`] ordering. This gives arbitrary paths a total order without lossy text
-/// conversion; natural numeric treatment applies only when both complete paths are Unicode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// conversion. Natural text treatment applies only when both complete paths are Unicode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PathSort {
-    /// Compares paired ASCII digit runs by numeric magnitude.
-    #[default]
-    Natural,
+    /// Compares paired ASCII digit runs by numeric magnitude, with optional dot priority.
+    ///
+    /// Equal numeric runs defer to the remaining component text. Exact spelling resolves a
+    /// complete component tie before child components are compared. Comparison remains
+    /// case-sensitive and locale-independent, without interpreting filename extensions.
+    Natural {
+        /// Puts dots before other scalars within normal components.
+        ///
+        /// Defaults to `true`. Exhaustion still sorts first. Every dot receives priority, so
+        /// `a.b.png < a.png`.
+        /// Disabling this option preserves literal scalar ordering outside ASCII digit runs.
+        dot_priority: bool,
+    },
     /// Compares every scalar in normal path components exactly, including digits.
     Lexicographic,
 }
@@ -85,6 +105,12 @@ impl PathSort {
     /// Sorts path-like values using this ordering mode.
     pub fn sort<T: AsRef<Path>>(self, paths: &mut [T]) {
         paths.sort_by(|left, right| self.compare(left.as_ref(), right.as_ref()));
+    }
+}
+
+impl Default for PathSort {
+    fn default() -> Self {
+        Self::Natural { dot_priority: true }
     }
 }
 
@@ -119,7 +145,9 @@ fn compare_unicode_components(
             let left = left.to_str().expect("Unicode path has a non-Unicode component");
             let right = right.to_str().expect("Unicode path has a non-Unicode component");
             match sort {
-                PathSort::Natural => compare_natural_text(left, right),
+                PathSort::Natural { dot_priority } => {
+                    compare_natural_text(left, right, dot_priority)
+                }
                 PathSort::Lexicographic => left.cmp(right),
             }
         }
@@ -127,8 +155,8 @@ fn compare_unicode_components(
     }
 }
 
-/// Compares component text with numeric treatment for paired ASCII digit runs.
-fn compare_natural_text(left: &str, right: &str) -> Ordering {
+/// Compares component text with numeric treatment and optional dot priority.
+fn compare_natural_text(left: &str, right: &str, dot_priority: bool) -> Ordering {
     let original_left = left;
     let original_right = right;
     let mut left = left;
@@ -154,6 +182,14 @@ fn compare_natural_text(left: &str, right: &str) -> Ordering {
             left = &left[left_run_len..];
             right = &right[right_run_len..];
             continue;
+        }
+
+        if dot_priority && (left_byte == b'.') != (right_byte == b'.') {
+            return if left_byte == b'.' {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            };
         }
 
         let left_char = left.chars().next().expect("nonempty component has a scalar");
@@ -187,6 +223,16 @@ mod tests {
     use std::os::windows::ffi::OsStringExt;
 
     // ------------------------------------------------------------------------------------------ //
+
+    fn ordering_modes() -> [PathSort; 3] {
+        [
+            PathSort::Natural { dot_priority: true },
+            PathSort::Natural {
+                dot_priority: false,
+            },
+            PathSort::Lexicographic,
+        ]
+    }
 
     fn assert_path_order(sort: PathSort, input: &[&str], expected: &[&str]) {
         let mut paths: Vec<PathBuf> = input.iter().map(PathBuf::from).collect();
@@ -223,8 +269,82 @@ mod tests {
     }
 
     #[test]
-    fn default_is_natural() {
-        assert_eq!(PathSort::default(), PathSort::Natural);
+    fn default_is_natural_with_dot_priority() {
+        assert_eq!(PathSort::default(), PathSort::Natural { dot_priority: true });
+        assert_path_order(
+            PathSort::default(),
+            &[
+                "image100.png",
+                "image37-variant.png",
+                "image10.png",
+                "image37.png",
+                "image2.png",
+            ],
+            &[
+                "image2.png",
+                "image10.png",
+                "image37.png",
+                "image37-variant.png",
+                "image100.png",
+            ],
+        );
+    }
+
+    #[test]
+    fn natural_dot_priority_is_optional_and_lexicographic_order_stays_literal() {
+        let prioritized = PathSort::Natural { dot_priority: true };
+        let literal = PathSort::Natural {
+            dot_priority: false,
+        };
+        for (base, variant) in [
+            ("image37.png", "image37-variant.png"),
+            ("a.png", "a-foo.png"),
+            ("a.png", "a!.png"),
+            ("a.png", "a .png"),
+            (".image2", "!image2"),
+        ] {
+            assert_eq!(prioritized.compare(Path::new(base), Path::new(variant)), Ordering::Less);
+            for sort in [literal, PathSort::Lexicographic] {
+                assert_eq!(sort.compare(Path::new(base), Path::new(variant)), Ordering::Greater);
+            }
+        }
+        assert_path_order(literal, &["a-10.png", "a-2.png"], &["a-2.png", "a-10.png"]);
+        assert_path_order(
+            PathSort::Lexicographic,
+            &["a-2.png", "a-10.png"],
+            &["a-10.png", "a-2.png"],
+        );
+    }
+
+    #[test]
+    fn dot_priority_does_not_interpret_extensions_or_ignore_dots() {
+        let sort = PathSort::Natural { dot_priority: true };
+        assert_path_order(
+            sort,
+            &["a.png", "a.b.png", "a..png", "a.", "a"],
+            &["a", "a.", "a..png", "a.b.png", "a.png"],
+        );
+        assert_path_order(sort, &[".image10", ".image2"], &[".image2", ".image10"]);
+        assert_path_order(sort, &["a10.", "a2..", "a2."], &["a2.", "a2..", "a10."]);
+        assert_path_order(sort, &["v1.10", "v1.9.0", "v1.9"], &["v1.9", "v1.9.0", "v1.10"]);
+        assert_path_order(sort, &["dir-variant/a", "dir.png/z"], &["dir.png/z", "dir-variant/a"]);
+    }
+
+    #[test]
+    fn dot_priority_preserves_case_and_numeric_boundaries() {
+        for dot_priority in [false, true] {
+            let sort = PathSort::Natural { dot_priority };
+            assert_path_order(sort, &["a8", "A5", "a2"], &["A5", "a2", "a8"]);
+            assert_path_order(sort, &["ä2.png", "Ä2.png"], &["Ä2.png", "ä2.png"]);
+            assert_path_order(sort, &["a_1", "a1", "a-1", "a!1"], &["a!1", "a-1", "a1", "a_1"]);
+            assert_path_order(sort, &["aa.png", "a0.png", "a.png"], &["a.png", "a0.png", "aa.png"]);
+            let expected = if dot_priority {
+                ["a1.x", "a01-x"]
+            } else {
+                ["a01-x", "a1.x"]
+            };
+            assert_path_order(sort, &["a01-x", "a1.x"], &expected);
+        }
     }
 
     #[test]
@@ -238,42 +358,45 @@ mod tests {
 
     #[test]
     fn natural_path_order_compares_ascii_digit_runs_by_magnitude() {
-        assert_path_order(PathSort::Natural, &["11", "2", "10", "1"], &["1", "2", "10", "11"]);
-        assert_path_order(
-            PathSort::Natural,
-            &["v2.0", "v1.10", "v1.9"],
-            &["v1.9", "v1.10", "v2.0"],
-        );
-        assert_path_order(PathSort::Natural, &["a2", "A10", "A2"], &["A2", "A10", "a2"]);
+        for dot_priority in [false, true] {
+            let sort = PathSort::Natural { dot_priority };
+            assert_path_order(sort, &["11", "2", "10", "1"], &["1", "2", "10", "11"]);
+            assert_path_order(sort, &["v2.0", "v1.10", "v1.9"], &["v1.9", "v1.10", "v2.0"]);
+            assert_path_order(sort, &["a2", "A10", "A2"], &["A2", "A10", "a2"]);
+        }
     }
 
     #[test]
     fn natural_path_order_pins_boundaries_and_delayed_ties() {
-        assert_path_order(
-            PathSort::Natural,
-            &["a_1", "a01x", "a1", "a-1"],
-            &["a-1", "a1", "a01x", "a_1"],
-        );
-        assert_eq!(compare_natural_text("a1w", "a01x"), Ordering::Less);
+        for dot_priority in [false, true] {
+            let sort = PathSort::Natural { dot_priority };
+            assert_path_order(sort, &["a_1", "a01x", "a1", "a-1"], &["a-1", "a1", "a01x", "a_1"]);
+            assert_eq!(sort.compare(Path::new("a1w"), Path::new("a01x")), Ordering::Less);
+        }
     }
 
     #[test]
     fn natural_path_order_uses_exact_component_ties_for_leading_zeroes() {
-        assert_path_order(
-            PathSort::Natural,
-            &["image-1", "image-01", "image-001"],
-            &["image-001", "image-01", "image-1"],
-        );
-        assert_path_order(PathSort::Natural, &["000", "0", "00"], &["0", "00", "000"]);
-        assert_eq!(
-            PathSort::Natural.compare(Path::new("d01/z"), Path::new("d1/a")),
-            Ordering::Less
-        );
+        for dot_priority in [false, true] {
+            let sort = PathSort::Natural { dot_priority };
+            assert_path_order(
+                sort,
+                &["image-1", "image-01", "image-001"],
+                &["image-001", "image-01", "image-1"],
+            );
+            assert_path_order(sort, &["000", "0", "00"], &["0", "00", "000"]);
+            assert_path_order(
+                sort,
+                &["a1.png", "a01.png", "a001.png"],
+                &["a001.png", "a01.png", "a1.png"],
+            );
+            assert_eq!(sort.compare(Path::new("d01/z"), Path::new("d1/a")), Ordering::Less);
+        }
     }
 
     #[test]
     fn path_order_is_component_aware() {
-        for sort in [PathSort::Natural, PathSort::Lexicographic] {
+        for sort in ordering_modes() {
             assert_path_order(sort, &["a0", "a/b", "a"], &["a", "a/b", "a0"]);
         }
     }
@@ -282,20 +405,26 @@ mod tests {
     fn natural_path_order_handles_unbounded_digit_runs() {
         let shorter = format!("file-{}", "9".repeat(80));
         let longer = format!("file-{}", "1".repeat(81));
-        let mut paths = vec![PathBuf::from(&longer), PathBuf::from(&shorter)];
-
-        PathSort::Natural.sort(&mut paths);
-
-        assert_eq!(paths, vec![PathBuf::from(shorter), PathBuf::from(longer)]);
+        for dot_priority in [false, true] {
+            let mut paths = vec![PathBuf::from(&longer), PathBuf::from(&shorter)];
+            PathSort::Natural { dot_priority }.sort(&mut paths);
+            assert_eq!(paths, vec![PathBuf::from(&shorter), PathBuf::from(&longer)]);
+        }
     }
 
     #[test]
     fn path_order_uses_unicode_scalars_without_normalization() {
-        for sort in [PathSort::Natural, PathSort::Lexicographic] {
+        for sort in ordering_modes() {
             assert_eq!(sort.compare(Path::new("\u{e000}"), Path::new("\u{10000}")), Ordering::Less);
             assert_eq!(sort.compare(Path::new("e\u{301}"), Path::new("\u{e9}")), Ordering::Less);
         }
-        assert_eq!(compare_natural_text("a10", "a\u{0662}"), Ordering::Less);
+        for dot_priority in [false, true] {
+            assert_eq!(
+                PathSort::Natural { dot_priority }
+                    .compare(Path::new("a10"), Path::new("a\u{0662}")),
+                Ordering::Less
+            );
+        }
     }
 
     #[test]
@@ -309,7 +438,7 @@ mod tests {
         let components: Vec<Component<'_>> =
             paths.iter().map(|path| path.components().next().unwrap()).collect();
 
-        for sort in [PathSort::Natural, PathSort::Lexicographic] {
+        for sort in ordering_modes() {
             for left in &components {
                 for right in &components {
                     assert_eq!(compare_unicode_components(*left, *right, sort), left.cmp(right));
@@ -325,7 +454,7 @@ mod tests {
             let left = Path::new(left_path).components().next().unwrap();
             let right = Path::new(right_path).components().next().unwrap();
 
-            for sort in [PathSort::Natural, PathSort::Lexicographic] {
+            for sort in ordering_modes() {
                 assert_eq!(compare_unicode_components(left, right, sort), left.cmp(&right));
             }
         }
@@ -334,11 +463,11 @@ mod tests {
     #[test]
     fn sort_accepts_owned_and_borrowed_path_like_values() {
         let mut owned = vec![PathBuf::from("file-10"), PathBuf::from("file-2")];
-        PathSort::Natural.sort(&mut owned);
+        PathSort::default().sort(&mut owned);
         assert_eq!(owned, [PathBuf::from("file-2"), PathBuf::from("file-10")]);
 
         let mut borrowed = vec![Path::new("file-10"), Path::new("file-2")];
-        PathSort::Natural.sort(&mut borrowed);
+        PathSort::default().sort(&mut borrowed);
         assert_eq!(borrowed, [Path::new("file-2"), Path::new("file-10")]);
     }
 
@@ -361,6 +490,25 @@ mod tests {
             "a01x",
             "a1w",
             "a_1",
+            "a.",
+            "a..",
+            "a.png",
+            "a.b.png",
+            "a..png",
+            "a!.png",
+            "a .png",
+            "a-foo.png",
+            "a0.png",
+            "a00.png",
+            "a01.x",
+            "a1!x",
+            "a01-x",
+            "a1.x",
+            ".image2",
+            ".image10",
+            "!image2",
+            "d.1/z",
+            "d-1/a",
             "d01/z",
             "d1/a",
             "a10",
@@ -371,7 +519,7 @@ mod tests {
         .into_iter()
         .map(PathBuf::from)
         .collect();
-        for sort in [PathSort::Natural, PathSort::Lexicographic] {
+        for sort in ordering_modes() {
             assert_comparator_laws(&paths, sort);
 
             let mut expected = paths.clone();
@@ -395,7 +543,7 @@ mod tests {
         let unicode = PathBuf::from("zzzz");
         let opaque = PathBuf::from(opaque_component(b'a'));
 
-        for sort in [PathSort::Natural, PathSort::Lexicographic] {
+        for sort in ordering_modes() {
             assert_eq!(sort.compare(&unicode, &opaque), Ordering::Less);
             assert_eq!(sort.compare(&opaque, &unicode), Ordering::Greater);
         }
@@ -408,7 +556,7 @@ mod tests {
         let right = PathBuf::from(opaque_component(b'b'));
         assert_ne!(left, right);
 
-        for sort in [PathSort::Natural, PathSort::Lexicographic] {
+        for sort in ordering_modes() {
             assert_eq!(sort.compare(&left, &right), left.cmp(&right));
             assert_ne!(sort.compare(&left, &right), Ordering::Equal);
         }
@@ -422,9 +570,11 @@ mod tests {
             PathBuf::from(opaque_component(b'b')),
             PathBuf::from("file-2"),
             PathBuf::from(opaque_component(b'a')),
+            PathBuf::from("file.png"),
+            PathBuf::from("file-variant.png"),
         ];
 
-        for sort in [PathSort::Natural, PathSort::Lexicographic] {
+        for sort in ordering_modes() {
             assert_comparator_laws(&paths, sort);
         }
     }

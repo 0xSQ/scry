@@ -84,9 +84,9 @@ Scry processes sources in their declared order, then processes each source's roo
 declared order. Files discovered from one root are sorted as one batch before they are merged and
 deduplicated. The final merged result is not globally sorted.
 
-The default `natural` order compares paths component by component and case-sensitively. Contiguous
-runs of ASCII digits `0` through `9` are compared by numeric magnitude, so `image-2.png` sorts
-before `image-10.png`. Other characters, including non-ASCII digits, are compared as text.
+The default `natural` order compares numbers numerically (`image2.png` before `image10.png`)
+and gives dots priority (`image37.png` before `image37-variant.png`). Disable dot priority with
+`sort: #{ mode: "natural", dot_priority: false }`.
 
 Use `lexicographic` for exact component-wise ordering that treats digits as text:
 
@@ -96,6 +96,9 @@ files: #{
     sort: "lexicographic",
 }
 ```
+
+Both modes are case-sensitive and locale-independent. See
+[`PathSort`](../../src/util/path_sort.rs) for the detailed comparison rules.
 
 ## Syntax Forms
 
@@ -331,6 +334,7 @@ itself matters.
 files: "path/or/pattern"
 files: ["path/a", "path/b"]
 files: #{ from: "...", where: #{ ... }, sort: "natural" }
+files: #{ from: "...", sort: #{ mode: "natural", dot_priority: false } }
 files: #{ sources: [ ... ] }
 ```
 
@@ -338,7 +342,8 @@ Source fields:
 
 - `from`: discovery roots and prune rules.
 - `where`: filters for discovered files.
-- `sort`: `natural` or `lexicographic`. Defaults to `natural`.
+- `sort`: `natural` (default), `lexicographic`, or a map with `mode` and natural
+  `dot_priority` (defaults to `true`).
 
 ### `from`
 

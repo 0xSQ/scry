@@ -108,7 +108,7 @@ fn source_with_root(path: &str) -> SourceSpec {
             prune: OneOrMany::default(),
         }),
         where_: None,
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     }
 }
 
@@ -119,7 +119,7 @@ fn source_with_root_and_prune(root: &str, prune: &str) -> SourceSpec {
             prune: OneOrMany::one(exact_root(prune)),
         }),
         where_: None,
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     }
 }
 
@@ -136,7 +136,7 @@ fn source_with_root_and_path_exclude(root: &str, exclude: &str) -> SourceSpec {
             }),
             ..Default::default()
         }),
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     }
 }
 
@@ -327,8 +327,98 @@ fn path_sort_parses_supported_modes() {
     let natural = Node::parse_str("\"natural\"", Format::Rhai).unwrap();
     let lexicographic = Node::parse_str("\"lexicographic\"", Format::Rhai).unwrap();
 
-    assert_eq!(natural.as_type::<PathSort>().unwrap(), PathSort::Natural);
+    assert_eq!(natural.as_type::<PathSort>().unwrap(), PathSort::Natural { dot_priority: true });
     assert_eq!(lexicographic.as_type::<PathSort>().unwrap(), PathSort::Lexicographic);
+}
+
+#[test]
+fn path_sort_parses_natural_dot_priority_options() {
+    for (config, expected) in [
+        (r#"#{ mode: "natural" }"#, true),
+        (r#"#{ mode: "natural", dot_priority: true }"#, true),
+        (r#"#{ mode: "natural", dot_priority: false }"#, false),
+    ] {
+        let node = Node::parse_str(config, Format::Rhai).unwrap();
+        assert_eq!(
+            node.as_type::<PathSort>().unwrap(),
+            PathSort::Natural {
+                dot_priority: expected
+            },
+        );
+        node.ensure_no_unknown_keys().unwrap();
+    }
+
+    let node = Node::parse_str(r#"#{ mode: "lexicographic" }"#, Format::Rhai).unwrap();
+    assert_eq!(node.as_type::<PathSort>().unwrap(), PathSort::Lexicographic);
+    node.ensure_no_unknown_keys().unwrap();
+}
+
+#[test]
+fn path_sort_round_trip_preserves_options_and_canonical_forms() {
+    for sort in [
+        PathSort::Natural { dot_priority: true },
+        PathSort::Natural {
+            dot_priority: false,
+        },
+        PathSort::Lexicographic,
+    ] {
+        let node = sort.to_node().unwrap();
+        match sort {
+            PathSort::Natural { dot_priority: true } => {
+                assert_eq!(node.as_type::<String>().unwrap(), "natural");
+            }
+            PathSort::Natural {
+                dot_priority: false,
+            } => {
+                assert_eq!(node.req::<String>("mode").unwrap(), "natural");
+                assert!(!node.req::<bool>("dot_priority").unwrap());
+                node.ensure_only_keys(&["mode", "dot_priority"]).unwrap();
+            }
+            PathSort::Lexicographic => {
+                assert_eq!(node.as_type::<String>().unwrap(), "lexicographic");
+            }
+        }
+        assert_eq!(node.as_type::<PathSort>().unwrap(), sort);
+    }
+}
+
+#[test]
+fn path_sort_reports_invalid_options_at_their_config_paths() {
+    for (config, path) in [
+        ("#{ sort: #{} }", "sort.mode"),
+        (r#"#{ sort: #{ mode: "locale" } }"#, "sort.mode"),
+        ("#{ sort: #{ mode: false } }", "sort.mode"),
+        (r#"#{ sort: #{ mode: "natural", dot_priority: 0 } }"#, "sort.dot_priority"),
+        (r#"#{ sort: #{ mode: "natural", dot_priority: () } }"#, "sort.dot_priority"),
+        (r#"#{ sort: #{ mode: "natural", dot_priority: "sometimes" } }"#, "sort.dot_priority"),
+        (r#"#{ sort: #{ mode: "natural", dot_priority: [] } }"#, "sort.dot_priority"),
+        ("#{ sort: [] }", "sort"),
+        ("#{ sort: () }", "sort"),
+    ] {
+        let node = Node::parse_str(config, Format::Rhai).unwrap();
+        let error = node.as_type::<SourceSpec>().unwrap_err();
+        assert_eq!(
+            error.path(),
+            Some(&path.parse::<crate::KeyPath>().unwrap()),
+            "{config}: {error}"
+        );
+    }
+}
+
+#[test]
+fn path_sort_rejects_unknown_and_inapplicable_options() {
+    for (config, key) in [
+        (r#"#{ mode: "natural", dot_prority: false }"#, "dot_prority"),
+        (r#"#{ mode: "natural", extra: #{} }"#, "extra"),
+        (r#"#{ mode: "lexicographic", dot_priority: true }"#, "dot_priority"),
+        (r#"#{ mode: "lexicographic", dot_priority: false }"#, "dot_priority"),
+    ] {
+        let config = format!("#{{ sort: {config} }}");
+        let node = Node::parse_str(&config, Format::Rhai).unwrap();
+        let error = node.as_type::<SourceSpec>().unwrap_err();
+        let expected_path = crate::KeyPath::from_keys(["sort", key]);
+        assert!(matches!(error, NodeError::UnknownKeys { ref paths } if *paths == [expected_path]));
+    }
 }
 
 #[test]
@@ -347,7 +437,7 @@ fn path_sort_rejects_unknown_mode() {
 fn source_spec_string_shorthand() {
     let node = Node::parse_str("\"some/path\"", Format::Rhai).unwrap();
     let spec: SourceSpec = node.as_type().unwrap();
-    assert_eq!(spec.sort, PathSort::Natural);
+    assert_eq!(spec.sort, PathSort::default());
     let from = spec.from.unwrap();
     assert_eq!(from.root.len(), 1);
     assert_eq!(from.root[0].path, "some/path");
@@ -371,7 +461,7 @@ fn source_spec_map_from_and_where() {
     )
     .unwrap();
     let spec: SourceSpec = node.as_type().unwrap();
-    assert_eq!(spec.sort, PathSort::Natural);
+    assert_eq!(spec.sort, PathSort::default());
     let from = spec.from.unwrap();
     assert_eq!(from.root.len(), 2);
     assert_eq!(from.prune.len(), 1);
@@ -632,6 +722,32 @@ fn source_spec_canonical_round_trip_preserves_explicit_sort() {
 
 #[cfg(feature = "format-json")]
 #[test]
+fn source_and_files_canonical_round_trips_preserve_disabled_dot_priority() {
+    let node = Node::parse_str(
+        r#"#{ from: "images", sort: #{ mode: "natural", dot_priority: false } }"#,
+        Format::Rhai,
+    )
+    .unwrap();
+    let expected = PathSort::Natural {
+        dot_priority: false,
+    };
+
+    let source: SourceSpec = node.as_type().unwrap();
+    let json = source.to_node().unwrap().to_string_as(Format::Json).unwrap();
+    let encoded = Node::parse_str(&json, Format::Json).unwrap();
+    assert_eq!(encoded.req::<String>("sort.mode").unwrap(), "natural");
+    assert!(!encoded.req::<bool>("sort.dot_priority").unwrap());
+    assert_eq!(encoded.as_type::<SourceSpec>().unwrap().sort, expected);
+
+    let files: Files = node.as_type().unwrap();
+    let json = files.to_node().unwrap().to_string_as(Format::Json).unwrap();
+    let encoded = Node::parse_str(&json, Format::Json).unwrap();
+    assert!(!encoded.req::<bool>("sources[0].sort.dot_priority").unwrap());
+    assert_eq!(encoded.as_type::<Files>().unwrap().sources[0].sort, expected);
+}
+
+#[cfg(feature = "format-json")]
+#[test]
 fn files_round_trip_through_canonical_json() {
     let node = Node::parse_str(
         r#"#{ from: #{ root: #{ path: "images", recursive: false } }, where: #{ ext: ["png", "webp"] } }"#,
@@ -648,7 +764,7 @@ fn files_round_trip_through_canonical_json() {
     let root = &source.from.as_ref().unwrap().root[0];
     assert_eq!(root.path, "images");
     assert!(!root.recursive);
-    assert_eq!(source.sort, PathSort::Natural);
+    assert_eq!(source.sort, PathSort::default());
     assert_eq!(source.where_.as_ref().unwrap().ext.as_ref().unwrap().include.len(), 2);
 }
 
@@ -713,7 +829,7 @@ fn locate_no_base_dir_absolute_path_works() {
             prune: OneOrMany::default(),
         }),
         where_: None,
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     let result = spec.locate(None::<&Path>).unwrap();
@@ -736,7 +852,7 @@ fn locate_implicit_from_uses_base_dir() {
             }),
             ..Default::default()
         }),
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     let result = spec.locate(Some(dir.path())).unwrap();
@@ -748,7 +864,7 @@ fn locate_implicit_from_no_base_dir_errors() {
     let spec = SourceSpec {
         from: None,
         where_: None,
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     assert!(matches!(
@@ -774,7 +890,7 @@ fn locate_empty_roots_use_base_dir_and_preserve_prune_rules() {
             }),
             ..Default::default()
         }),
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     let result = spec.locate(Some(dir.path())).unwrap();
@@ -818,7 +934,7 @@ fn locate_root_missing_not_must_exist_ok() {
             prune: OneOrMany::default(),
         }),
         where_: None,
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     let result = spec.locate(Some(dir.path())).unwrap();
@@ -853,7 +969,7 @@ fn locate_root_dir_non_recursive() {
             prune: OneOrMany::default(),
         }),
         where_: None,
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     let result = spec.locate(Some(dir.path())).unwrap();
@@ -882,7 +998,7 @@ fn locate_root_wildcard_expansion() {
             prune: OneOrMany::default(),
         }),
         where_: None,
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     let result = spec.locate(Some(dir.path())).unwrap();
@@ -908,7 +1024,7 @@ fn locate_root_wildcard_no_matches_ok() {
             prune: OneOrMany::default(),
         }),
         where_: None,
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     let result = spec.locate(Some(dir.path())).unwrap();
@@ -930,7 +1046,7 @@ fn locate_root_wildcard_must_exist_errors() {
             prune: OneOrMany::default(),
         }),
         where_: None,
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     assert!(matches!(
@@ -960,7 +1076,7 @@ fn wildcard_must_exist_is_checked_after_filtering_and_pruning() {
             }),
             ..Default::default()
         }),
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     assert!(matches!(
@@ -974,7 +1090,7 @@ fn wildcard_must_exist_is_checked_after_filtering_and_pruning() {
             prune: OneOrMany::one(exact_root("bucket")),
         }),
         where_: None,
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     assert!(matches!(
@@ -1000,7 +1116,7 @@ fn wildcard_must_exist_counts_only_accepted_unicode_files() {
             prune: OneOrMany::default(),
         }),
         where_: None,
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     assert_non_unicode_error(spec.locate_with(Some(dir.path()), OnError::Fail), &opaque);
@@ -1027,7 +1143,7 @@ fn locate_wildcard_character_class_syntax_is_literal() {
             prune: OneOrMany::default(),
         }),
         where_: None,
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     let result = spec.locate(Some(dir.path())).unwrap();
@@ -1050,7 +1166,7 @@ fn locate_braces_are_literal() {
             prune: OneOrMany::default(),
         }),
         where_: None,
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     let result = spec.locate(Some(dir.path())).unwrap();
@@ -1076,7 +1192,7 @@ fn locate_root_wildcard_matching_directory() {
             prune: OneOrMany::default(),
         }),
         where_: None,
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     let result = spec.locate(Some(dir.path())).unwrap();
@@ -1114,7 +1230,7 @@ fn locate_root_wildcard_matching_directory_with_prune() {
             }),
         }),
         where_: None,
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     let result = spec.locate(Some(dir.path())).unwrap();
@@ -1146,7 +1262,7 @@ fn locate_root_wildcard_matching_directory_with_where() {
             }),
             ..Default::default()
         }),
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     let result = spec.locate(Some(dir.path())).unwrap();
@@ -1170,7 +1286,7 @@ fn locate_root_wildcard_mixed_files_and_dirs() {
             prune: OneOrMany::default(),
         }),
         where_: None,
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     let result = spec.locate(Some(dir.path())).unwrap();
@@ -1194,7 +1310,7 @@ fn locate_root_wildcard_matching_directory_non_recursive() {
             prune: OneOrMany::default(),
         }),
         where_: None,
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     let result = spec.locate(Some(dir.path())).unwrap();
@@ -1245,7 +1361,7 @@ fn locate_prune_dir_non_recursive() {
             }),
         }),
         where_: None,
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     let result = spec.locate(Some(dir.path())).unwrap();
@@ -1282,7 +1398,7 @@ fn locate_prune_wildcard_filters_files_at_multiple_depths() {
             }),
         }),
         where_: None,
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     let result = spec.locate(Some(dir.path())).unwrap();
@@ -1310,7 +1426,7 @@ fn locate_prune_missing_not_must_exist_ok() {
             }),
         }),
         where_: None,
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     let result = spec.locate(Some(dir.path())).unwrap();
@@ -1338,7 +1454,7 @@ fn locate_prune_missing_must_exist_errors() {
             }),
         }),
         where_: None,
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     let expected = dir.path().join("d/nonexistent");
@@ -1374,7 +1490,7 @@ fn prune_wildcard_absolute_pattern() {
             }),
         }),
         where_: None,
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     let result = spec.locate(Some(dir.path())).unwrap();
@@ -1419,7 +1535,7 @@ fn locate_where_ext_include() {
             }),
             ..Default::default()
         }),
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     let result = spec.locate(Some(dir.path())).unwrap();
@@ -1448,7 +1564,7 @@ fn locate_where_ext_case_insensitive() {
             }),
             ..Default::default()
         }),
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     let result = spec.locate(Some(dir.path())).unwrap();
@@ -1477,7 +1593,7 @@ fn locate_where_ext_leading_dot() {
             }),
             ..Default::default()
         }),
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     let result = spec.locate(Some(dir.path())).unwrap();
@@ -1506,7 +1622,7 @@ fn locate_where_ext_empty_matches_no_extension() {
             }),
             ..Default::default()
         }),
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     let result = spec.locate(Some(dir.path())).unwrap();
@@ -1535,7 +1651,7 @@ fn locate_where_ext_exclude() {
             }),
             ..Default::default()
         }),
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     let result = spec.locate(Some(dir.path())).unwrap();
@@ -1567,7 +1683,7 @@ fn locate_where_ext_exclude_wins_over_include() {
             }),
             ..Default::default()
         }),
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     let result = spec.locate(Some(dir.path())).unwrap();
@@ -1629,7 +1745,7 @@ fn locate_where_name_include() {
             }),
             ..Default::default()
         }),
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     let result = spec.locate(Some(dir.path())).unwrap();
@@ -1658,7 +1774,7 @@ fn locate_where_stem_include() {
             }),
             ..Default::default()
         }),
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     let result = spec.locate(Some(dir.path())).unwrap();
@@ -1690,7 +1806,7 @@ fn locate_where_name_wildcard() {
             }),
             ..Default::default()
         }),
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     let result = spec.locate(Some(dir.path())).unwrap();
@@ -1720,7 +1836,7 @@ fn locate_where_case_sensitive() {
             }),
             ..Default::default()
         }),
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     let result = spec.locate(Some(dir.path())).unwrap();
@@ -1750,7 +1866,7 @@ fn prune_wildcard_braces_are_literal() {
             }),
         }),
         where_: None,
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     let result = spec.locate(Some(dir.path())).unwrap();
@@ -1819,7 +1935,7 @@ fn locate_where_path_exact_relative_include() {
             }),
             ..Default::default()
         }),
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     let result = spec.locate(Some(dir.path())).unwrap();
@@ -1877,7 +1993,7 @@ fn locate_where_path_relative_include_matches_each_source_root() {
             }),
             ..Default::default()
         }),
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     let files = Files {
@@ -1920,7 +2036,7 @@ fn locate_where_path_wildcard_root_uses_each_matched_dir_as_base() {
             }),
             ..Default::default()
         }),
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     let result = spec.locate(Some(dir.path())).unwrap();
@@ -1962,7 +2078,7 @@ fn locate_where_path_combined_with_prune() {
             }),
             ..Default::default()
         }),
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     let result = spec.locate(Some(dir.path())).unwrap();
@@ -1995,7 +2111,7 @@ fn locate_preserves_root_batches_sorting_and_first_seen_deduplication() {
             prune: OneOrMany::default(),
         }),
         where_: None,
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     let result = spec.locate(Some(dir.path())).unwrap();
@@ -2024,7 +2140,7 @@ fn locate_exact_directory_uses_selected_path_order() {
     );
 
     let mut natural = source_with_root("d");
-    natural.sort = PathSort::Natural;
+    natural.sort = PathSort::default();
     let natural_result = natural.locate(Some(dir.path())).unwrap();
     assert_eq!(
         relative_path_strings(&dir, &natural_result),
@@ -2048,6 +2164,74 @@ fn locate_exact_directory_uses_selected_path_order() {
             "d/file-2.txt"
         ]
     );
+}
+
+#[test]
+fn locate_directory_and_wildcard_respect_dot_priority() {
+    let dir = TempDir::new().unwrap();
+    create_test_files(
+        &dir,
+        &[
+            "d/image100-variant.png",
+            "d/image37.png",
+            "d/image100.png",
+            "d/image37-variant.png",
+        ],
+    );
+    let dot_first = [
+        "d/image37.png",
+        "d/image37-variant.png",
+        "d/image100.png",
+        "d/image100-variant.png",
+    ];
+    let literal_natural = [
+        "d/image37-variant.png",
+        "d/image37.png",
+        "d/image100-variant.png",
+        "d/image100.png",
+    ];
+    let lexicographic = [
+        "d/image100-variant.png",
+        "d/image100.png",
+        "d/image37-variant.png",
+        "d/image37.png",
+    ];
+
+    for root in ["d", "d/*.png"] {
+        for (sort, expected) in [
+            ("", dot_first),
+            (r#"sort: "natural","#, dot_first),
+            (r#"sort: #{ mode: "natural", dot_priority: false },"#, literal_natural),
+            (r#"sort: "lexicographic","#, lexicographic),
+        ] {
+            let config = format!(r#"#{{ from: "{root}", {sort} }}"#);
+            let node = Node::parse_str(&config, Format::Rhai).unwrap();
+            let files: Files = node.as_type().unwrap();
+            node.ensure_no_unknown_keys().unwrap();
+
+            let result = files.locate(Some(dir.path())).unwrap();
+
+            assert_eq!(relative_path_strings(&dir, &result), expected, "root={root}, sort={sort}");
+        }
+    }
+}
+
+#[test]
+fn locate_directory_components_respect_dot_priority() {
+    let dir = TempDir::new().unwrap();
+    create_test_files(&dir, &["d/v1-9/item2.png", "d/v1.9/item10.png"]);
+    let mut source = source_with_root("d");
+
+    let result = source.locate(Some(dir.path())).unwrap();
+
+    assert_eq!(relative_path_strings(&dir, &result), ["d/v1.9/item10.png", "d/v1-9/item2.png"]);
+
+    source.sort = PathSort::Natural {
+        dot_priority: false,
+    };
+    let result = source.locate(Some(dir.path())).unwrap();
+
+    assert_eq!(relative_path_strings(&dir, &result), ["d/v1-9/item2.png", "d/v1.9/item10.png"]);
 }
 
 #[test]
@@ -2093,7 +2277,7 @@ fn locate_wildcard_uses_selected_path_order() {
         sort,
     };
 
-    let natural = source(PathSort::Natural).locate(Some(dir.path())).unwrap();
+    let natural = source(PathSort::default()).locate(Some(dir.path())).unwrap();
     assert_eq!(relative_path_strings(&dir, &natural), ["item-1.txt", "item-2.txt", "item-10.txt"]);
 
     let lexicographic = source(PathSort::Lexicographic).locate(Some(dir.path())).unwrap();
@@ -2118,7 +2302,7 @@ fn locate_wildcard_naturally_orders_matched_directories() {
             prune: OneOrMany::default(),
         }),
         where_: None,
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     let result = spec.locate(Some(dir.path())).unwrap();
@@ -2163,7 +2347,7 @@ fn locate_filter_and_postcollection_prune_preserve_natural_order() {
             }),
             ..Default::default()
         }),
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     let result = spec.locate(Some(dir.path())).unwrap();
@@ -2211,7 +2395,7 @@ fn used_opaque_bases_are_structural_errors_for_every_policy() {
             prune: OneOrMany::default(),
         }),
         where_: None,
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
     let implicit = SourceSpec::default();
     let empty_root = SourceSpec {
@@ -2249,7 +2433,7 @@ fn relative_exact_prune_makes_an_opaque_base_structural() {
             }),
         }),
         where_: None,
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     for on_error in [OnError::Fail, OnError::Warn, OnError::Ignore] {
@@ -2280,7 +2464,7 @@ fn relative_wildcard_prune_makes_an_opaque_base_structural() {
             }),
         }),
         where_: None,
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     for on_error in [OnError::Fail, OnError::Warn, OnError::Ignore] {
@@ -2308,7 +2492,7 @@ fn locate_opaque_file_follows_error_policy_before_sorting() {
     create_test_files(&dir, &["d/file-10.txt", "d/file-2.txt"]);
     let opaque = create_opaque_file(&dir.path().join("d"), b'f');
 
-    for sort in [PathSort::Natural, PathSort::Lexicographic] {
+    for sort in [PathSort::default(), PathSort::Lexicographic] {
         let mut spec = source_with_root("d");
         spec.sort = sort;
 
@@ -2317,7 +2501,7 @@ fn locate_opaque_file_follows_error_policy_before_sorting() {
         for on_error in [OnError::Warn, OnError::Ignore] {
             let result = spec.locate_with(Some(dir.path()), on_error).unwrap();
             let expected = match sort {
-                PathSort::Natural => ["d/file-2.txt", "d/file-10.txt"],
+                PathSort::Natural { .. } => ["d/file-2.txt", "d/file-10.txt"],
                 PathSort::Lexicographic => ["d/file-10.txt", "d/file-2.txt"],
             };
             assert_eq!(relative_path_strings(&dir, &result), expected);
@@ -2393,7 +2577,7 @@ fn locate_opaque_entry_is_rejected_before_postcollection_pruning() {
             }),
         }),
         where_: None,
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     let compiled =
@@ -2428,7 +2612,7 @@ fn locate_opaque_directory_follows_policy_and_omits_its_subtree() {
             prune: OneOrMany::default(),
         }),
         where_: None,
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
     assert_non_unicode_error(non_recursive.locate_with(Some(dir.path()), OnError::Fail), &opaque);
 }
@@ -2510,7 +2694,7 @@ fn locate_wildcard_symlink_to_directory_errors() {
             prune: OneOrMany::default(),
         }),
         where_: None,
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     assert!(matches!(
@@ -2567,7 +2751,7 @@ fn locate_root_broken_symlink_not_must_exist_ok() {
             prune: OneOrMany::default(),
         }),
         where_: None,
-        sort: PathSort::Natural,
+        sort: PathSort::default(),
     };
 
     let result = spec.locate(Some(dir.path())).unwrap();
@@ -2608,7 +2792,7 @@ fn files_locate_aggregates_sources_in_order() {
                     }),
                     ..Default::default()
                 }),
-                sort: PathSort::Natural,
+                sort: PathSort::default(),
             },
             SourceSpec {
                 from: Some(FromSpec {
@@ -2627,7 +2811,7 @@ fn files_locate_aggregates_sources_in_order() {
                     }),
                     ..Default::default()
                 }),
-                sort: PathSort::Natural,
+                sort: PathSort::default(),
             },
         ],
     };
@@ -2667,7 +2851,7 @@ fn files_locate_keeps_source_groups_with_independent_sort_modes() {
     let mut first = source_with_root("first");
     first.sort = PathSort::Lexicographic;
     let mut second = source_with_root("second");
-    second.sort = PathSort::Natural;
+    second.sort = PathSort::default();
     let files = Files {
         sources: vec![first, second],
     };
