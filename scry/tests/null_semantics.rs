@@ -22,6 +22,34 @@ enum TimeoutMode {
     },
 }
 
+#[derive(Debug, PartialEq, Config, ToNode)]
+struct Row {
+    #[scry(rename = "limit")]
+    row_limit: Option<u32>,
+}
+
+#[test]
+fn named_options_in_lists_round_trip_empty_maps_explicit_zero_and_null_slots() {
+    #[derive(Debug, PartialEq, Config, ToNode)]
+    struct Settings {
+        rows: Vec<Option<Row>>,
+    }
+
+    let value = Settings {
+        rows: vec![
+            Some(Row { row_limit: None }),
+            Some(Row { row_limit: Some(0) }),
+            None,
+        ],
+    };
+    let node = value.to_node().unwrap();
+    assert!(node.req_node("rows[0]").unwrap().as_map().unwrap().is_empty());
+    assert_eq!(node.req::<u32>("rows[1].limit").unwrap(), 0);
+    assert_eq!(node.req::<Option<Row>>("rows[2]").unwrap(), None);
+    let output = node.to_string_as(Format::Rhai).unwrap();
+    assert_eq!(decode::<Settings>(&output), value);
+}
+
 #[test]
 fn optional_defaults_round_trip_none_and_some_in_structs_and_named_variants() {
     assert_eq!(decode::<Timeout>("#{}").timeout, Some(30));
@@ -47,7 +75,7 @@ fn optional_defaults_round_trip_none_and_some_in_structs_and_named_variants() {
 
 #[test]
 fn defaults_are_lazy_and_only_missing_input_evaluates_them() {
-    #[derive(Debug, Config)]
+    #[derive(Debug, Config, ToNode)]
     struct Counted {
         #[scry(default = fallback())]
         timeout: Option<u64>,
@@ -60,7 +88,10 @@ fn defaults_are_lazy_and_only_missing_input_evaluates_them() {
         Some(30)
     }
 
-    assert_eq!(decode::<Counted>("#{ timeout: () }").timeout, None);
+    let disabled = decode::<Counted>("#{ timeout: () }");
+    let node = disabled.to_node().unwrap();
+    assert_eq!(node.req::<Option<u64>>("timeout").unwrap(), None);
+    assert_eq!(node.as_type::<Counted>().unwrap().timeout, None);
     assert_eq!(decode::<Counted>("#{ timeout: 10 }").timeout, Some(10));
     assert!(parse("#{ timeout: \"invalid\" }").as_type::<Counted>().is_err());
     assert_eq!(CALLS.load(Ordering::SeqCst), 0);
@@ -163,6 +194,61 @@ fn write_optional(value: &Option<u32>) -> Result<Node, NodeError> {
 }
 
 #[test]
+fn named_fields_preserve_present_nulls_and_declared_conversions() {
+    #[derive(ToNode)]
+    struct Fields {
+        present: Option<()>,
+        raw: Node,
+        #[scry(default = None)]
+        defaulted: Option<u32>,
+        #[scry(from_node_with(read_optional))]
+        read_hook: Option<u32>,
+    }
+
+    let value = Fields {
+        present: Some(()),
+        raw: parse("#{ key: () }"),
+        defaulted: None,
+        read_hook: None,
+    };
+    let node = value.to_node().unwrap();
+    for path in ["present", "raw.key", "defaulted", "read_hook"] {
+        assert_eq!(node.req::<Option<u32>>(path).unwrap(), None, "{path}");
+    }
+}
+
+#[test]
+fn standalone_writer_omits_only_standard_option_fields() {
+    mod domain {
+        use scry::ToNode;
+
+        #[derive(ToNode)]
+        pub struct Option<T>(pub T);
+    }
+
+    mod reexport {
+        pub use std::option::Option;
+    }
+
+    #[derive(ToNode)]
+    struct Fields {
+        custom: domain::Option<()>,
+        native: std::option::Option<u8>,
+        reexported: reexport::Option<u8>,
+    }
+
+    let value = Fields {
+        custom: domain::Option(()),
+        native: None,
+        reexported: None,
+    };
+    let node = value.to_node().unwrap();
+    assert_eq!(node.req::<Option<u8>>("custom").unwrap(), None);
+    assert!(node.opt_node("native").unwrap().is_none());
+    assert!(node.opt_node("reexported").unwrap().is_none());
+}
+
+#[test]
 fn missing_null_and_empty_child_maps_select_different_policies() {
     #[derive(Debug, Config)]
     struct Parent {
@@ -260,7 +346,7 @@ fn direct_decoders_consume_nulls_and_unit_enum_leaves_in_all_container_shapes() 
 fn aliases_can_decode_null_but_need_an_explicit_omission_policy() {
     type OptionalTimeout = Option<u64>;
 
-    #[derive(Debug, Config)]
+    #[derive(Debug, Config, ToNode)]
     struct Aliased {
         required: OptionalTimeout,
         #[scry(default = None)]
@@ -271,6 +357,9 @@ fn aliases_can_decode_null_but_need_an_explicit_omission_policy() {
     assert_eq!(value.required, None);
     assert_eq!(value.omittable, None);
     assert!(parse("#{}").as_type::<Aliased>().is_err());
+    let node = value.to_node().unwrap();
+    assert_eq!(node.req::<OptionalTimeout>("required").unwrap(), None);
+    assert_eq!(node.req::<OptionalTimeout>("omittable").unwrap(), None);
 }
 
 #[test]
@@ -346,7 +435,11 @@ fn null_capable_formats_preserve_defaulted_none_through_typed_output() {
 
 #[cfg(feature = "format-toml")]
 #[test]
-fn toml_rejects_typed_none_and_retains_null_free_raw_documents() {
+fn toml_accepts_omitted_options_and_rejects_explicit_nulls() {
+    let row = Row { row_limit: None };
+    let output = row.to_node().unwrap().to_string_as(Format::Toml).unwrap();
+    assert_eq!(Node::parse_str(&output, Format::Toml).unwrap().as_type::<Row>().unwrap(), row);
+
     let value = Timeout { timeout: None };
     let error = value.to_node().unwrap().to_string_as(Format::Toml).unwrap_err().to_string();
     assert!(error.contains("null"), "{error}");

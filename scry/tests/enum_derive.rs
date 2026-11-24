@@ -402,17 +402,16 @@ fn struct_variant_unknown_key_errors() {
 #[test]
 fn struct_variant_serialization_preserves_optional_values_and_explicit_defaults() {
     for (optional, expected) in [
-        (None, r#"{"config": {"required": "hello", "optional": null, "with_default": 10}}"#),
+        (None, r#"{"config": {"required": "hello", "with_default": 10}}"#),
         (Some(42), r#"{"config": {"required": "hello", "optional": 42, "with_default": 10}}"#),
     ] {
-        assert_wire(
-            &StructFieldsEnum::Config {
-                required: "hello".into(),
-                optional,
-                with_default: 10,
-            },
-            expected,
-        );
+        let value = StructFieldsEnum::Config {
+            required: "hello".into(),
+            optional,
+            with_default: 10,
+        };
+        assert_wire(&value, expected);
+        assert_eq!(value.to_node().unwrap().as_type::<StructFieldsEnum>().unwrap(), value);
     }
 }
 // ---------------------------------------------------------------------------------------------- //

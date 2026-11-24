@@ -531,8 +531,10 @@ fn generate_struct_to_node(info: &StructInfo) -> syn::Result<TokenStream> {
 
     match &info.fields {
         StructFields::Named(fields) => {
-            let field_serializers: Vec<TokenStream> =
-                fields.iter().map(|f| generate_field_serializer(f, &scry, &map)).collect();
+            let field_serializers = fields.iter().map(|field| {
+                let member = &field.member;
+                generate_named_field_output(field, &quote! { &self.#member }, &map, None, &scry)
+            });
 
             Ok(quote! {
                 impl #impl_generics #scry::ToNode for #struct_name #type_generics #where_clause {
@@ -590,40 +592,37 @@ fn generate_struct_to_node(info: &StructInfo) -> syn::Result<TokenStream> {
     }
 }
 
-fn generate_field_serializer(field: &FieldInfo, scry: &TokenStream, map: &Ident) -> TokenStream {
-    let field_name = &field.member;
-    let key = field.config_key();
-    let value = generate_field_output(field, &quote! { &self.#field_name }, scry);
-
-    quote! {
-        #map.insert(
-            #key.to_string(),
-            #value.map_err(|error| error.prepend_path(&#scry::KeyPath::from_keys([#key])))?,
-        );
-    }
-}
-
-/// Generates field serialization code for struct variant fields.
-///
-/// Similar to `generate_field_serializer` but uses bound variable names
-/// and inserts into `inner_map` instead of `map`.
-fn generate_struct_variant_field_serializer(
+/// Inserts a named field according to its missing-key and conversion policies.
+fn generate_named_field_output(
     field: &FieldInfo,
-    scry: &TokenStream,
-    variant_key: &str,
-    binding: &Ident,
+    value: &TokenStream,
     map: &Ident,
+    variant: Option<&str>,
+    scry: &TokenStream,
 ) -> TokenStream {
     let key = field.config_key();
-    let value = generate_field_output(field, &quote! { #binding }, scry);
-
-    quote! {
+    let output = generate_field_output(field, value, scry);
+    let path = match variant {
+        Some(variant) => quote! { #scry::KeyPath::from_keys([#variant, #key]) },
+        None => quote! { #scry::KeyPath::from_keys([#key]) },
+    };
+    let insert = quote! {
         #map.insert(
             #key.to_string(),
-            #value.map_err(|error| {
-                error.prepend_path(&#scry::KeyPath::from_keys([#variant_key, #key]))
-            })?,
+            #output.map_err(|error| error.prepend_path(&#path))?,
         );
+    };
+    if matches!(field.attrs.fallback, FieldFallback::Unspecified)
+        && is_option_type(&field.ty)
+        && matches!(Operation::FromNode.select(field), FieldOperation::Native)
+        && matches!(Operation::ToNode.select(field), FieldOperation::Native)
+    {
+        quote! {{
+            use #scry::_private::FieldPresence as _;
+            if #scry::_private::FieldRef(#value).__scry_should_emit_field() { #insert }
+        }}
+    } else {
+        insert
     }
 }
 
@@ -709,7 +708,6 @@ fn generate_enum_to_node(info: &EnumInfo) -> syn::Result<TokenStream> {
             }
             VariantData::Struct(fields) => {
                 // Struct variant: serialize as {"name": {"f1": v1, "f2": v2}}
-                // Serializes every complete field value and respects field renaming.
                 let field_names: Vec<&Member> = fields.iter().map(|f| &f.member).collect();
                 let bindings: Vec<Ident> =
                     (0..fields.len()).map(|i| private_ident(&format!("field_{i}"))).collect();
@@ -717,8 +715,12 @@ fn generate_enum_to_node(info: &EnumInfo) -> syn::Result<TokenStream> {
                     .iter()
                     .zip(&bindings)
                     .map(|(field, binding)| {
-                        generate_struct_variant_field_serializer(
-                            field, &scry, &key, binding, &inner_map,
+                        generate_named_field_output(
+                            field,
+                            &quote! { #binding },
+                            &inner_map,
+                            Some(&key),
+                            &scry,
                         )
                     })
                     .collect();

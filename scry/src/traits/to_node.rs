@@ -21,6 +21,9 @@ use crate::node::{Node, NodeError, Value};
 /// anchoring contract above.
 pub trait ToNode {
     /// Converts this value to a Node.
+    ///
+    /// Derived implementations omit a named `Option<T>` containing `None` when the field uses
+    /// native conversions and implicitly defaults to `None`. Positional values retain their slots.
     fn to_node(&self) -> Result<Node, NodeError>;
 }
 

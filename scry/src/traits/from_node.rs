@@ -97,22 +97,14 @@ macro_rules! impl_from_node_int {
                     let result = match value {
                         Value::String(s) => s.parse::<$t>()
                             .map_err(|error| conversion_error_with_source(node, stringify!($t), value, error))?,
-                        Value::I8(v) => <$t>::try_from(*v)
-                            .map_err(|error| conversion_error_with_source(node, stringify!($t), value, error))?,
-                        Value::I16(v) => <$t>::try_from(*v)
-                            .map_err(|error| conversion_error_with_source(node, stringify!($t), value, error))?,
-                        Value::I32(v) => <$t>::try_from(*v)
-                            .map_err(|error| conversion_error_with_source(node, stringify!($t), value, error))?,
-                        Value::I64(v) => <$t>::try_from(*v)
-                            .map_err(|error| conversion_error_with_source(node, stringify!($t), value, error))?,
-                        Value::U8(v) => <$t>::try_from(*v)
-                            .map_err(|error| conversion_error_with_source(node, stringify!($t), value, error))?,
-                        Value::U16(v) => <$t>::try_from(*v)
-                            .map_err(|error| conversion_error_with_source(node, stringify!($t), value, error))?,
-                        Value::U32(v) => <$t>::try_from(*v)
-                            .map_err(|error| conversion_error_with_source(node, stringify!($t), value, error))?,
-                        Value::U64(v) => <$t>::try_from(*v)
-                            .map_err(|error| conversion_error_with_source(node, stringify!($t), value, error))?,
+                        Value::I8(v) => convert_integer(*v, node, stringify!($t), value)?,
+                        Value::I16(v) => convert_integer(*v, node, stringify!($t), value)?,
+                        Value::I32(v) => convert_integer(*v, node, stringify!($t), value)?,
+                        Value::I64(v) => convert_integer(*v, node, stringify!($t), value)?,
+                        Value::U8(v) => convert_integer(*v, node, stringify!($t), value)?,
+                        Value::U16(v) => convert_integer(*v, node, stringify!($t), value)?,
+                        Value::U32(v) => convert_integer(*v, node, stringify!($t), value)?,
+                        Value::U64(v) => convert_integer(*v, node, stringify!($t), value)?,
                         _ => return Err(conversion_error(node, stringify!($t), value)),
                     };
                     Ok(result)
@@ -124,6 +116,21 @@ macro_rules! impl_from_node_int {
 
 impl_from_node_int!(i8, i16, i32, i64, isize);
 impl_from_node_int!(u8, u16, u32, u64, usize);
+
+/// Converts an integer and preserves the source value and cause of any range error.
+fn convert_integer<T, S>(
+    input: S,
+    node: &Node,
+    target_type: &str,
+    value: &Value,
+) -> Result<T, NodeError>
+where
+    T: TryFrom<S>,
+    T::Error: Into<crate::BoxedError>,
+{
+    T::try_from(input)
+        .map_err(|error| conversion_error_with_source(node, target_type, value, error))
+}
 
 // ---------------------------------------------------------------------------------------------- //
 // Bool, String, PathBuf

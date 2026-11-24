@@ -290,14 +290,14 @@ assert_eq!(indices, vec![1, 2]);
 let output = config.to_node()?;
 assert_eq!(output.req::<String>("select")?, " N-2.. ");
 assert_eq!(output.req::<String>("strengths")?, "[0..0.3]:0.1");
-assert_eq!(output.req::<Option<String>>("comparison")?, None);
+assert!(output.opt_node("comparison")?.is_none());
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 Decoding checks the expression strings and their profiles without expanding them. Apply
 configuration overrides before decoding, then supply the final collection length when evaluating
 the selector. The same expression can be reused against different lengths. Serialization preserves
-the spaces around `N-2..` and writes the absent comparison as null.
+the spaces around `N-2..` and omits the unset comparison.
 
 Missing and null values follow the field's declared type and fallback:
 

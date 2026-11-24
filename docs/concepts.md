@@ -613,9 +613,9 @@ Repeated selections and combinations with individual operation hooks on the same
 Individual hooks remain useful for customizing one operation, such as validating an ordinary integer.
 
 Missing keys use their existing fallback without calling the adapter. Every present value,
-including null, reaches the selected reader for the complete field type. Output borrows the value
-and serializes every named field. Input errors use the full Node path, output errors are relative
-to the emitted value, and map readers validate the shape they own.
+including null, reaches the selected reader for the complete field type. The selected writer
+borrows the complete field value, including an unset option. Input errors use the full Node path,
+output errors are relative to the emitted value, and map readers validate the shape they own.
 
 The module's description supplies the complete value shape and nullability. Field prose and
 omission remain separate. Module selections suppress target-derived literal default displays and
@@ -752,16 +752,24 @@ use scry::ToNode;
 #[derive(ToNode)]
 struct Output {
     status: String,
-    code: u32,
+    detail: Option<String>,
 }
 
-let output = Output { status: "ok".into(), code: 200 };
+let output = Output { status: "ok".into(), detail: None };
 let node = output.to_node()?;
-let json = node.to_string_as(scry::node::Format::Json)?;
+assert!(node.opt_node("detail")?.is_none());
 ```
 
-`None` fields serialize as null so reading them back preserves `None` instead of restoring a
-default. This requires a format that supports null, such as JSON or Rhai. TOML rejects it.
+For named struct and enum-variant fields, `to_node()` omits a standard `Option<T>` set to
+`None` when the derived reader implicitly supplies `None` for a missing key. A field whose
+type alias hides the `Option<T>` spelling retains its key. A declared
+fallback or a custom read or write conversion keeps the field present. For example,
+`#[scry(default = Some(30))]` on a disabled timeout requires an explicit null.
+Omitting that key would re-enable the timeout on reload.
+
+Array and tuple positions and raw `Node` entries retain their nulls. When an application
+needs a particular key to be present, it can set that key on the resulting tree with
+`Node::set_node` before formatting it. JSON and Rhai support explicit nulls. TOML rejects them.
 
 ### Implementing ToNode Manually
 

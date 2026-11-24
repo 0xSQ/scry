@@ -125,7 +125,7 @@ fn config_fields_keep_required_optional_and_missing_only_default_behavior() {
     assert_eq!(settings.defaulted.source(), "[2..4]");
     input.ensure_no_unknown_keys().unwrap();
     let output = settings.to_node().unwrap();
-    assert_eq!(output.req::<Option<String>>("optional").unwrap(), None);
+    assert!(output.opt_node("optional").unwrap().is_none());
     assert_eq!(Settings::from_node(&output).unwrap().defaulted.source(), "[2..4]");
 
     for (source, key) in [

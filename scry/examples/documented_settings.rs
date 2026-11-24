@@ -113,8 +113,8 @@ mod tests {
         let output = render_settings(&settings).unwrap();
         assert!(output.contains("// The opaque canvas color behind the image"));
         assert!(output.contains("background: \"#1c1c1e\""));
-        assert!(output.contains("target_dir: ()"));
         let node = Node::parse_str(&output, Format::Rhai).unwrap();
+        assert!(node.opt_node("target_dir").unwrap().is_none());
         assert_eq!(node.as_type::<Settings>().unwrap(), settings);
         node.ensure_no_unknown_keys().unwrap();
     }

@@ -59,8 +59,11 @@ pub fn derive_from_defaults(input: TokenStream) -> TokenStream {
 
 /// Derives `ToNode` for serializing config to a Node tree.
 ///
-/// Every named field is serialized, including in enum payloads. `Option<T>::None` produces
-/// null rather than omitting the key, preserving the value when a missing field has a default.
+/// `to_node()` omits a named `Option<T>` set to `None` when the field has an implicit
+/// missing-key fallback of `None` and uses native input and output conversion. This applies
+/// to named struct and enum fields. Declared fallbacks and custom conversion hooks retain
+/// their keys, and positional values retain their slots.
+///
 /// `#[scry(to_node_with(write))]` calls `write(&FieldType)` and expects `Result<Node, NodeError>`.
 /// For `Option<T>`, the hook receives `&Option<T>` even when the value is `None`.
 /// Error paths are relative to the value being serialized. Each field and enum payload prepends

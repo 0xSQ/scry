@@ -106,9 +106,9 @@ let document = Document::from_config(&preferences)?;
 ```
 
 Pass this document to a writer as before. The output contains the selected values `1.1` and
-`256`, rather than the defaults `1.2` and `512`. Described struct fields use declaration
-order. Other map entries retain their supplied order. The derive uses the first paragraph
-of each doc comment.
+`256`. It omits the unset `target_dir` because `Document::from_config` uses `to_node()`.
+Described struct fields use declaration order. Other map entries retain their supplied order.
+The derive uses the first paragraph of each doc comment.
 
 `from_config` always needs a complete value. If every field has a missing-value fallback,
 `scry::from_defaults::<T>()?` can construct one to use as a starting point. Here, the

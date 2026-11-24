@@ -108,10 +108,31 @@ pub fn from_defaults<T: FromDefaults>() -> Result<T, NodeError> {
     T::from_defaults_at(&KeyPath::new())
 }
 
-// Re-export third-party types needed by derive macro expansions (hidden from docs).
+// Helpers used by derive macro expansions.
 #[doc(hidden)]
 pub mod _private {
     pub use indexmap::IndexMap;
+
+    /// Wraps a field reference so its type's own methods cannot affect omission.
+    pub struct FieldRef<'a, T: ?Sized>(pub &'a T);
+
+    /// Tests a field whose type is written as `Option<T>` in the derive input.
+    pub trait FieldPresence {
+        fn __scry_should_emit_field(self) -> bool;
+    }
+
+    impl<T> FieldPresence for FieldRef<'_, Option<T>> {
+        fn __scry_should_emit_field(self) -> bool {
+            self.0.is_some()
+        }
+    }
+
+    // Method lookup borrows the wrapper only when the field is a different type named Option.
+    impl<T: ?Sized> FieldPresence for &FieldRef<'_, T> {
+        fn __scry_should_emit_field(self) -> bool {
+            true
+        }
+    }
 
     /// Invokes a reader with the complete field type as its expected result.
     pub fn call_reader<T>(

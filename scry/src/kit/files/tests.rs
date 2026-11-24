@@ -486,8 +486,8 @@ fn source_spec_nullable_fields_round_trip() {
     node.ensure_no_unknown_keys().unwrap();
 
     let encoded = spec.to_node().unwrap();
-    assert!(encoded.opt_node("from").unwrap().is_some());
-    assert!(encoded.opt_node("where").unwrap().is_some());
+    assert!(encoded.opt_node("from").unwrap().is_none());
+    assert!(encoded.opt_node("where").unwrap().is_none());
     let decoded: SourceSpec = encoded.as_type().unwrap();
     assert!(decoded.from.is_none());
     assert!(decoded.where_.is_none());
