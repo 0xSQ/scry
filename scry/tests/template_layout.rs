@@ -41,11 +41,11 @@ fn field_metadata_precedes_defaults_and_typed_holes() -> Result<(), NodeError> {
     for format in formats() {
         let text = format_template::<Settings>(format.clone(), TemplateMode::Ref)?;
         assert_line(&text, "// Names the source image. Type: path. Required.");
-        assert_entry(&text, &format, "input", "<path>,", true);
+        assert_entry(&text, "input", "<path>,", true);
         assert_line(&text, "// Controls the detection threshold. Type: u8. Optional.");
-        assert_entry(&text, &format, "threshold", "4,", true);
+        assert_entry(&text, "threshold", "4,", true);
         assert_line(&text, "// Type: bool. Optional.");
-        assert_entry(&text, &format, "verbose", "false,", true);
+        assert_entry(&text, "verbose", "false,", true);
         assert!(!text.contains("// type:"), "{text}");
         assert!(!text.contains("Type: object"), "{text}");
         let node = Node::parse_str(&text, format)?;
@@ -64,10 +64,10 @@ fn disabled_nested_objects_keep_one_comment_marker_at_each_natural_indentation(
             "// Enables an additional thumbnail export. Optional. Omitted by default.",
         );
         assert_line(&text, "// Names the thumbnail destination. Type: path. Required.");
-        assert_entry(&text, &format, "path", "<path>,", true);
+        assert_entry(&text, "path", "<path>,", true);
         assert_line(&text, "// Limits the longest side in pixels. Type: u32. Optional.");
-        assert_entry(&text, &format, "size", "256,", true);
-        let path_entry = format!("// {}: <path>,", entry_key(&format, "path"));
+        assert_entry(&text, "size", "256,", true);
+        let path_entry = "// path: <path>,";
         let path_line = text.lines().find(|line| line.trim_start() == path_entry).unwrap();
         assert!(path_line.starts_with(&format!("        {path_entry}")), "{text}");
         for line in text.lines() {
@@ -98,7 +98,7 @@ fn multiline_docs_append_type_and_policy_to_the_last_nonempty_line() -> Result<(
         assert_line(&text, "// First paragraph.");
         assert_line(&text, "// Final line. Type: string. Required.");
         assert_line(&text, "// Uses a custom expression. Type: duration expression. Required.");
-        assert_entry(&text, &format, "custom", "<value>,", true);
+        assert_entry(&text, "custom", "<value>,", true);
         assert!(!text.contains('\r') && !text.contains('\u{2028}'), "{text}");
         Node::parse_str(&text, format)?;
     }
@@ -150,8 +150,8 @@ fn actual_nested_defaults_receive_metadata_without_being_replaced_by_child_defau
                 2,
                 "{text}"
             );
-            assert_entry(&text, &format, "port", "9090,", mode == TemplateMode::Ref);
-            assert_entry(&text, &format, "port", "9191,", mode == TemplateMode::Ref);
+            assert_entry(&text, "port", "9090,", mode == TemplateMode::Ref);
+            assert_entry(&text, "port", "9191,", mode == TemplateMode::Ref);
             assert!(!text.contains("8080"), "{text}");
             let node = Node::parse_str(&text, format.clone())?;
             if mode == TemplateMode::Explicit {
@@ -194,14 +194,12 @@ fn all_presets_keep_their_omission_and_default_semantics() -> Result<(), NodeErr
 fn selecting_a_container_and_one_child_keeps_sibling_entries_disabled() -> Result<(), NodeError> {
     for format in formats() {
         let template = format_template::<Settings>(format.clone(), TemplateMode::Ref)?;
-        let opening = format!("// {}:", entry_key(&format, "thumbnail"));
-        let child = format!("// {}:", entry_key(&format, "path"));
         let edited = template
             .lines()
             .map(|line| {
                 let content = line.trim_start();
-                let is_opening = content.starts_with(&opening);
-                let is_child = content.starts_with(&child);
+                let is_opening = content.starts_with("// thumbnail:");
+                let is_child = content.starts_with("// path:");
                 let is_closing = line.starts_with("    // },") && !line.starts_with("        ");
                 if is_opening || is_child || is_closing {
                     let indentation = &line[..line.len() - content.len()];
@@ -242,15 +240,9 @@ fn multiline_type_hints_stay_on_one_line_and_url_values_keep_their_slashes() -> 
         for mode in [TemplateMode::Ref, TemplateMode::Explicit] {
             let text = format_template::<HintsAndUrls>(format.clone(), mode)?;
             assert_line(&text, "// Type: duration expression seconds. Required.");
-            assert_entry(&text, &format, "duration", "<value>,", true);
+            assert_entry(&text, "duration", "<value>,", true);
             assert_line(&text, "// Type: string. Optional.");
-            assert_entry(
-                &text,
-                &format,
-                "url",
-                "\"https://example.org/a//b\",",
-                mode == TemplateMode::Ref,
-            );
+            assert_entry(&text, "url", "\"https://example.org/a//b\",", mode == TemplateMode::Ref);
             let node = Node::parse_str(&text, format.clone())?;
             if mode == TemplateMode::Explicit {
                 assert_eq!(node.req::<String>("url")?, "https://example.org/a//b");
@@ -278,15 +270,15 @@ fn list_and_tuple_placeholders_can_be_enabled_without_repairing_punctuation(
     for format in formats() {
         let text = format_template::<Containers>(format.clone(), TemplateMode::Ref)?;
         assert_line(&text, "// Type: list[u8]. Required.");
-        assert_entry(&text, &format, "list", "[", true);
+        assert_entry(&text, "list", "[", true);
         assert_line(&text, "// <u8>,");
         assert_line(&text, "// <string>,");
         let edited = text
             .lines()
             .map(|line| {
                 let content = line.trim_start();
-                if content.starts_with(&format!("// {}:", entry_key(&format, "list")))
-                    || content.starts_with(&format!("// {}:", entry_key(&format, "tuple")))
+                if content.starts_with("// list:")
+                    || content.starts_with("// tuple:")
                     || content == "// <u8>,"
                     || content == "// <string>,"
                     || content == "// ],"
@@ -341,10 +333,10 @@ fn nested_list_hints_share_notation_and_keep_enum_placeholders() -> Result<(), N
             } else {
                 assert_line(&text, "// Numeric matrix. Required.");
                 assert_line(&text, "// Choice matrix. Required.");
-                assert_entry(&text, &format, "matrix", "[ // type: list[list[u32]]", true);
-                assert_entry(&text, &format, "choices", "[ // type: list[list[string]]", true);
+                assert_entry(&text, "matrix", "[ // type: list[list[u32]]", true);
+                assert_entry(&text, "choices", "[ // type: list[list[string]]", true);
             }
-            assert_entry(&text, &format, "choice", "<string>,", true);
+            assert_entry(&text, "choice", "<string>,", true);
             assert_line(&text, "// Choices: \"first\", \"second\".");
             Node::parse_str(&text, format.clone())?;
         }
@@ -367,7 +359,7 @@ fn depth_limited_holes_keep_their_comma_outside_explanatory_comments() -> Result
     for format in formats() {
         let text = format_template::<Deep>(format.clone(), TemplateMode::Min)?;
         assert!(text.contains("Shape expansion stopped at the depth limit."), "{text}");
-        assert_entry(&text, &format, "child", "<value>,", true);
+        assert_entry(&text, "child", "<value>,", true);
         Node::parse_str(&text, format.clone())?;
         let edited = text
             .lines()
@@ -402,8 +394,8 @@ fn real_scalar_collections_stay_compact_with_one_field_type_annotation() -> Resu
         for mode in [TemplateMode::Ref, TemplateMode::Explicit] {
             let text = format_template::<CompactDefaults>(format.clone(), mode)?;
             assert_line(&text, "// Type: list[u8]. Optional.");
-            assert_entry(&text, &format, "values", "[1, 2],", mode == TemplateMode::Ref);
-            assert_entry(&text, &format, "pair", "[7, \"seven\"],", mode == TemplateMode::Ref);
+            assert_entry(&text, "values", "[1, 2],", mode == TemplateMode::Ref);
+            assert_entry(&text, "pair", "[7, \"seven\"],", mode == TemplateMode::Ref);
             let node = Node::parse_str(&text, format.clone())?;
             if mode == TemplateMode::Explicit {
                 assert_eq!(node.req::<Vec<u8>>("values")?, [1, 2]);
@@ -471,7 +463,7 @@ fn formatting_options_cover_shapes_and_nested_defaults_without_changing_values(
                         format_template_with_config::<Presentation>(format.clone(), &config)?;
                     let node = Node::parse_str(&text, format.clone())?;
                     assert_eq!(node.to_string_as(Format::Rhai)?, baseline, "{config:?}\n{text}");
-                    assert_entry(&text, &format, "name", "<string>,", true);
+                    assert_entry(&text, "name", "<string>,", true);
                     assert_line(
                         &text,
                         if type_hints == TemplateTypeHints::Above {
@@ -509,14 +501,12 @@ fn formatting_options_cover_shapes_and_nested_defaults_without_changing_values(
                         };
                         assert_entry(
                             &text,
-                            &format,
                             "codes",
                             &format!("[1, 2],{suffix}"),
                             mode == TemplateMode::Ref,
                         );
                         assert_entry(
                             &text,
-                            &format,
                             "codes",
                             &format!("[3, 4],{suffix}"),
                             mode == TemplateMode::Ref,
@@ -547,17 +537,9 @@ fn formats() -> Vec<Format> {
     ]
 }
 
-fn entry_key(format: &Format, key: &str) -> String {
-    if *format == Format::Rhai {
-        key.to_owned()
-    } else {
-        format!("\"{key}\"")
-    }
-}
-
-fn assert_entry(text: &str, format: &Format, key: &str, value: &str, commented: bool) {
+fn assert_entry(text: &str, key: &str, value: &str, commented: bool) {
     let prefix = if commented { "// " } else { "" };
-    assert_line(text, &format!("{prefix}{}: {value}", entry_key(format, key)));
+    assert_line(text, &format!("{prefix}{key}: {value}"));
 }
 
 fn assert_line(text: &str, expected: &str) {

@@ -71,8 +71,8 @@ pub type StdoutRhaiWriter = RhaiWriter<BufWriter<Stdout>>;
 
 /// Renders values and documented configuration as JSON5 literals.
 ///
-/// Keys and strings use JSON quoting. Comments and optional trailing commas make the
-/// documented output JSON5. Nonfinite numbers are rejected.
+/// Identifier names are written bare where possible. Other keys and string values use JSON
+/// quoting. Nonfinite numbers are rejected.
 #[cfg(feature = "format-json5")]
 pub struct Json5Writer<W: Write> {
     output: W,
@@ -440,14 +440,19 @@ impl<'a, W: Write> Renderer<'a, W> {
     }
 
     fn key(&mut self, key: &str) -> Result<(), NodeError> {
-        if matches!(self.syntax, Syntax::Rhai)
-            && is_identifier(key)
-            && !RHAI_RESERVED_IDENTIFIERS.contains(&key)
-        {
-            self.raw(key)
-        } else {
-            self.string(key)
+        match self.syntax {
+            Syntax::Rhai if is_identifier(key) && !RHAI_RESERVED_IDENTIFIERS.contains(&key) => {
+                return self.raw(key);
+            }
+            #[cfg(feature = "format-json5")]
+            Syntax::Json5 => {
+                if let Some(identifier) = json5_identifier_name(key) {
+                    return self.raw(&identifier);
+                }
+            }
+            _ => {}
         }
+        self.string(key)
     }
 
     fn scalar(&mut self, value: &Value) -> Result<(), NodeError> {
@@ -537,6 +542,43 @@ impl Syntax {
             Self::Json5 => "null",
         }
     }
+}
+
+#[cfg(feature = "format-json5")]
+fn json5_identifier_name(key: &str) -> Option<std::borrow::Cow<'_, str>> {
+    use pest::unicode;
+    use std::borrow::Cow;
+
+    // JSON5 uses ECMAScript 5.1 IdentifierName, which includes reserved words.
+    let is_start = |c| matches!(c, '$' | '_') || unicode::LETTER(c) || unicode::LETTER_NUMBER(c);
+    let mut chars = key.char_indices();
+    if !is_start(chars.next()?.1) {
+        return None;
+    }
+
+    let mut escaped: Option<String> = None;
+    for (offset, c) in chars {
+        let spacing_mark = unicode::SPACING_MARK(c);
+        if !is_start(c)
+            && !spacing_mark
+            && !unicode::NONSPACING_MARK(c)
+            && !unicode::DECIMAL_NUMBER(c)
+            && !unicode::CONNECTOR_PUNCTUATION(c)
+            && !matches!(c, '\u{200C}' | '\u{200D}')
+        {
+            return None;
+        }
+        // json5 0.4 checks Diacritic for spacing marks in bare keys. Use the valid
+        // identifier escape for other spacing marks so our own reader can parse them.
+        if spacing_mark && !unicode::DIACRITIC(c) {
+            let code = u16::try_from(u32::from(c)).ok()?;
+            let output = escaped.get_or_insert_with(|| key[..offset].to_owned());
+            write!(output, "\\u{code:04X}").expect("writing to a String cannot fail");
+        } else if let Some(output) = &mut escaped {
+            output.push(c);
+        }
+    }
+    Some(escaped.map_or(Cow::Borrowed(key), Cow::Owned))
 }
 
 fn is_line_break(character: char) -> bool {

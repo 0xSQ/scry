@@ -384,6 +384,52 @@ fn json5_renders_the_same_document_with_compatible_escapes() -> Result<(), NodeE
 
 #[cfg(feature = "format-json5")]
 #[test]
+fn json5_keys_follow_identifier_name_rules_and_round_trip() -> Result<(), NodeError> {
+    use scry::writer::Json5Writer;
+
+    let keys = [
+        ("name_format", "name_format"),
+        ("$schema", "$schema"),
+        ("_version2", "_version2"),
+        ("default", "default"),
+        ("null", "null"),
+        ("true", "true"),
+        ("Infinity", "Infinity"),
+        ("日本語", "日本語"),
+        ("\u{2160}1", "\u{2160}1"),
+        ("a\u{301}", "a\u{301}"),
+        ("a\u{203F}\u{0661}\u{200C}\u{200D}", "a\u{203F}\u{0661}\u{200C}\u{200D}"),
+        ("क\u{093E}", r"क\u093E"),
+        ("", r#""""#),
+        ("2fast", r#""2fast""#),
+        ("background-color", r#""background-color""#),
+        ("two words", r#""two words""#),
+        ("a^", r#""a^""#),
+        ("\u{200D}a", "\"\u{200D}a\""),
+        ("🎨", r#""🎨""#),
+        (r"\u0061", r#""\\u0061""#),
+    ];
+    let document = Document::map(|map| {
+        for (key, _) in keys {
+            map.entry(key, key)?.comment("Preserve the key exactly.");
+        }
+        Ok(())
+    })?;
+    let mut writer = Json5Writer::to_string_writer();
+    writer.write(&document)?;
+    let text = writer.as_str()?;
+    let parsed = Node::parse_str(text, Format::Json5)?;
+    let map = parsed.as_map()?;
+    assert_eq!(map.len(), keys.len());
+    for (key, spelling) in keys {
+        assert!(text.contains(&format!("// Preserve the key exactly.\n    {spelling}: ")));
+        assert_eq!(map[key].as_type::<String>()?, key);
+    }
+    Ok(())
+}
+
+#[cfg(feature = "format-json5")]
+#[test]
 fn json5_rejects_integers_unsupported_by_its_reader_before_output() -> Result<(), NodeError> {
     use scry::writer::Json5Writer;
 

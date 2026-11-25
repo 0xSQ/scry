@@ -10,7 +10,7 @@ readme = "../README.md"
 [features]
 default = ["format-json", "format-json5"]
 format-json = ["dep:serde_json"]
-format-json5 = ["dep:json5", "format-json"]
+format-json5 = ["dep:json5", "dep:pest", "format-json"]
 format-toml = ["dep:toml"]
 format-yaml = ["dep:serde_yaml", "dep:serde"]
 
@@ -33,6 +33,7 @@ json5 = { version = "0.4", optional = true }
 num-bigint = "0.4"
 num-rational = "0.4"
 num-traits = "0.2"
+pest = { version = "2", optional = true }
 rhai = "1"
 scry_derive = { path = "../scry_derive" }
 serde = { version = "1", optional = true }

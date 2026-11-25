@@ -150,16 +150,16 @@ For the type above, this produces:
 // Commented optional entries may be enabled when needed.
 {
     // Canvas color behind transparent pixels. Type: string. Required.
-    // "background": <string>,
+    // background: <string>,
 
     // Multiplier per zoom step. Type: f64. Optional.
-    // "zoom_factor": 1.2,
+    // zoom_factor: 1.2,
 
     // Budget for retained image data, in MiB. Type: usize. Optional.
-    // "cache_size_mib": 512,
+    // cache_size_mib: 512,
 
     // Directory for copied images. Type: path. Optional. Omitted by default.
-    // "target_dir": <path>,
+    // target_dir: <path>,
 }
 ```
 
@@ -274,6 +274,8 @@ and writes an unannotated value without a final newline. `to_string_writer()` co
 output in memory. `as_str()` borrows it and `into_string()` extracts the result.
 
 `Json5Writer` uses `{ ... }` maps and `null`, while Rhai uses `#{ ... }` and `()`.
+JSON5 writes ECMAScript 5.1 identifier names as bare keys, including names such as `null`
+and `default`. Keys with spaces, punctuation such as hyphens, or initial digits are quoted.
 Both writers reject nonfinite numbers. Rhai uses signed 64-bit integers. JSON5 output
 currently uses that same integer range to stay readable by Scry's existing JSON5 parser.
 An unsupported value reports its configuration path before any document text is written.
